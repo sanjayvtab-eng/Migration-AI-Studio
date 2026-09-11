@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.services.databricks_client import execute_sql
 from app.services import environment_provisioning as environment_service
 from app.services import bronze_ingestion
+from app.services import prompt_orchestration
 from app.services.type_compatibility import compatibility_catalog, transport_contract, transport_summary
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
@@ -113,6 +114,13 @@ class BronzeIngestionIn(BaseModel):
     batch_size: int=1000
     max_rows: int|None=None
     replace_existing_data: bool=False
+
+class PromptPlanIn(BaseModel):
+    prompt: str
+
+class PromptExecuteIn(BaseModel):
+    plan_id: str
+    overwrite_confirmed: bool=False
 
 
 
@@ -270,6 +278,29 @@ def dev_bronze_ingestion_run(project_id:str,data:BronzeIngestionIn,db:Session=De
 @router.get("/projects/{project_id}/ingestion/dev/latest")
 def dev_bronze_ingestion_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     try: return bronze_ingestion.latest(db,project_id)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-migration/plan")
+def prompt_migration_plan(project_id:str,data:PromptPlanIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=user.get("sub","admin") if isinstance(user,dict) else getattr(user,"username","admin")
+    try: return prompt_orchestration.generate_prompt_plan(db,project_id,prompt=data.prompt,actor=actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-migration/execute")
+def prompt_migration_execute(project_id:str,data:PromptExecuteIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_orchestration.execute_prompt_plan(db,project_id,plan_id=data.plan_id,actor=actor,overwrite_confirmed=data.overwrite_confirmed)
+    except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/prompt-migration/latest")
+def prompt_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try:
+        plan=prompt_orchestration.get_prompt_plan(db,project_id)
+        execution=prompt_orchestration.latest_prompt_execution(db,project_id)
+        return {"plan":plan,"execution":execution}
     except Exception as e: _environment_error(e)
 
 

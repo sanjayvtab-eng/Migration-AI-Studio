@@ -294,6 +294,12 @@ export default function App() {
     [msg, setMsg] = useState(""),
     [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState(false);
+  const [promptText, setPromptText] = useState(
+    "Migrate MigrationDemo from SQL Server to DEV Databricks",
+  );
+  const [promptPlan, setPromptPlan] = useState<any>(null);
+  const [promptExecution, setPromptExecution] = useState<any>(null);
+  const [promptRunning, setPromptRunning] = useState(false);
   async function loadProjects() {
     const ps = await api<Project[]>("/projects");
     setProjects(ps);
@@ -387,7 +393,7 @@ export default function App() {
         setProdRecon(prodReconciliation);
       }
       if (page === "Migration Workflow" && id) {
-        const [compatibility, mp, sm, ma, devRecon, cutover, decommission]: any = await Promise.all([
+        const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData]: any = await Promise.all([
           api(`/projects/${id}/compatibility/summary`),
           api(`/projects/${id}/medallion/plan?environment=DEV`),
           api(`/projects/${id}/semantics`),
@@ -395,6 +401,7 @@ export default function App() {
           api(`/projects/${id}/deployments/dev/reconciliation/latest`),
           api(`/projects/${id}/module/cutover`),
           api(`/projects/${id}/module/decommission`),
+          api(`/projects/${id}/prompt-migration/latest`).catch(() => ({ plan: null, execution: null })),
         ]);
         setCompat(compatibility);
         setMedallion(mp);
@@ -402,6 +409,8 @@ export default function App() {
         setMedArts(ma);
         setReconResult(devRecon);
         setWorkflowOps({ cutover, decommission });
+        if (promptData?.plan) setPromptPlan(promptData.plan);
+        if (promptData?.execution) setPromptExecution(promptData.execution);
       }
       if (page === "Users") setUsers(await api("/users"));
       if (page === "Administration") setDiag(await api("/system/diagnostics"));
@@ -457,6 +466,51 @@ export default function App() {
       return null;
     } finally {
       setBusy(false);
+    }
+  }
+  async function generatePromptPlan(pText?: string) {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const p = pText || promptText;
+      const res: any = await api(`/projects/${pid}/prompt-migration/plan`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: p }),
+      });
+      setPromptPlan(res);
+      if (res.status === "NEEDS_USER_INPUT") {
+        setMsg("Prerequisites required before migration planning can complete.");
+      } else {
+        setMsg("Prompt validated & migration plan generated.");
+      }
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function executePromptPlan() {
+    if (!pid || !promptPlan?.plan_id) return;
+    setBusy(true);
+    setPromptRunning(true);
+    setMsg("Executing governed migration pipeline...");
+    try {
+      const res: any = await api(`/projects/${pid}/prompt-migration/execute`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: promptPlan.plan_id,
+          overwrite_confirmed: promptPlan.impact?.requires_overwrite || false,
+        }),
+      });
+      setPromptExecution(res);
+      setMsg(res.status === "COMPLETED" ? "Governed migration executed successfully!" : `Migration status: ${res.status}`);
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setPromptRunning(false);
     }
   }
   async function viewDevLogs() {
@@ -1315,6 +1369,209 @@ export default function App() {
           )}
           {page === "Migration Workflow" && (
             <>
+              {/* Release 3: AI Prompt Migration Studio */}
+              <div className="prompt-studio">
+                <div className="prompt-studio-head">
+                  <div className="prompt-studio-title">
+                    <Sparkles size={20} color="#5b8cff" />
+                    <div>
+                      <h3>AI Prompt Migration Studio</h3>
+                      <p style={{ margin: 0, fontSize: 11, color: "#8fa3bf" }}>
+                        Enter natural language intent to automatically validate prerequisites, build impact plans, and execute governed end-to-end migrations.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="prompt-badge">
+                    <ShieldCheck size={12} /> Governed Execution
+                  </span>
+                </div>
+
+                <div className="prompt-input-row">
+                  <input
+                    type="text"
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    placeholder="e.g. Migrate MigrationDemo from SQL Server to DEV Databricks"
+                    disabled={busy || promptRunning}
+                  />
+                  <button
+                    className="primary-action"
+                    disabled={!pid || busy || promptRunning || !promptText.trim()}
+                    onClick={() => generatePromptPlan()}
+                  >
+                    <Command size={15} /> Generate Plan
+                  </button>
+                </div>
+
+                <div className="prompt-quick-chips">
+                  <span style={{ fontSize: 10, color: "#7b91b0", alignSelf: "center" }}>Quick templates:</span>
+                  {[
+                    "Migrate MigrationDemo from SQL Server to DEV Databricks",
+                    "Migrate MigrationDemo to DEV",
+                    "Load MigrationDemo into DEV Bronze",
+                  ].map((tpl) => (
+                    <button
+                      key={tpl}
+                      type="button"
+                      className="prompt-chip"
+                      disabled={busy || promptRunning}
+                      onClick={() => {
+                        setPromptText(tpl);
+                        generatePromptPlan(tpl);
+                      }}
+                    >
+                      {tpl}
+                    </button>
+                  ))}
+                </div>
+
+                {promptPlan && (
+                  <div className="prompt-plan-card">
+                    {promptPlan.status === "NEEDS_USER_INPUT" ? (
+                      <div className="notice" style={{ background: "#fff2f0", borderColor: "#ffccc7", color: "#a8071a" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, marginBottom: 4 }}>
+                          <ShieldAlert size={16} /> Prerequisites Required Before Planning
+                        </div>
+                        <ul style={{ margin: "4px 0 6px 18px", padding: 0, fontSize: 11 }}>
+                          {promptPlan.blockers?.map((b: string, idx: number) => <li key={idx}>{b}</li>)}
+                        </ul>
+                        {promptPlan.actionable_steps?.length > 0 && (
+                          <div style={{ fontSize: 11, color: "#595959", borderTop: "1px dashed #ffa39e", paddingTop: 4, marginTop: 4 }}>
+                            <b>Next Action:</b> {promptPlan.actionable_steps.join(" ")}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                          <div>
+                            <span style={{ fontSize: 9, color: "#8fa3bf", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800 }}>
+                              Governed Migration Plan
+                            </span>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
+                              Source: <code>{promptPlan.source?.database_name}</code> → Target: <code>{promptPlan.intent?.target_catalog}</code>
+                              <Badge s={promptPlan.status} />
+                            </div>
+                          </div>
+                          {promptPlan.status === "PENDING_APPROVAL" && (
+                            <button
+                              className="primary-action"
+                              style={{ background: "linear-gradient(135deg, #10b981, #059669)", borderColor: "transparent" }}
+                              disabled={busy || promptRunning}
+                              onClick={executePromptPlan}
+                            >
+                              <Play size={15} /> Approve & Execute Migration
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="prompt-impact-grid">
+                          <div className="prompt-impact-item">
+                            <span>Discovered Tables</span>
+                            <b>{promptPlan.impact?.table_count || 0}</b>
+                          </div>
+                          <div className="prompt-impact-item">
+                            <span>Estimated Volume</span>
+                            <b>{promptPlan.impact?.estimated_rows || 0} rows</b>
+                          </div>
+                          <div className="prompt-impact-item">
+                            <span>Risk Assessment</span>
+                            <b style={{ color: promptPlan.impact?.risk_level === "LOW" ? "#34d399" : "#fbbf24" }}>
+                              {promptPlan.impact?.risk_level || "LOW"}
+                            </b>
+                          </div>
+                          <div className="prompt-impact-item">
+                            <span>Target Medallion</span>
+                            <b style={{ fontSize: 12 }}>bronze, silver, gold</b>
+                          </div>
+                        </div>
+
+                        {promptPlan.stages?.length > 0 && (
+                          <div className="prompt-stages-list">
+                            {promptPlan.stages.map((st: any) => (
+                              <div key={st.stage} className="prompt-stage-pill">
+                                <b>{st.title}</b>
+                                <small>{st.description}</small>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {promptPlan.destinations?.length > 0 && (
+                          <details className="prompt-dest-table">
+                            <summary style={{ cursor: "pointer", fontSize: 11, color: "#9ec0ff", marginBottom: 6 }}>
+                              View explicit source-to-target mapping ({promptPlan.destinations.length} tables)
+                            </summary>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Source Object</th>
+                                  <th>Bronze Target</th>
+                                  <th>Silver Target</th>
+                                  <th>Gold Target</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {promptPlan.destinations.map((d: any) => (
+                                  <tr key={d.source_fqn}>
+                                    <td><code>{d.source_fqn}</code></td>
+                                    <td><code>{d.bronze}</code></td>
+                                    <td><code>{d.silver}</code></td>
+                                    <td><code>{d.gold}</code></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </details>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {promptExecution && (
+                  <div className="prompt-exec-card">
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800, color: "#059669" }}>
+                          Execution Run: <code>{promptExecution.run_id}</code>
+                        </span>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", display: "flex", alignItems: "center", gap: 8 }}>
+                          Overall Status: <Badge s={promptExecution.status} />
+                          {promptExecution.ended_at && (
+                            <small style={{ color: "#6b7280", fontWeight: 400 }}>
+                              Completed in DEV at {new Date(promptExecution.ended_at).toLocaleTimeString()}
+                            </small>
+                          )}
+                        </div>
+                      </div>
+                      {promptExecution.status === "COMPLETED" && (
+                        <button
+                          onClick={() => setPage("Deployments")}
+                          style={{ fontSize: 11, padding: "6px 10px" }}
+                        >
+                          View DEV Deployments <ChevronRight size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    {promptExecution.stages && (
+                      <div className="prompt-exec-stages">
+                        {Object.entries(promptExecution.stages).map(([k, v]: [string, any]) => (
+                          <div key={k} className="prompt-exec-step">
+                            <span style={{ display: "block", fontSize: 9, color: "#6b7280", textTransform: "uppercase" }}>{k}</span>
+                            <Badge s={v.status || "PASSED"} />
+                            {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
+                            {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
+                            {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="workflow-hero">
                 <div>
                   <div className="hero-kicker"><Workflow size={15} /> Guided migration journey</div>
