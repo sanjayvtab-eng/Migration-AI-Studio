@@ -157,8 +157,14 @@ class LocalAgent:
 
 def validate_url(url):
     parts = urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
-        raise ValueError("Connector requires an HTTPS application URL without embedded credentials or query parameters")
+    hostname = (parts.hostname or "").lower()
+    loopback = hostname in {"localhost", "127.0.0.1", "::1"}
+    secure_transport = parts.scheme == "https" or (parts.scheme == "http" and loopback)
+    if not secure_transport or not hostname or parts.username or parts.password or parts.query or parts.fragment:
+        raise ValueError(
+            "Connector requires HTTPS; HTTP is allowed only for localhost/127.0.0.1/::1 development URLs. "
+            "Embedded credentials and query parameters are not allowed"
+        )
     return url.rstrip("/") + "/api"
 
 

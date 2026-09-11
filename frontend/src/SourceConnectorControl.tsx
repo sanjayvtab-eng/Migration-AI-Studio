@@ -49,7 +49,9 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
   const [trustCert, setTrustCert] = useState(true);
   const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'";
   const certificateOption = trustCert ? " --trust-server-certificate" : "";
-  const command = `python scripts/local_connector.py --url ${quote(window.location.origin)} --source ${quote(source.id)} --server ${quote(source.server_name)} --database ${quote(source.database_name)} --driver ${quote(driver)}${certificateOption}`;
+  const configuredApi = import.meta.env.VITE_API_URL || "/api";
+  const connectorApplicationUrl = new URL(configuredApi, window.location.origin).origin;
+  const command = `python scripts/local_connector.py --url ${quote(connectorApplicationUrl)} --source ${quote(source.id)} --server ${quote(source.server_name)} --database ${quote(source.database_name)} --driver ${quote(driver)}${certificateOption}`;
 
   return <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
     <span>{status === "DIRECT" ? "Direct connection" : `Connector: ${status.toLowerCase()}`}</span>
@@ -58,7 +60,7 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
       style={{ border: "1px solid #d6dce5", borderRadius: 8, padding: 0, width: "min(680px, 90vw)", maxHeight: "85vh" }}>
       <div style={{ background: "white", color: "#172b4d", padding: 24, overflowY: "auto", whiteSpace: "normal" }}>
         <h2>Local SQL Server connector</h2>
-        <p>Run the connector on a machine that can access {source.server_name}. It connects outward to this application over HTTPS. SQL credentials remain local.</p>
+        <p>Run the connector on a machine that can access {source.server_name}. It connects outward over HTTPS in hosted environments; loopback HTTP is allowed only for local development. SQL credentials remain local.</p>
         <p>Status: <strong>{status}</strong></p>
         {error && <p role="alert">{error}</p>}
         {registration ? <>

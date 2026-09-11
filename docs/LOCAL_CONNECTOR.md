@@ -4,6 +4,12 @@ The hosted backend cannot reach a laptop SQL Server by its Windows machine name.
 This connector polls the application over outbound HTTPS and performs source reads
 locally. It has no inbound listening port. Databricks writes still run in the backend.
 
+For local development, HTTP is accepted only for the exact loopback hosts
+`localhost`, `127.0.0.1`, and `::1`. The Sources dialog derives the connector URL
+from `VITE_API_URL`, so a frontend configured with
+`VITE_API_URL=http://127.0.0.1:8010/api` displays the backend URL automatically.
+Every non-loopback deployment continues to require HTTPS.
+
 ## Deploy the application update
 
 Deploy the backend and frontend from the same connector-enabled revision. New

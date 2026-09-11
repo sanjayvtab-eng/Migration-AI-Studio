@@ -132,6 +132,29 @@ def test_local_agent_rejects_arbitrary_operations_and_wrong_source():
         agent_module.validate_url("https://user:secret@example.com")
 
 
+@pytest.mark.parametrize("url", [
+    "http://localhost:8010",
+    "http://127.0.0.1:8010",
+    "http://[::1]:8010",
+    "https://migration.example.com",
+])
+def test_connector_url_accepts_https_and_loopback_http(url):
+    assert agent_module.validate_url(url)==url.rstrip("/")+"/api"
+
+
+@pytest.mark.parametrize("url", [
+    "http://example.com",
+    "http://localhost.example.com:8010",
+    "http://0.0.0.0:8010",
+    "ftp://localhost:8010",
+    "http://user:secret@localhost:8010",
+    "http://localhost:8010?token=secret",
+])
+def test_connector_url_rejects_remote_http_and_unsafe_urls(url):
+    with pytest.raises(ValueError,match="HTTPS"):
+        agent_module.validate_url(url)
+
+
 def test_local_cursor_batches_do_not_skip_rows(monkeypatch):
     agent = agent_module.LocalAgent("SRC", "PC", "Demo", "secret")
     rows = iter([(Decimal("1.25"),), (Decimal("2.50"),), None])
