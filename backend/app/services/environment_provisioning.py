@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import contextmanager
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -136,6 +137,46 @@ def _execute(row: MigrationDatabricksConfiguration, statement: str, *, safe_retr
         # Connector/provider messages are useful, but a provider must never be able
         # to reflect the configured credential into an API response or audit row.
         message=str(exc).replace(token,"[REDACTED]")
+        raise RuntimeError(message or "Databricks request failed") from None
+
+
+def project_execute(
+    db: Session, project_id: str, statement: str, *, safe_retry: bool = True
+):
+    """Execute SQL with the project's tested Databricks configuration.
+
+    Release 2 callers must not fall back to process-wide Databricks coordinates:
+    doing so could send a client's data to a different workspace.
+    """
+    row = get_configuration(db, project_id)
+    if not row:
+        raise ValueError("Save the project Databricks configuration first")
+    if row.status != "READY":
+        raise ValueError("Test the project Databricks connection before data ingestion")
+    return _execute(row, statement, safe_retry=safe_retry)
+
+
+@contextmanager
+def project_connection(db: Session, project_id: str):
+    """Open a project-scoped Databricks SQL connection without exposing its token."""
+    row = get_configuration(db, project_id)
+    if not row:
+        raise ValueError("Save the project Databricks configuration first")
+    if row.status != "READY":
+        raise ValueError("Test the project Databricks connection before data ingestion")
+    token = _token(row)
+    if not token:
+        raise RuntimeError(f"Databricks token secret {row.token_env_key} is not configured")
+    try:
+        from databricks import sql
+        with sql.connect(
+            server_hostname=row.workspace_host,
+            http_path=row.http_path,
+            access_token=token,
+        ) as connection:
+            yield connection
+    except Exception as exc:
+        message = str(exc).replace(token, "[REDACTED]")
         raise RuntimeError(message or "Databricks request failed") from None
 
 

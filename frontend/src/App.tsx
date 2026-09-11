@@ -235,12 +235,17 @@ export default function App() {
     [discoveryResult, setDiscoveryResult] = useState<any>(null);
   const [environmentConfig, setEnvironmentConfig] = useState<any>(null),
     [environmentPlan, setEnvironmentPlan] = useState<any>(null),
+    [bronzePreflight, setBronzePreflight] = useState<any>(null),
+    [bronzeRun, setBronzeRun] = useState<any>(null),
     [environmentForm, setEnvironmentForm] = useState({
       workspace_host: "",
       http_path: "",
       token_env_key: "DATABRICKS_TOKEN",
       catalog_prefix: "migration",
     });
+  const [bronzeLoadMode, setBronzeLoadMode] = useState("FULL_LOAD"),
+    [bronzeBatchSize, setBronzeBatchSize] = useState(1000),
+    [bronzeMaxRows, setBronzeMaxRows] = useState("");
   const [deployment, setDeployment] = useState<any>({
       environment: "DEV",
       status: "NOT_STARTED",
@@ -401,12 +406,14 @@ export default function App() {
       if (page === "Users") setUsers(await api("/users"));
       if (page === "Administration") setDiag(await api("/system/diagnostics"));
       if (page === "Environment Setup" && id) {
-        const [configuration, plan]: any = await Promise.all([
+        const [configuration, plan, ingestion]: any = await Promise.all([
           api(`/projects/${id}/databricks/configuration`),
           api(`/projects/${id}/environments/dev/plan`),
+          api(`/projects/${id}/ingestion/dev/latest`),
         ]);
         setEnvironmentConfig(configuration);
         setEnvironmentPlan(plan);
+        setBronzeRun(ingestion);
         if (configuration.configured) {
           setEnvironmentForm({
             workspace_host: configuration.workspace_host || "",
@@ -488,6 +495,40 @@ export default function App() {
       );
       setReconResult(result);
       setGateResult(null);
+      return result;
+    });
+  }
+  async function runBronzePreflight() {
+    if (!pid) return;
+    await action(async () => {
+      const result: any = await api(`/projects/${pid}/ingestion/dev/preflight`);
+      setBronzePreflight(result);
+      return result;
+    });
+  }
+  async function runBronzeIngestion() {
+    if (!pid || environmentPlan?.status !== "PROVISIONED" || bronzePreflight?.status !== "PASSED") return;
+    const hasExistingTargets = (bronzePreflight.tables || []).some(
+      (table: any) => table.target_rows !== null && table.target_rows !== undefined,
+    );
+    let replaceExistingData = false;
+    if (bronzeLoadMode === "FULL_LOAD" && hasExistingTargets) {
+      replaceExistingData = confirm(
+        "Existing DEV Bronze data was detected. Replace those tables using governed staging-table loads? Cancel leaves all existing data unchanged.",
+      );
+      if (!replaceExistingData) return;
+    }
+    await action(async () => {
+      const result: any = await api(`/projects/${pid}/ingestion/dev/run`, {
+        method: "POST",
+        body: JSON.stringify({
+          load_mode: bronzeLoadMode,
+          batch_size: bronzeBatchSize,
+          max_rows: bronzeMaxRows ? Number(bronzeMaxRows) : null,
+          replace_existing_data: replaceExistingData,
+        }),
+      });
+      setBronzeRun(result);
       return result;
     });
   }
@@ -4820,6 +4861,101 @@ export default function App() {
                       )}><ServerCog size={15}/> Provision DEV</button>
                     </div>
                   </>
+                )}
+              </Panel>
+              <Panel
+                title="Release 2 · SQL Server to DEV Bronze ingestion"
+                actions={
+                  <button
+                    disabled={!pid || busy || environmentPlan?.status !== "PROVISIONED"}
+                    onClick={runBronzePreflight}
+                  >
+                    <Stethoscope size={15}/> Run ingestion preflight
+                  </button>
+                }
+              >
+                <p className="section-caption">
+                  Stream discovered SQL Server tables into <code>{environmentPlan?.catalog_name || "migration_dev"}.bronze</code> using the project-scoped Databricks connection.
+                </p>
+                <div className="deploy-config">
+                  <label>
+                    Load mode
+                    <select value={bronzeLoadMode} onChange={(event) => setBronzeLoadMode(event.target.value)}>
+                      <option>FULL_LOAD</option>
+                      <option>APPEND</option>
+                    </select>
+                  </label>
+                  <label>
+                    Batch size
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      value={bronzeBatchSize}
+                      onChange={(event) => setBronzeBatchSize(Math.min(10000, Math.max(1, Number(event.target.value) || 1)))}
+                    />
+                  </label>
+                  <label>
+                    Max rows (test only)
+                    <input
+                      type="number"
+                      min="1"
+                      value={bronzeMaxRows}
+                      onChange={(event) => setBronzeMaxRows(event.target.value)}
+                      placeholder="Unlimited"
+                    />
+                  </label>
+                  <button
+                    className="primary-action"
+                    disabled={busy || environmentPlan?.status !== "PROVISIONED" || bronzePreflight?.status !== "PASSED"}
+                    onClick={runBronzeIngestion}
+                  >
+                    <Play size={15}/> Start DEV Bronze ingestion
+                  </button>
+                </div>
+                {environmentPlan?.status !== "PROVISIONED" && (
+                  <div className="notice">Provision the governed DEV environment before running ingestion.</div>
+                )}
+                {bronzePreflight && (
+                  <div className="subsection">
+                    <h4>Latest ingestion preflight</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={bronzePreflight.status}/></div>
+                      <div className="summary-stat"><span>Tables</span><b>{bronzePreflight.table_count || 0}</b></div>
+                      <div className="summary-stat"><span>Catalog</span><b>{bronzePreflight.catalog || "-"}</b></div>
+                      <div className="summary-stat"><span>Blockers</span><b>{bronzePreflight.blockers?.length || 0}</b></div>
+                    </div>
+                    {bronzePreflight.blockers?.length > 0 && (
+                      <div className="notice">{bronzePreflight.blockers.join(" · ")}</div>
+                    )}
+                  </div>
+                )}
+                {bronzeRun?.run_id && (
+                  <div className="subsection">
+                    <h4>Latest Bronze ingestion run</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={bronzeRun.status}/></div>
+                      <div className="summary-stat"><span>Run ID</span><b>{bronzeRun.run_id}</b></div>
+                      <div className="summary-stat"><span>Passed</span><b>{bronzeRun.passed || 0}</b></div>
+                      <div className="summary-stat"><span>Failed</span><b>{bronzeRun.failed || 0}</b></div>
+                    </div>
+                    {bronzeRun.results?.length > 0 && (
+                      <table>
+                        <thead><tr><th>Source</th><th>Target</th><th>Status</th><th>Rows</th><th>Details</th></tr></thead>
+                        <tbody>
+                          {bronzeRun.results.map((item:any,index:number) => (
+                            <tr key={`${item.object_id || index}-${index}`}>
+                              <td>{item.source || "-"}</td>
+                              <td><code>{item.target_fqn || "-"}</code></td>
+                              <td><Badge s={item.status}/></td>
+                              <td>{item.rows_loaded ?? "-"}</td>
+                              <td>{item.error || item.load_mode || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
                 )}
               </Panel>
             </>

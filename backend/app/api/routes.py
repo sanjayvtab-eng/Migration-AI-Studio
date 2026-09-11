@@ -14,6 +14,7 @@ from app.services.source_connector import connector_info, request as connector_r
 from app.core.config import get_settings
 from app.services.databricks_client import execute_sql
 from app.services import environment_provisioning as environment_service
+from app.services import bronze_ingestion
 from app.services.type_compatibility import compatibility_catalog, transport_contract, transport_summary
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
@@ -105,6 +106,13 @@ class DatabricksConfigurationIn(BaseModel):
     http_path: str
     token_env_key: str = "DATABRICKS_TOKEN"
     catalog_prefix: str = "migration"
+
+class BronzeIngestionIn(BaseModel):
+    source_id: str|None=None
+    load_mode: str="FULL_LOAD"
+    batch_size: int=1000
+    max_rows: int|None=None
+    replace_existing_data: bool=False
 
 
 
@@ -246,6 +254,22 @@ def dev_environment_approve(project_id:str,db:Session=Depends(get_db),user=Depen
 def dev_environment_provision(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
     actor=_admin_actor(user)
     try: return environment_service.provision_dev(db,project_id,actor)
+    except Exception as e: _environment_error(e)
+
+@router.get("/projects/{project_id}/ingestion/dev/preflight")
+def dev_bronze_ingestion_preflight(project_id:str,source_id:str|None=None,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return bronze_ingestion.preflight(db,project_id,source_id=source_id)
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/ingestion/dev/run")
+def dev_bronze_ingestion_run(project_id:str,data:BronzeIngestionIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return bronze_ingestion.run(db,project_id,actor=actor,**data.model_dump())
+    except Exception as e: _environment_error(e)
+
+@router.get("/projects/{project_id}/ingestion/dev/latest")
+def dev_bronze_ingestion_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return bronze_ingestion.latest(db,project_id)
     except Exception as e: _environment_error(e)
 
 
