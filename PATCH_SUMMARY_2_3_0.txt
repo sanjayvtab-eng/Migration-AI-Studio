@@ -1,0 +1,11 @@
+Factory 2.3.0 SEMANTIC_MEDALLION_FACTORY
+
+Upgrade focus:
+- True multi-stage Source -> Bronze -> Silver -> Gold graph
+- Fact/dimension semantic inference
+- Downstream consumer analysis
+- Gold generation from approved explicit business semantics
+- Stage artifact versioning/review/deployment governance
+
+The upgrade patch intentionally excludes .env, migration_factory.db, .venv and node_modules.
+Existing project/history/Ollama configuration can therefore be preserved when the patch is merged over 2.2.0/2.1.x.

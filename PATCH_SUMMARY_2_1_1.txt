@@ -1,0 +1,20 @@
+Factory 2.1.1 RUNTIME_REMEDIATION
+
+Fixes
+- Runtime/deployment issues are now included in the governed remediation plan using their classified error_category/error_code.
+- Deterministic LOAD compatibility failures route to COMPATIBILITY_ENGINE instead of being incorrectly ignored by the AI scanner.
+- Semantic deployment failures such as DATABRICKS_SYNTAX can route to deterministic-then-Ollama remediation.
+- Binary transport is hardened for SQL Server binary/varbinary/image/timestamp/rowversion using explicit VARBINARY -> hexadecimal source projection and Databricks unhex(?).
+- Binary normalization accepts bounded connector representations (raw bytes, 0x hex, bytes-literal strings, escaped \xNN, and pair-delimited hex) while still rejecting arbitrary text to prevent corruption.
+- The exact non-hex binary transport error is classified as LOAD / BINARY_TRANSPORT_INVALID_HEX with deterministic remediation available.
+- Safe repair loop reports RETRY_READY for runtime compatibility repairs. It does not rewrite business SQL with AI and does not auto-deploy; Resume Failed Run remains governed.
+- Ollama Test status persists in the UI after the probe.
+- Windows backend launcher no longer uses uvicorn --reload, avoiding orphan reload workers/SQLite locks.
+- Local frontend CORS supports localhost/127.0.0.1 ports 5173-5175.
+- Ollama configuration script deduplicates managed LLM settings in .env.
+
+Validation
+- Python compile validation passed.
+- Backend test suite: 59 passed.
+- Frontend production build could not run in the packaging sandbox because node_modules are intentionally excluded and package installation was unavailable. Source changes were limited to existing React/TypeScript patterns.
+- Live SQL Server -> Databricks execution must be validated in the user's connected environment.

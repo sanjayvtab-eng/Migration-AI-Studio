@@ -1,0 +1,76 @@
+services:
+  - type: web
+    name: databricks-migration-factory
+    runtime: docker
+    plan: starter
+    region: singapore
+    branch: codex/single-artifact-repair
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    disk:
+      name: migration-factory-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ENVIRONMENT
+        value: PROD
+      - key: DATABASE_URL
+        value: sqlite:////var/data/migration_factory.db
+      - key: JWT_SECRET
+        generateValue: true
+      - key: BOOTSTRAP_ADMIN_USERNAME
+        sync: false
+      - key: BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://databricks-migration-factory.onrender.com
+      - key: SQLSERVER_DRIVER
+        value: ODBC Driver 18 for SQL Server
+      - key: SQLSERVER_HOST
+        sync: false
+      - key: SQLSERVER_DATABASE
+        sync: false
+      - key: SQLSERVER_USERNAME
+        sync: false
+      - key: SQLSERVER_PASSWORD
+        sync: false
+      - key: DATABRICKS_HOST
+        sync: false
+      - key: DATABRICKS_HTTP_PATH
+        sync: false
+      - key: DATABRICKS_TOKEN
+        sync: false
+      - key: DEV_CATALOG
+        value: migration_dev
+      - key: TEST_CATALOG
+        value: migration_test
+      - key: UAT_CATALOG
+        value: migration_uat
+      - key: PROD_CATALOG
+        value: migration_prod
+      - key: CONTROL_CATALOG
+        value: migration_control
+      - key: CONTROL_SCHEMA
+        value: migration_control
+      - key: LLM_ENABLED
+        value: "true"
+      - key: LLM_PROVIDER
+        value: GEMINI
+      - key: LLM_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gemini-2.5-flash
+      - key: DEPLOYMENT_POLICY
+        value: FAIL_ON_SCHEMA_DRIFT
+      - key: DEV_SCHEMA_POLICY
+        value: REPLACE_CHANGED
+      - key: BATCH_SIZE
+        value: "10000"
+      - key: PARALLELISM
+        value: "4"
+      - key: LOAD_MODE
+        value: FULL_LOAD

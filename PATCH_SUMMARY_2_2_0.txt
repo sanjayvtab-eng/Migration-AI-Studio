@@ -1,0 +1,25 @@
+2.2.0 DYNAMIC_COMPATIBILITY_FRAMEWORK
+
+Purpose
+-------
+Generalize SQL Server -> Databricks runtime datatype/connector handling so migration behavior is selected from metadata and runtime shape rather than sample object names.
+
+Key changes
+-----------
+1. Central adapter registry for major SQL Server type families.
+2. Binary/rowversion transport: SQL Server style-2 hex -> validated canonical hex -> Databricks unhex(?).
+3. Bounded support for common lossless connector representations (bytes, memoryview, bytearray/list/tuple, tobytes wrappers, SQL/Python/escaped hex text).
+4. 8-byte rowversion/timestamp validation.
+5. Deterministic boolean/integer/float/decimal/UUID/date/datetime validation before Databricks writes.
+6. Structured transport errors with metadata/runtime shape but no customer values in logs.
+7. Unknown/user-defined types use governed text preservation + review instead of silent guessing.
+8. Discovery preserves declared/user-defined type metadata while using the underlying system type for adapters where available.
+9. Project Compatibility API/UI shows measured deterministic coverage and review-required columns.
+10. Ollama remains semantic fallback only; runtime type transport is deterministic.
+
+Validation
+----------
+70 backend/API/regression tests passed.
+Python compile validation passed.
+Frontend TypeScript transpile/syntax validation passed.
+Live SQL Server -> Databricks E2E must be run in the user's connected environment.
