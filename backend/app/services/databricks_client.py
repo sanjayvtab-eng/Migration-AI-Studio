@@ -22,6 +22,30 @@ def execute_sql(statement: str, safe_retry: bool=True):
             time.sleep(delays[attempt])
 
 
+def execute_sql_with_credentials(
+    statement: str,
+    *,
+    server_hostname: str,
+    http_path: str,
+    access_token: str,
+    safe_retry: bool = True,
+):
+    """Execute project-scoped SQL without changing the legacy global connector."""
+    from databricks import sql
+    delays=[2,4,8,16]
+    for attempt in range(len(delays)+1):
+        try:
+            with sql.connect(server_hostname=server_hostname,http_path=http_path,access_token=access_token) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(statement)
+                    try: return cur.fetchall()
+                    except Exception: return []
+        except Exception as e:
+            msg=str(e).lower(); transient=any(x in msg for x in TRANSIENT)
+            if not (safe_retry and transient and attempt < len(delays)): raise
+            time.sleep(delays[attempt])
+
+
 def databricks_connection():
     s=get_settings()
     if not all([s.databricks_host,s.databricks_http_path,s.databricks_token]):

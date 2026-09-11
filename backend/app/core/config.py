@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     databricks_host: str | None = None
     databricks_http_path: str | None = None
     databricks_token: str | None = None
+    databricks_environment_provisioning_enabled: bool = False
     dev_catalog: str = "migration_dev"
     test_catalog: str = "migration_test"
     uat_catalog: str = "migration_uat"

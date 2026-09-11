@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -13,6 +13,7 @@ from app.services.discovery import discover_sqlserver, test_sqlserver_connection
 from app.services.source_connector import connector_info, request as connector_request
 from app.core.config import get_settings
 from app.services.databricks_client import execute_sql
+from app.services import environment_provisioning as environment_service
 from app.services.type_compatibility import compatibility_catalog, transport_contract, transport_summary
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
@@ -98,6 +99,13 @@ class DeployDevIn(BaseModel):
     load_mode: str|None=None
     replace_existing_data: bool=False
 
+class DatabricksConfigurationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace_host: str
+    http_path: str
+    token_env_key: str = "DATABRICKS_TOKEN"
+    catalog_prefix: str = "migration"
+
 
 
 def _decode_payload_json(value: str | None) -> dict:
@@ -154,6 +162,17 @@ def auth(authorization: str|None=Header(default=None)):
     try: return decode_token(authorization.split(" ",1)[1])
     except Exception: raise HTTPException(401,"Invalid or expired token")
 
+def _admin_actor(user: dict) -> str:
+    if str(user.get("role","")).upper()!="ADMIN":
+        raise HTTPException(403,"Administrator role is required")
+    return str(user.get("sub") or "admin")
+
+def _environment_error(exc: Exception):
+    if isinstance(exc,LookupError): raise HTTPException(404,str(exc))
+    if isinstance(exc,PermissionError): raise HTTPException(409,str(exc))
+    if isinstance(exc,(ValueError,RuntimeError)): raise HTTPException(400,str(exc))
+    raise exc
+
 @router.get("/health")
 def health(): return {"status":"ok","service":"migration-factory"}
 
@@ -180,6 +199,54 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),_=Depends(auth)):
 @router.get("/projects")
 def projects_list(db:Session=Depends(get_db),_=Depends(auth)):
     return [{"id":p.id,"name":p.name,"status":p.status} for p in db.scalars(select(MigrationProject).order_by(MigrationProject.created_at.desc())).all()]
+
+@router.get("/projects/{project_id}/databricks/configuration")
+def project_databricks_configuration(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return environment_service.configuration_view(environment_service.get_configuration(db,project_id))
+    except Exception as e: _environment_error(e)
+
+@router.put("/projects/{project_id}/databricks/configuration")
+def project_databricks_configuration_save(project_id:str,data:DatabricksConfigurationIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try:
+        row=environment_service.save_configuration(db,project_id,actor=actor,**data.model_dump())
+        return environment_service.configuration_view(row)
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/databricks/connection-test")
+def project_databricks_connection_test(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return environment_service.test_connection(db,project_id,actor)
+    except Exception as e: _environment_error(e)
+
+@router.get("/projects/{project_id}/environments/dev/plan")
+def dev_environment_plan_get(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return environment_service.plan_view(environment_service.get_dev_plan(db,project_id))
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/environments/dev/plan")
+def dev_environment_plan_create(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return environment_service.plan_view(environment_service.create_dev_plan(db,project_id,actor))
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/environments/dev/preflight")
+def dev_environment_preflight(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return environment_service.plan_view(environment_service.preflight_dev_plan(db,project_id,actor))
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/environments/dev/approve")
+def dev_environment_approve(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return environment_service.plan_view(environment_service.approve_dev_plan(db,project_id,actor))
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/environments/dev/provision")
+def dev_environment_provision(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return environment_service.provision_dev(db,project_id,actor)
+    except Exception as e: _environment_error(e)
 
 
 @router.get("/projects/{project_id}/sources")

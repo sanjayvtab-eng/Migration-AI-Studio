@@ -118,6 +118,7 @@ const icons: any = {
   Reviews: ClipboardCheck,
   Governance: ShieldCheck,
   Administration: Settings,
+  "Environment Setup": ServerCog,
   Discovery: PlugZap,
 };
 const moduleMap: any = {
@@ -232,6 +233,14 @@ export default function App() {
     [users, setUsers] = useState<any[]>([]),
     [diag, setDiag] = useState<any>(null),
     [discoveryResult, setDiscoveryResult] = useState<any>(null);
+  const [environmentConfig, setEnvironmentConfig] = useState<any>(null),
+    [environmentPlan, setEnvironmentPlan] = useState<any>(null),
+    [environmentForm, setEnvironmentForm] = useState({
+      workspace_host: "",
+      http_path: "",
+      token_env_key: "DATABRICKS_TOKEN",
+      catalog_prefix: "migration",
+    });
   const [deployment, setDeployment] = useState<any>({
       environment: "DEV",
       status: "NOT_STARTED",
@@ -391,6 +400,22 @@ export default function App() {
       }
       if (page === "Users") setUsers(await api("/users"));
       if (page === "Administration") setDiag(await api("/system/diagnostics"));
+      if (page === "Environment Setup" && id) {
+        const [configuration, plan]: any = await Promise.all([
+          api(`/projects/${id}/databricks/configuration`),
+          api(`/projects/${id}/environments/dev/plan`),
+        ]);
+        setEnvironmentConfig(configuration);
+        setEnvironmentPlan(plan);
+        if (configuration.configured) {
+          setEnvironmentForm({
+            workspace_host: configuration.workspace_host || "",
+            http_path: configuration.http_path || "",
+            token_env_key: configuration.token_env_key || "DATABRICKS_TOKEN",
+            catalog_prefix: configuration.catalog_prefix || "migration",
+          });
+        }
+      }
     } catch (e: any) {
       if (String(e.message).includes("Invalid or expired token")) {
         localStorage.removeItem("mf_token");
@@ -1112,7 +1137,7 @@ export default function App() {
   const navGroups = [
     {
       label: "START & SETUP",
-      items: ["Migration Workflow", "Projects", "Sources"],
+      items: ["Migration Workflow", "Projects", "Sources", "Environment Setup"],
     },
     {
       label: "DISCOVER & DESIGN",
@@ -4718,6 +4743,86 @@ export default function App() {
                 <Empty text="No users." />
               )}
             </Panel>
+          )}
+          {page === "Environment Setup" && (
+            <>
+              <Panel title="Client Databricks configuration">
+                <div className={`notice ${environmentConfig?.feature_enabled ? "ok" : ""}`}>
+                  {environmentConfig?.feature_enabled
+                    ? "DEV environment provisioning is enabled. TEST, UAT and PROD remain outside this release scope."
+                    : "Preview and preflight are available, but provisioning is disabled until DATABRICKS_ENVIRONMENT_PROVISIONING_ENABLED=true is configured on the backend."}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:12}}>
+                  {[
+                    ["workspace_host","Workspace host","dbc-example.cloud.databricks.com"],
+                    ["http_path","SQL warehouse HTTP path","/sql/1.0/warehouses/..."],
+                    ["token_env_key","Token secret reference","CLIENT_DATABRICKS_TOKEN"],
+                    ["catalog_prefix","Catalog prefix","migration"],
+                  ].map(([key,label,placeholder]) => (
+                    <label key={key} style={{display:"grid",gap:6,fontSize:11,color:"#65738a"}}>
+                      <b>{label}</b>
+                      <input
+                        value={(environmentForm as any)[key]}
+                        placeholder={placeholder}
+                        onChange={(e) => setEnvironmentForm({...environmentForm,[key]:e.target.value})}
+                        style={{border:"1px solid #d8e0ea",borderRadius:10,padding:"10px 12px"}}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+                  <button disabled={!pid || busy} onClick={() => action(() => api(`/projects/${pid}/databricks/configuration`,{
+                    method:"PUT",body:JSON.stringify(environmentForm),
+                  }))}><ShieldCheck size={15}/> Save configuration</button>
+                  <button disabled={!pid || busy || !environmentConfig?.configured} onClick={() => action(() =>
+                    api(`/projects/${pid}/databricks/connection-test`,{method:"POST"})
+                  )}><PlugZap size={15}/> Test connection</button>
+                </div>
+                {environmentConfig?.configured && (
+                  <div className="subsection">
+                    <b>Security status</b>
+                    <p style={{fontSize:11,color:"#6f7e94"}}>
+                      Secret reference: <code>{environmentConfig.token_env_key}</code> · Secret configured: {environmentConfig.token_configured ? "Yes" : "No"} · Connection: {environmentConfig.status}
+                    </p>
+                  </div>
+                )}
+              </Panel>
+              <Panel title="Governed DEV environment plan" actions={
+                <button disabled={!pid || busy || !environmentConfig?.configured} onClick={() => action(() =>
+                  api(`/projects/${pid}/environments/dev/plan`,{method:"POST"})
+                )}><Plus size={15}/> Create DEV plan</button>
+              }>
+                {!environmentPlan?.exists ? <Empty text="Save the Databricks configuration, then create the DEV environment plan." /> : (
+                  <>
+                    <div className="cards">
+                      <Card n={1} t="Environment: DEV" />
+                      <Card n={environmentPlan.schemas?.length || 0} t="Managed schemas" />
+                      <Card n={environmentPlan.preflight?.destructive_operations || 0} t="Destructive operations" />
+                    </div>
+                    <div className="subsection">
+                      <p style={{fontSize:11}}>Catalog: <code>{environmentPlan.catalog_name}</code> · Status: <Badge s={environmentPlan.status}/></p>
+                      <table>
+                        <thead><tr><th>Planned operation</th><th>Preflight action</th></tr></thead>
+                        <tbody>{(environmentPlan.operations || []).map((operation:string,index:number) => (
+                          <tr key={operation}><td><code>{operation}</code></td><td>{index===0 ? environmentPlan.preflight?.catalog?.action || "NOT_RUN" : environmentPlan.preflight?.schemas?.[index-1]?.action || "NOT_RUN"}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                    <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+                      <button disabled={busy || environmentConfig?.status!=="READY"} onClick={() => action(() =>
+                        api(`/projects/${pid}/environments/dev/preflight`,{method:"POST"})
+                      )}><Stethoscope size={15}/> Run preflight</button>
+                      <button disabled={busy || environmentPlan.status!=="PREFLIGHT_PASSED"} onClick={() => action(() =>
+                        api(`/projects/${pid}/environments/dev/approve`,{method:"POST"})
+                      )}><FileCheck2 size={15}/> Approve plan</button>
+                      <button disabled={busy || environmentPlan.status!=="APPROVED" || !environmentConfig?.feature_enabled} onClick={() => action(() =>
+                        api(`/projects/${pid}/environments/dev/provision`,{method:"POST"})
+                      )}><ServerCog size={15}/> Provision DEV</button>
+                    </div>
+                  </>
+                )}
+              </Panel>
+            </>
           )}
           {page === "Administration" && (
             <Panel

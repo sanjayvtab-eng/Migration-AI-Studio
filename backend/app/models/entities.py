@@ -14,6 +14,35 @@ class MigrationProject(Base):
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+class MigrationDatabricksConfiguration(Base, ProjectScoped):
+    """Project-scoped workspace coordinates; secrets stay in the runtime secret store."""
+    __tablename__ = "migration_databricks_configuration"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_host: Mapped[str] = mapped_column(String(512))
+    http_path: Mapped[str] = mapped_column(String(512))
+    token_env_key: Mapped[str] = mapped_column(String(255), default="DATABRICKS_TOKEN")
+    catalog_prefix: Mapped[str] = mapped_column(String(255), default="migration")
+    status: Mapped[str] = mapped_column(String(32), default="NOT_TESTED")
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("project_id", name="uq_databricks_config_project"),)
+
+class MigrationEnvironmentPlan(Base, ProjectScoped):
+    __tablename__ = "migration_environment_plan"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(16), index=True)
+    catalog_name: Mapped[str] = mapped_column(String(255))
+    schemas_json: Mapped[str] = mapped_column(Text, default='["bronze","silver","gold"]')
+    status: Mapped[str] = mapped_column(String(32), default="DRAFT", index=True)
+    preflight_json: Mapped[str] = mapped_column(Text, default="{}")
+    approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    provisioned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("project_id", "environment", name="uq_environment_plan_scope"),)
+
 class MigrationSource(Base, ProjectScoped):
     __tablename__ = "migration_source"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
