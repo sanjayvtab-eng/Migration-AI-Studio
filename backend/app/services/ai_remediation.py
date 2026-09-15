@@ -630,7 +630,22 @@ def _find_top_level_keyword(value: str, keyword: str) -> int:
     return -1
 
 
-def _rewrite_full_refresh_delete_insert(body: str) -> tuple[str, bool]:
+def _mapped_layer_table_target(mapping: MigrationMapping, source_target: str) -> str | None:
+    """Place a procedure-owned full-refresh output beside the procedure artifact."""
+    procedure_parts = re.findall(r"`([^`]+)`", mapping.target_fqn or "")
+    if len(procedure_parts) < 3:
+        return None
+    source_parts = re.findall(r"`([^`]+)`", source_target or "")
+    leaf = source_parts[-1] if source_parts else source_target.rsplit(".", 1)[-1].strip().strip("[]`")
+    if not leaf or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", leaf):
+        return None
+    escaped_leaf = leaf.replace("`", "``")
+    return f"`{procedure_parts[0]}`.`{procedure_parts[1]}`.`{escaped_leaf}`"
+
+
+def _rewrite_full_refresh_delete_insert(
+    body: str, *, output_mapping: MigrationMapping | None = None
+) -> tuple[str, bool]:
     """Convert an unconditional DELETE + INSERT/SELECT reload to atomic CTAS.
 
     The rewrite is deliberately narrow: the deleted and inserted target must be
@@ -667,8 +682,13 @@ def _rewrite_full_refresh_delete_insert(body: str) -> tuple[str, bool]:
         projected.append(f"        {expression.strip()} AS `{clean_column}`")
 
     from_tail = select_tail[from_offset:].strip().rstrip(";")
+    output_target = (
+        _mapped_layer_table_target(output_mapping, insert_target)
+        if output_mapping is not None
+        else None
+    ) or insert_target.strip()
     rewritten = (
-        f"CREATE OR REPLACE TABLE {insert_target.strip()} AS\n"
+        f"CREATE OR REPLACE TABLE {output_target} AS\n"
         "SELECT\n"
         + ",\n".join(projected)
         + f"\n{from_tail};"
@@ -696,7 +716,9 @@ def _deterministic_procedure_remediation(
     clean_body = re.sub(r"(?is)\bBEGIN\s+CATCH\b[\s\S]*?\bEND\s+CATCH\b\s*;?", "", clean_body)
     clean_body = clean_body.strip()
 
-    clean_body, full_refresh_rewritten = _rewrite_full_refresh_delete_insert(clean_body)
+    clean_body, full_refresh_rewritten = _rewrite_full_refresh_delete_insert(
+        clean_body, output_mapping=m
+    )
 
     if not clean_body or any(x in clean_body.lower() for x in ("goto ", "waitfor ", "sp_executesql")):
         return None
