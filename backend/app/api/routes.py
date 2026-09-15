@@ -16,6 +16,7 @@ from app.services.databricks_client import execute_sql
 from app.services import environment_provisioning as environment_service
 from app.services import bronze_ingestion
 from app.services import prompt_orchestration
+from app.services import prompt_promotion
 from app.services.type_compatibility import compatibility_catalog, transport_contract, transport_summary
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
@@ -122,6 +123,13 @@ class PromptPlanIn(BaseModel):
 class PromptExecuteIn(BaseModel):
     plan_id: str
     overwrite_confirmed: bool=False
+
+class PromptPromotionPlanIn(BaseModel):
+    prompt: str
+
+class PromptPromotionExecuteIn(BaseModel):
+    plan_id: str
+    production_confirmed: bool=False
 
 
 
@@ -302,6 +310,34 @@ def prompt_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
         plan=prompt_orchestration.get_prompt_plan(db,project_id)
         execution=prompt_orchestration.latest_prompt_execution(db,project_id)
         return {"plan":plan,"execution":execution}
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-promotion/plan")
+def prompt_promotion_plan(project_id:str,data:PromptPromotionPlanIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_promotion.generate_promotion_plan(db,project_id,prompt=data.prompt,actor=actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-promotion/execute")
+def prompt_promotion_execute(project_id:str,data:PromptPromotionExecuteIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try:
+        return prompt_promotion.execute_promotion_plan(
+            db,project_id,plan_id=data.plan_id,actor=actor,
+            production_confirmed=data.production_confirmed,
+        )
+    except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/prompt-promotion/latest")
+def prompt_promotion_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try:
+        return {
+            "plan":prompt_promotion.get_promotion_plan(db,project_id),
+            "execution":prompt_promotion.latest_promotion_execution(db,project_id),
+        }
     except Exception as e: _environment_error(e)
 
 

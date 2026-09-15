@@ -302,6 +302,12 @@ export default function App() {
   const [promptPlan, setPromptPlan] = useState<any>(null);
   const [promptExecution, setPromptExecution] = useState<any>(null);
   const [promptRunning, setPromptRunning] = useState(false);
+  const [promotionPrompt, setPromotionPrompt] = useState(
+    "Promote approved DEV release to TEST",
+  );
+  const [promotionPlan, setPromotionPlan] = useState<any>(null);
+  const [promotionExecution, setPromotionExecution] = useState<any>(null);
+  const [promotionRunning, setPromotionRunning] = useState(false);
   async function loadProjects() {
     const ps = await api<Project[]>("/projects");
     setProjects(ps);
@@ -381,13 +387,14 @@ export default function App() {
         setMedDeployment(medallionDeployment);
       }
       if (page === "Waves" && id) {
-        const [status, recon, uatStatus, uatReconciliation, prodStatus, prodReconciliation]: any = await Promise.all([
+        const [status, recon, uatStatus, uatReconciliation, prodStatus, prodReconciliation, promptPromotion]: any = await Promise.all([
           api(`/projects/${id}/promotions/test/status`),
           api(`/projects/${id}/promotions/test/reconciliation/latest`),
           api(`/projects/${id}/promotions/uat/status`),
           api(`/projects/${id}/promotions/uat/reconciliation/latest`),
           api(`/projects/${id}/promotions/prod/status`),
           api(`/projects/${id}/promotions/prod/reconciliation/latest`),
+          api(`/projects/${id}/prompt-promotion/latest`).catch(() => ({ plan: null, execution: null })),
         ]);
         setTestPromotion(status);
         setTestRecon(recon);
@@ -395,6 +402,8 @@ export default function App() {
         setUatRecon(uatReconciliation);
         setProdPromotion(prodStatus);
         setProdRecon(prodReconciliation);
+        if (promptPromotion?.plan) setPromotionPlan(promptPromotion.plan);
+        if (promptPromotion?.execution) setPromotionExecution(promptPromotion.execution);
       }
       if (page === "Migration Workflow" && id) {
         const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData]: any = await Promise.all([
@@ -515,6 +524,61 @@ export default function App() {
     } finally {
       setBusy(false);
       setPromptRunning(false);
+    }
+  }
+  async function generatePromotionPlan(text?: string) {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const prompt = text || promotionPrompt;
+      const result: any = await api(`/projects/${pid}/prompt-promotion/plan`, {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      });
+      setPromotionPlan(result);
+      setPromotionExecution(null);
+      setMsg(
+        result.status === "NEEDS_USER_INPUT"
+          ? "Promotion prerequisites must be resolved before approval."
+          : `${result.intent?.target_environment} promotion plan generated and awaiting approval.`,
+      );
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function executePromotionPlan() {
+    if (!pid || !promotionPlan?.plan_id) return;
+    const target = promotionPlan.intent?.target_environment;
+    const productionConfirmed = target !== "PROD" || window.confirm(
+      "This will promote the approved UAT manifest to PROD. Continue with production deployment?",
+    );
+    if (!productionConfirmed) return;
+    setBusy(true);
+    setPromotionRunning(true);
+    setMsg(`Executing governed ${target} promotion...`);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-promotion/execute`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: promotionPlan.plan_id,
+          production_confirmed: target === "PROD",
+        }),
+      });
+      setPromotionExecution(result);
+      setMsg(
+        result.status === "COMPLETED"
+          ? `${target} promotion, reconciliation, and quality gate completed successfully.`
+          : `${target} promotion status: ${result.status}`,
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setPromotionRunning(false);
     }
   }
   async function viewDevLogs() {
@@ -4773,6 +4837,142 @@ export default function App() {
           )}
           {page === "Waves" && (
             <>
+              <div className="promotion-studio">
+                <div className="prompt-studio-head">
+                  <div className="prompt-studio-title">
+                    <Sparkles size={20} color="#5b8cff" />
+                    <div>
+                      <h3>Release 5 · Prompt Promotion Studio</h3>
+                      <p>
+                        Promote one approved immutable release at a time through TEST, UAT, and PROD.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="prompt-badge"><ShieldCheck size={12} /> Environment governed</span>
+                </div>
+                <div className="prompt-input-row">
+                  <input
+                    value={promotionPrompt}
+                    onChange={(e) => setPromotionPrompt(e.target.value)}
+                    placeholder="Promote approved DEV release to TEST"
+                    disabled={busy || promotionRunning}
+                  />
+                  <button
+                    className="primary-action"
+                    disabled={!pid || busy || promotionRunning || !promotionPrompt.trim()}
+                    onClick={() => generatePromotionPlan()}
+                  >
+                    <Command size={15} /> Generate Promotion Plan
+                  </button>
+                </div>
+                <div className="prompt-quick-chips">
+                  <span>Quick prompts:</span>
+                  {[
+                    "Promote approved DEV release to TEST",
+                    "Promote approved TEST release to UAT",
+                    "Promote approved UAT release to PROD",
+                  ].map((template) => (
+                    <button
+                      key={template}
+                      className="prompt-chip"
+                      disabled={busy || promotionRunning}
+                      onClick={() => {
+                        setPromotionPrompt(template);
+                        generatePromotionPlan(template);
+                      }}
+                    >
+                      {template}
+                    </button>
+                  ))}
+                </div>
+
+                {promotionPlan && (
+                  <div className="prompt-plan-card">
+                    {promotionPlan.status === "NEEDS_USER_INPUT" ? (
+                      <div className="promotion-blocked">
+                        <b><ShieldAlert size={16} /> Promotion prerequisites required</b>
+                        <ul>
+                          {promotionPlan.blockers?.map((blocker: string, index: number) => (
+                            <li key={index}>{blocker}</li>
+                          ))}
+                        </ul>
+                        {promotionPlan.actionable_steps?.[0] && (
+                          <small><strong>Next action:</strong> {promotionPlan.actionable_steps[0]}</small>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="promotion-plan-head">
+                          <div>
+                            <small>GOVERNED SINGLE-ENVIRONMENT PLAN</small>
+                            <h4>
+                              {promotionPlan.intent?.source_environment} → {promotionPlan.intent?.target_environment}
+                              <Badge s={promotionPlan.status} />
+                            </h4>
+                          </div>
+                          {promotionPlan.status === "PENDING_APPROVAL" && (
+                            <button
+                              className="primary-action"
+                              disabled={busy || promotionRunning}
+                              onClick={executePromotionPlan}
+                            >
+                              <ShieldCheck size={15} />
+                              {promotionPlan.intent?.target_environment === "PROD"
+                                ? "Confirm & Promote to PROD"
+                                : `Approve & Promote to ${promotionPlan.intent?.target_environment}`}
+                            </button>
+                          )}
+                        </div>
+                        <div className="prompt-impact-grid">
+                          <div className="prompt-impact-item"><span>Approved artifacts</span><b>{promotionPlan.impact?.artifact_count || 0}</b></div>
+                          <div className="prompt-impact-item"><span>Source manifest</span><code>{promotionPlan.impact?.source_deployment_run_id || "-"}</code></div>
+                          <div className="prompt-impact-item"><span>Target catalog</span><code>{promotionPlan.intent?.target_catalog || "-"}</code></div>
+                          <div className="prompt-impact-item"><span>Risk</span><b>{promotionPlan.impact?.risk_level}</b></div>
+                        </div>
+                        <div className="prompt-stages-list promotion-stage-list">
+                          {promotionPlan.stages?.map((stage: any) => (
+                            <div className="prompt-stage-pill" key={stage.stage}>
+                              <b>{stage.title}</b><small>{stage.stage}</small>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="promotion-safety-note">
+                          <ShieldCheck size={14} /> No AI regeneration · no environment skipping · PROD requires separate confirmation
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {promotionExecution && (
+                  <div className="prompt-exec-card">
+                    <div className="promotion-exec-head">
+                      <div>
+                        <small>EXECUTION {promotionExecution.run_id}</small>
+                        <b>{promotionExecution.source_environment} → {promotionExecution.target_environment}</b>
+                      </div>
+                      <Badge s={promotionExecution.status} />
+                    </div>
+                    <div className="prompt-exec-stages promotion-exec-stages">
+                      {Object.entries(promotionExecution.stages || {}).map(([name, stage]: [string, any]) => (
+                        <div className="prompt-exec-step" key={name}>
+                          <span>{name}</span><Badge s={stage.status} />
+                          {stage.deployed_count !== undefined && <small>{stage.deployed_count} deployed</small>}
+                          {stage.passed !== undefined && <small>{stage.passed} reconciled</small>}
+                        </div>
+                      ))}
+                    </div>
+                    {promotionExecution.status === "FAILED" && (
+                      <div className="prompt-exec-error">
+                        <b><ShieldAlert size={15} /> Failed stage: {promotionExecution.failed_stage}</b>
+                        <span>{promotionExecution.error}</span>
+                        <small><strong>Next action:</strong> {promotionExecution.errors?.[0]?.recommended_action}</small>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <Panel
                 title="DEV → TEST promotion"
                 actions={

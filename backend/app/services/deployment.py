@@ -787,7 +787,15 @@ def _reconcile_medallion_run(
     return {**summary, "status": overall, "details": details}
 
 
-def run_reconciliation(db: Session, project_id: str, environment: str = "DEV") -> dict[str, Any]:
+def run_reconciliation(
+    db: Session,
+    project_id: str,
+    environment: str = "DEV",
+    actor: str = "system",
+) -> dict[str, Any]:
+    # Governed prompt workflows supply the authenticated actor. Reconciliation
+    # evidence already persists the project, environment, deployment run,
+    # artifact versions, and timestamps used for audit.
     env = environment.upper()
     medallion = _latest_successful_medallion_run(db, project_id, env)
     if medallion:
