@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import difflib
 import json
 import re
 from collections import defaultdict, deque
@@ -73,6 +74,96 @@ def _loads(value: str | None, default: Any) -> Any:
 def _clean_name(name: str) -> str:
     out = re.sub(r"[^A-Za-z0-9_]+", "_", name or "").strip("_")
     return out or "model"
+
+
+def _snake_case(name: str) -> str:
+    """Return a stable Databricks column name without inventing semantics."""
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name or "")
+    value = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").lower()
+    return value or "column"
+
+
+def _silver_projection(column: MigrationColumn) -> str:
+    """Generate the deterministic Release 4 cleansing expression for one column."""
+    source = qident(column.column_name)
+    alias = qident(_snake_case(column.column_name))
+    dtype = column.data_type.lower().split("(", 1)[0]
+    if dtype in TEXT_TYPES:
+        # Empty strings become null after whitespace is removed.  This is a
+        # reversible, visible rule in the generated SQL and lineage evidence.
+        return f"NULLIF(TRIM({source}), '') AS {alias}"
+    if dtype in DATE_TYPES and dtype != "date":
+        timezone = get_settings().source_timestamp_timezone.replace("'", "''")
+        return f"to_utc_timestamp(CAST({source} AS TIMESTAMP), '{timezone}') AS {alias}"
+    if _snake_case(column.column_name) != column.column_name:
+        return f"{source} AS {alias}"
+    return source
+
+
+def _stage_validation(content: str, node: MigrationMedallionNode) -> dict[str, Any]:
+    """Fast deterministic checks applied to every generated stage artifact."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    upper = content.upper()
+    if not content.strip():
+        errors.append("Generated SQL is empty")
+    if node.target_fqn.lower() not in content.lower():
+        errors.append("Generated SQL does not target the planned FQN")
+    if content.count("(") != content.count(")"):
+        errors.append("Unbalanced SQL parentheses")
+    if "[" in content or "]" in content:
+        errors.append("Unresolved SQL Server bracket identifier")
+    for token in ("DROP CATALOG", "DROP SCHEMA", "DROP TABLE", "TRUNCATE TABLE", "DELETE FROM"):
+        if token in upper:
+            errors.append(f"Governed statement is not permitted: {token}")
+    aliases = [x.lower() for x in re.findall(r"(?i)\bAS\s+`([A-Za-z_][A-Za-z0-9_]*)`", content)]
+    duplicates = sorted({x for x in aliases if aliases.count(x) > 1})
+    if duplicates:
+        errors.append("Duplicate projected aliases: " + ", ".join(duplicates))
+    if "SELECT *" in upper:
+        warnings.append("Wildcard projection reduces column-level lineage precision")
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "checks": [
+            "TARGET_FQN",
+            "BALANCED_PARENTHESES",
+            "NO_SQLSERVER_BRACKETS",
+            "NO_DESTRUCTIVE_SQL",
+            "UNIQUE_ALIASES",
+        ],
+    }
+
+
+def _topological_stage_order(
+    nodes: list[MigrationMedallionNode], edges: list[MigrationMedallionEdge]
+) -> tuple[list[MigrationMedallionNode], list[str]]:
+    """Order generated artifacts by recorded lineage and report dependency cycles."""
+    by_id = {node.id: node for node in nodes}
+    indegree = {node.id: 0 for node in nodes}
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    for edge in edges:
+        if edge.from_node_id not in by_id or edge.to_node_id not in by_id:
+            continue
+        if edge.to_node_id not in adjacency[edge.from_node_id]:
+            adjacency[edge.from_node_id].add(edge.to_node_id)
+            indegree[edge.to_node_id] += 1
+    ready = sorted(
+        (node_id for node_id, degree in indegree.items() if degree == 0),
+        key=lambda node_id: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(by_id[node_id].layer, 9), by_id[node_id].target_fqn.lower()),
+    )
+    ordered: list[MigrationMedallionNode] = []
+    while ready:
+        node_id = ready.pop(0)
+        ordered.append(by_id[node_id])
+        for target_id in sorted(adjacency.get(node_id, set()), key=lambda value: by_id[value].target_fqn.lower()):
+            indegree[target_id] -= 1
+            if indegree[target_id] == 0:
+                ready.append(target_id)
+                ready.sort(key=lambda value: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(by_id[value].layer, 9), by_id[value].target_fqn.lower()))
+    cycle_nodes = sorted(by_id[node_id].target_fqn for node_id, degree in indegree.items() if degree > 0)
+    return ordered, cycle_nodes
 
 
 def _tokens(name: str) -> set[str]:
@@ -1039,13 +1130,25 @@ def build_medallion_plan(db: Session, project_id: str, *, environment: str = "DE
             silver = _upsert_node(
                 db, project_id=project_id, source_object_id=obj.id, semantic_definition_id=None, environment=env,
                 layer="SILVER", node_type="VIEW", model_role="CONFORMED_ENTITY", target_name=obj.object_name,
-                target_fqn=silver_fqn, generation_strategy="STANDARDIZED_PASSTHROUGH", confidence=0.98,
+                target_fqn=silver_fqn, generation_strategy="RELEASE_4_STANDARDIZE_DEDUP", confidence=0.98,
                 lineage={"source_object_id": obj.id, "bronze_target": bronze_fqn},
-                transformation={"mode": "PASSTHROUGH", "note": "No business rule fabricated; source-aligned typed columns are exposed as a reusable Silver entity."},
+                transformation={
+                    "mode": "DETERMINISTIC_STANDARDIZATION",
+                    "column_casing": "snake_case",
+                    "string_policy": "trim_then_empty_to_null",
+                    "timestamp_policy": "convert_to_utc",
+                    "source_timezone": get_settings().source_timestamp_timezone,
+                    "deduplication_keys": _primary_key(db, project_id, obj.id),
+                    "note": "Only metadata-backed cleansing rules are applied; no business rule is fabricated.",
+                },
             )
             nodes_by_object_layer[(obj.id, "BRONZE")] = bronze; nodes_by_object_layer[(obj.id, "SILVER")] = silver
             _upsert_edge(db, project_id, env, source_node.id, bronze.id, "RAW_INGEST", {"source_object_id": obj.id})
-            _upsert_edge(db, project_id, env, bronze.id, silver.id, "STANDARDIZE", {"business_rule_fabricated": False})
+            _upsert_edge(db, project_id, env, bronze.id, silver.id, "STANDARDIZE", {
+                "business_rule_fabricated": False,
+                "column_casing": "snake_case",
+                "deduplication_keys": _primary_key(db, project_id, obj.id),
+            })
         elif obj.object_type == "VIEW":
             silver_fqn = f"{qident(catalog)}.{qident('silver')}.{qident(obj.object_name)}"
             silver = _upsert_node(
@@ -1224,7 +1327,7 @@ def _gold_sql(db: Session, project_id: str, node: MigrationMedallionNode, sem: M
         for c in items:
             actual = names.get(str(c).lower())
             if not actual: errors.append(f"Unknown semantic column {c}")
-            else: result.append(qident(actual))
+            else: result.append(qident(_snake_case(actual)))
         return result
 
     if role == "DIMENSION":
@@ -1234,6 +1337,15 @@ def _gold_sql(db: Session, project_id: str, node: MigrationMedallionNode, sem: M
             if c.lower() not in seen: selected.append(c); seen.add(c.lower())
         if not bkeys: errors.append("DIMENSION requires business_keys")
         if not selected: errors.append("DIMENSION has no selected columns")
+        business_key_sql = qcols(bkeys)
+        surrogate_name = qident(_snake_case(node.target_name) + "_key")
+        surrogate_expr = (
+            "sha2(concat_ws('||', "
+            + ", ".join(f"COALESCE(CAST({key} AS STRING), '∅')" for key in business_key_sql)
+            + f"), 256) AS {surrogate_name}"
+        ) if business_key_sql else ""
+        if surrogate_expr:
+            selected.insert(0, surrogate_expr)
         content = f"CREATE OR REPLACE VIEW {node.target_fqn} AS\nSELECT\n  " + ",\n  ".join(selected) + f"\nFROM {silver.target_fqn};"
         if str(sem.scd_type or "1") == "2":
             # SCD2 cannot be invented from source metadata. Explicit lifecycle columns are required.
@@ -1261,7 +1373,7 @@ def _gold_sql(db: Session, project_id: str, node: MigrationMedallionNode, sem: M
                 actual = names.get(str(source_col).lower())
                 if not actual:
                     errors.append(f"Measure {name} references unknown column {source_col}"); continue
-                base = qident(actual)
+                base = qident(_snake_case(actual))
                 if aggregation in {"SUM", "AVG", "MIN", "MAX", "COUNT", "COUNT_DISTINCT"}:
                     expr = f"COUNT(DISTINCT {base})" if aggregation == "COUNT_DISTINCT" else f"{aggregation}({base})"
                     aggregated = True
@@ -1306,8 +1418,24 @@ def _stage_content(db: Session, project_id: str, node: MigrationMedallionNode, e
         ))
         if not bronze: return "-- NON_EXECUTABLE: Bronze parent missing", False, ["Bronze parent node missing"]
         cols = _columns(db, project_id, obj.id)
-        selected = ",\n  ".join(qident(c.column_name) for c in cols)
-        return f"CREATE OR REPLACE VIEW {node.target_fqn} AS\nSELECT\n  {selected}\nFROM {bronze.target_fqn};", True, []
+        aliases = [_snake_case(c.column_name) for c in cols]
+        duplicate_aliases = sorted({name for name in aliases if aliases.count(name) > 1})
+        if duplicate_aliases:
+            return (
+                "-- NON_EXECUTABLE: standardized column-name collision",
+                False,
+                ["snake_case normalization creates duplicate columns: " + ", ".join(duplicate_aliases)],
+            )
+        selected = ",\n  ".join(_silver_projection(c) for c in cols)
+        content = f"CREATE OR REPLACE VIEW {node.target_fqn} AS\nSELECT\n  {selected}\nFROM {bronze.target_fqn}"
+        primary_key = _primary_key(db, project_id, obj.id)
+        if primary_key:
+            content += (
+                "\nQUALIFY ROW_NUMBER() OVER (PARTITION BY "
+                + ", ".join(qident(key) for key in primary_key)
+                + " ORDER BY `_migration_ingested_at` DESC) = 1"
+            )
+        return content + ";", True, []
     if node.layer == "SILVER" and obj and obj.object_type == "VIEW":
         repaired = _approved_repaired_artifact(db, project_id, obj.id, environment)
         if repaired:
@@ -1407,9 +1535,16 @@ def generate_medallion_artifacts(db: Session, project_id: str, *, environment: s
         MigrationMedallionNode.project_id == project_id,
         MigrationMedallionNode.environment == env,
         MigrationMedallionNode.layer.in_(["BRONZE", "SILVER", "GOLD"]),
-    ).order_by(MigrationMedallionNode.layer, MigrationMedallionNode.target_name)).all())
+    )).all())
     if not nodes:
         raise ValueError("Medallion plan is empty. Build the plan first.")
+    edges = list(db.scalars(select(MigrationMedallionEdge).where(
+        MigrationMedallionEdge.project_id == project_id,
+        MigrationMedallionEdge.environment == env,
+    )).all())
+    nodes, cycle_nodes = _topological_stage_order(nodes, edges)
+    if cycle_nodes:
+        raise ValueError("Medallion dependency cycle detected: " + ", ".join(cycle_nodes))
     generated = []
     for node in nodes:
         content, executable, errors = _stage_content(db, project_id, node, env)
@@ -1421,6 +1556,12 @@ def generate_medallion_artifacts(db: Session, project_id: str, *, environment: s
             if contract_errors:
                 executable = False
                 errors = list(dict.fromkeys([*errors, *contract_errors]))
+        static_checks = _stage_validation(content, node) if executable else {
+            "valid": False, "errors": list(errors), "warnings": [], "checks": []
+        }
+        if executable and not static_checks["valid"]:
+            executable = False
+            errors = list(dict.fromkeys([*errors, *static_checks["errors"]]))
         if node.layer == "SILVER" and source_obj and source_obj.object_type in {"PROCEDURE", "FUNCTION"}:
             source_version = _approved_repaired_artifact(db, project_id, source_obj.id, env)
         validation = "PASSED" if executable and not errors else "FAILED"
@@ -1447,6 +1588,9 @@ def generate_medallion_artifacts(db: Session, project_id: str, *, environment: s
                 executable=executable, validation_status=validation,
                 validation_json=_json({
                     "errors": errors, "node_id": node.id, "target_fqn": node.target_fqn,
+                    "warnings": static_checks.get("warnings", []),
+                    "deterministic_checks": static_checks.get("checks", []),
+                    "dependency_order": len(generated) + 1,
                     "source_artifact_version_id": source_version.id if source_version else None,
                     "source_artifact_version": source_version.version if source_version else None,
                     "source_artifact_hash": source_version.target_hash if source_version else None,
@@ -1460,7 +1604,14 @@ def generate_medallion_artifacts(db: Session, project_id: str, *, environment: s
                           "executable": version.executable, "validation_status": version.validation_status,
                           "review_status": version.review_status, "errors": errors})
     db.commit()
-    return {"project_id": project_id, "environment": env, "generated": len(generated), "artifacts": generated}
+    return {
+        "project_id": project_id,
+        "environment": env,
+        "generated": len(generated),
+        "generated_count": len(generated),
+        "dependency_validation": "PASSED",
+        "artifacts": generated,
+    }
 
 
 def list_medallion_artifacts(db: Session, project_id: str, *, environment: str = "DEV") -> list[dict[str, Any]]:
@@ -1492,6 +1643,89 @@ def list_medallion_artifacts(db: Session, project_id: str, *, environment: str =
             "reviewer": version.reviewer, "reviewed_at": version.reviewed_at,
         })
     return sorted(result, key=lambda x:({"BRONZE":1,"SILVER":2,"GOLD":3}.get(x["layer"],9), x["target_fqn"].lower()))
+
+
+def medallion_validation_report(db: Session, project_id: str, *, environment: str = "DEV") -> dict[str, Any]:
+    """Return deterministic artifact and dependency evidence for the Release 4 UI."""
+    env = environment.upper()
+    nodes = list(db.scalars(select(MigrationMedallionNode).where(
+        MigrationMedallionNode.project_id == project_id,
+        MigrationMedallionNode.environment == env,
+        MigrationMedallionNode.layer.in_(["BRONZE", "SILVER", "GOLD"]),
+    )).all())
+    edges = list(db.scalars(select(MigrationMedallionEdge).where(
+        MigrationMedallionEdge.project_id == project_id,
+        MigrationMedallionEdge.environment == env,
+    )).all())
+    ordered, cycles = _topological_stage_order(nodes, edges)
+    artifacts = list_medallion_artifacts(db, project_id, environment=env)
+    failed = [item for item in artifacts if item["validation_status"] != "PASSED" or not item["executable"]]
+    return {
+        "project_id": project_id,
+        "environment": env,
+        "status": "FAILED" if failed or cycles else "PASSED",
+        "artifact_count": len(artifacts),
+        "passed_count": len(artifacts) - len(failed),
+        "failed_count": len(failed),
+        "dependency_order": [node.id for node in ordered],
+        "cycle_nodes": cycles,
+        "failed_artifacts": [{
+            "artifact_version_id": item["artifact_version_id"],
+            "target_fqn": item["target_fqn"],
+            "errors": item.get("validation", {}).get("errors", []),
+        } for item in failed],
+        "policy": "Deployment requires deterministic validation and explicit human approval of every current version.",
+    }
+
+
+def medallion_artifact_detail(db: Session, project_id: str, version_id: str) -> dict[str, Any]:
+    """Return an immutable version, its prior-version diff, and lineage evidence."""
+    version = db.get(MigrationStageArtifactVersion, version_id)
+    if not version or version.project_id != project_id:
+        raise ValueError("Medallion artifact version not found in project")
+    artifact = db.get(MigrationStageArtifact, version.artifact_id)
+    node = db.get(MigrationMedallionNode, version.node_id)
+    if not artifact or artifact.project_id != project_id or not node or node.project_id != project_id:
+        raise ValueError("Medallion artifact lineage is incomplete")
+    previous = db.scalar(select(MigrationStageArtifactVersion).where(
+        MigrationStageArtifactVersion.project_id == project_id,
+        MigrationStageArtifactVersion.artifact_id == artifact.id,
+        MigrationStageArtifactVersion.version < version.version,
+    ).order_by(MigrationStageArtifactVersion.version.desc()))
+    diff = "" if not previous else "\n".join(difflib.unified_diff(
+        previous.content.splitlines(), version.content.splitlines(),
+        fromfile=f"v{previous.version}", tofile=f"v{version.version}", lineterm="",
+    ))
+    edges = list(db.scalars(select(MigrationMedallionEdge).where(
+        MigrationMedallionEdge.project_id == project_id,
+        MigrationMedallionEdge.environment == node.environment,
+        ((MigrationMedallionEdge.from_node_id == node.id) | (MigrationMedallionEdge.to_node_id == node.id)),
+    )).all())
+    node_ids = {edge.from_node_id for edge in edges} | {edge.to_node_id for edge in edges}
+    lineage_nodes = {row.id: row for row in db.scalars(select(MigrationMedallionNode).where(
+        MigrationMedallionNode.project_id == project_id,
+        MigrationMedallionNode.id.in_(node_ids),
+    )).all()} if node_ids else {}
+    return {
+        "artifact_id": artifact.id,
+        "artifact_version_id": version.id,
+        "version": version.version,
+        "previous_version": previous.version if previous else None,
+        "target_fqn": node.target_fqn,
+        "layer": node.layer,
+        "content": version.content,
+        "diff": diff,
+        "validation_status": version.validation_status,
+        "validation": _loads(version.validation_json, {}),
+        "review_status": version.review_status,
+        "lineage": [{
+            "edge_type": edge.edge_type,
+            "direction": "UPSTREAM" if edge.to_node_id == node.id else "DOWNSTREAM",
+            "from": lineage_nodes.get(edge.from_node_id).target_fqn if lineage_nodes.get(edge.from_node_id) else edge.from_node_id,
+            "to": lineage_nodes.get(edge.to_node_id).target_fqn if lineage_nodes.get(edge.to_node_id) else edge.to_node_id,
+            "evidence": _loads(edge.evidence_json, {}),
+        } for edge in edges],
+    }
 
 
 def review_medallion_artifact(db: Session, project_id: str, version_id: str, *, status: str, reviewer: str) -> MigrationStageArtifactVersion:

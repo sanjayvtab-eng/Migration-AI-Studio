@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     parallelism: int = 4
     max_rows: int | None = None
     load_mode: str = "FULL_LOAD"
+    # SQL Server datetime/datetime2 values do not carry a timezone.  Release 4
+    # requires the operator to make that assumption explicit and then emits
+    # deterministic UTC conversion in generated Silver SQL.
+    source_timestamp_timezone: str = "UTC"
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
 

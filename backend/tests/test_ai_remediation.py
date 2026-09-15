@@ -1,7 +1,8 @@
 from sqlalchemy import select
 from app.services.engine import ensure_project, add_source, ingest_snapshot, classify_project, create_mappings, generate_artifact
 from app.services.ai_remediation import analyze_remediation, accept_remediation, remediation_plan, remediate_one_artifact, run_remediation_batch, validate_candidate_content
-from app.models.entities import MigrationObject, MigrationArtifact, MigrationArtifactVersion, MigrationReview, MigrationMapping, MigrationIssue
+from app.models.entities import MigrationObject, MigrationArtifact, MigrationArtifactVersion, MigrationColumn, MigrationReview, MigrationMapping, MigrationIssue
+from app.services.engine import uid
 from app.services.medallion import build_medallion_plan, generate_medallion_artifacts, list_medallion_artifacts
 
 
@@ -47,6 +48,48 @@ def test_accept_remediation_creates_new_unapproved_version(db):
     assert av.ai_provider=='DETERMINISTIC_REMEDIATION'
     review=db.scalar(select(MigrationReview).where(MigrationReview.artifact_version_id==av.id,MigrationReview.status=='APPROVED'))
     assert review is None
+
+
+def test_duplicate_ai_analysis_reuses_validated_candidate_without_provider_call(db, monkeypatch):
+    p, function = _seed(db)
+    view = MigrationObject(
+        id=uid('OBJ'), project_id=p.id, source_id=function.source_id,
+        database_name='DB1', schema_name='dbo', object_name='vw_OrderValue',
+        object_type='VIEW', definition='CREATE VIEW dbo.vw_OrderValue AS SELECT OrderID FROM dbo.OrderDetail',
+        source_hash='view-source-hash',
+    )
+    db.add(view)
+    db.add(MigrationColumn(
+        id=uid('COL'), project_id=p.id, object_id=view.id, column_name='OrderID',
+        ordinal=1, data_type='int', nullable=False,
+    ))
+    mapping = MigrationMapping(
+        id=uid('MAP'), project_id=p.id, object_id=view.id,
+        source_fqn='DB1.dbo.vw_OrderValue',
+        target_fqn='`migration_dev`.`silver`.`vw_OrderValue`',
+        target_layer='SILVER', environment='DEV',
+    )
+    db.add(mapping)
+    db.commit()
+
+    calls = {'count': 0}
+    def fake_llm(_prompt):
+        calls['count'] += 1
+        return ({
+            'generated_candidate': f'CREATE OR REPLACE VIEW {mapping.target_fqn} AS SELECT 1 AS OrderID',
+            'confidence': 0.95,
+            'conversion_strategy': 'TEST_VIEW_REWRITE',
+            'assumptions': [], 'risks': [], 'validation_plan': [],
+        }, 'GEMINI', 'gemini-test')
+    monkeypatch.setattr('app.services.ai_remediation._call_llm', fake_llm)
+
+    first = analyze_remediation(db, p.id, view.id, 'DEV', use_ai=True)
+    second = analyze_remediation(db, p.id, view.id, 'DEV', use_ai=True)
+    assert first['cache_hit'] is False
+    assert second['cache_hit'] is True
+    assert second['provider_request_sent'] is False
+    assert second['ai_run_id'] == first['ai_run_id']
+    assert calls['count'] == 1
 
 
 def test_batch_remediation_creates_validated_version_but_never_approves(db):

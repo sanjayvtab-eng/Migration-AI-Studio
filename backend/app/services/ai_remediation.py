@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -729,6 +730,57 @@ Source definition (authoritative):
 """
 
 
+def _remediation_idempotency_key(
+    o: MigrationObject,
+    m: MigrationMapping,
+    issue: MigrationIssue | None,
+    environment: str,
+    context: dict[str, Any],
+) -> str:
+    """Fingerprint only inputs that can change the governed remediation result."""
+    cfg = get_settings()
+    payload = {
+        "object_id": o.id,
+        "source_hash": o.source_hash,
+        "target_fqn": m.target_fqn,
+        "environment": environment.upper(),
+        "provider": cfg.llm_provider.upper(),
+        "model": cfg.llm_model,
+        "issue": {
+            "id": issue.id if issue else None,
+            "type": issue.issue_type if issue else None,
+            "message": issue.message if issue else None,
+            "technical_details": issue.technical_details if issue else None,
+        },
+        "current_artifact_version_id": context.get("current_artifact_version_id"),
+        "validation": context.get("validation"),
+        "columns": context.get("columns"),
+        "available_mappings": context.get("available_mappings"),
+    }
+    return hashlib.sha256(json.dumps(payload, default=str, sort_keys=True).encode()).hexdigest()
+
+
+def _cached_remediation(
+    db: Session, project_id: str, object_id: str, idempotency_key: str
+) -> tuple[MigrationAiRun, dict[str, Any]] | None:
+    rows = db.scalars(select(MigrationAiRun).where(
+        MigrationAiRun.project_id == project_id,
+        MigrationAiRun.object_id == object_id,
+        MigrationAiRun.status == "VALIDATED",
+    ).order_by(MigrationAiRun.created_at.desc())).all()
+    for row in rows:
+        try:
+            payload = json.loads(row.payload_json or "{}")
+        except Exception:
+            continue
+        if payload.get("idempotency_key") != idempotency_key:
+            continue
+        if not (payload.get("deterministic_validation") or {}).get("valid"):
+            continue
+        return row, payload
+    return None
+
+
 def _extract_json(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.I | re.S)
@@ -984,6 +1036,7 @@ def analyze_remediation(
     if issue_route == "COMPATIBILITY_ENGINE":
         raise ValueError("Runtime compatibility failures are handled by the deterministic compatibility engine, not by rewriting migration SQL with AI")
     context = _context(db, project_id, o, environment)
+    idempotency_key = _remediation_idempotency_key(o, m, issue, environment, context)
 
     local = None
     if o.object_type == "FUNCTION":
@@ -996,6 +1049,18 @@ def analyze_remediation(
         result = local.as_dict()
         attempts.append({"attempt": 1, "provider": local.provider, "valid": True, "errors": []})
     elif use_ai:
+        cached = _cached_remediation(db, project_id, object_id, idempotency_key)
+        if cached:
+            cached_run, cached_result = cached
+            return {
+                **cached_result,
+                "ai_run_id": cached_run.id,
+                "cache_hit": True,
+                "provider_request_sent": False,
+                "auto_deployed": False,
+                "auto_approved": False,
+                "approval_required": True,
+            }
         errors: list[str] = []
         result: dict[str, Any] = {}
         for attempt in range(1, get_settings().llm_max_attempts + 1):
@@ -1022,6 +1087,9 @@ def analyze_remediation(
         raise RuntimeError("No deterministic remediation pattern matched and AI fallback was not requested.")
 
     result["attempts"] = attempts
+    result["idempotency_key"] = idempotency_key
+    result["cache_hit"] = False
+    result["provider_request_sent"] = any(row.get("provider") not in {"DETERMINISTIC_REMEDIATION"} for row in attempts)
     result["provider_usage_total"] = {
         key: sum(int((row.get("usage") or {}).get(key) or 0) for row in attempts)
         for key in ("prompt_tokens", "output_tokens", "total_tokens", "cached_tokens")

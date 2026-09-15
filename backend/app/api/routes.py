@@ -30,6 +30,7 @@ from app.services.medallion import (
     upsert_explicit_semantic, approve_semantic, approve_all_semantics, build_medallion_plan, medallion_plan,
     generate_medallion_artifacts, list_medallion_artifacts, review_medallion_artifact,
     remediate_medallion_artifact, deploy_medallion_dev, approve_all_medallion_artifacts,
+    medallion_validation_report, medallion_artifact_detail,
 )
 from app.services.ai_remediation import (
     accept_remediation,
@@ -766,6 +767,15 @@ def medallion_generate_api(project_id:str,environment:str="DEV",db:Session=Depen
 @router.get("/projects/{project_id}/medallion/artifacts")
 def medallion_artifacts_api(project_id:str,environment:str="DEV",db:Session=Depends(get_db),_=Depends(auth)):
     return list_medallion_artifacts(db,project_id,environment=environment)
+
+@router.get("/projects/{project_id}/medallion/validation-report")
+def medallion_validation_report_api(project_id:str,environment:str="DEV",db:Session=Depends(get_db),_=Depends(auth)):
+    return medallion_validation_report(db,project_id,environment=environment)
+
+@router.get("/projects/{project_id}/medallion/artifacts/{version_id}")
+def medallion_artifact_detail_api(project_id:str,version_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return medallion_artifact_detail(db,project_id,version_id)
+    except ValueError as e: raise HTTPException(404,str(e))
 
 @router.post("/projects/{project_id}/medallion/artifacts/approve-all")
 def medallion_artifacts_approve_all_api(project_id:str,data:MedallionReviewIn,environment:str="DEV",db:Session=Depends(get_db),_=Depends(auth)):

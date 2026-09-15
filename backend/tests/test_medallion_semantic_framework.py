@@ -4,7 +4,8 @@ def _project_with_semantics(client, auth_headers):
     s=client.post(f'/api/projects/{pid}/sources',headers=auth_headers,json={'profile_name':'S1','server_name':'sql1','database_name':'SalesDB'}).json()
     snap={'database':'SalesDB','objects':[
         {'schema':'sales','name':'Customer','type':'TABLE','columns':[
-            {'name':'CustomerId','type':'int','nullable':False},{'name':'CustomerName','type':'nvarchar','nullable':False},{'name':'Region','type':'nvarchar','nullable':True}
+            {'name':'CustomerId','type':'int','nullable':False},{'name':'CustomerName','type':'nvarchar','nullable':False},{'name':'Region','type':'nvarchar','nullable':True},
+            {'name':'UpdatedAt','type':'datetime2','nullable':False}
         ],'constraints':[{'name':'PK_Customer','type':'PRIMARY_KEY','columns':['CustomerId']}], 'approx_row_count':1000},
         {'schema':'sales','name':'Product','type':'TABLE','columns':[
             {'name':'ProductId','type':'int','nullable':False},{'name':'ProductName','type':'nvarchar','nullable':False},{'name':'Category','type':'nvarchar','nullable':True}
@@ -88,6 +89,60 @@ def test_true_multistage_plan_and_gold_generation_from_approved_semantics(client
     assert '`migration_dev`.`silver`.`Sales`' in fact_art['content']
     assert '`migration_dev`.`bronze`.`Sales`' not in fact_art['content']
     assert dim_art['validation_status']=='PASSED' and '`migration_dev`.`silver`.`Customer`' in dim_art['content']
+
+
+def test_release_4_standardizes_silver_and_exposes_validation_lineage_diff(client, auth_headers):
+    pid = _project_with_semantics(client, auth_headers)
+    inventory = client.get(f'/api/projects/{pid}/inventory', headers=auth_headers).json()
+    customer_id = next(x['id'] for x in inventory if x['name'] == 'Customer')
+    dim = client.post(f'/api/projects/{pid}/semantics', headers=auth_headers, json={
+        'object_id': customer_id,
+        'semantic_role': 'DIMENSION',
+        'target_name': 'dim_customer',
+        'business_keys': ['CustomerId'],
+        'attributes': ['CustomerName', 'Region', 'UpdatedAt'],
+        'scd_type': '1',
+    })
+    assert dim.status_code == 200, dim.text
+    assert client.post(
+        f"/api/projects/{pid}/semantics/{dim.json()['id']}/approve",
+        headers=auth_headers,
+        json={'actor': 'architect'},
+    ).status_code == 200
+    assert client.post(
+        f'/api/projects/{pid}/medallion/plan', headers=auth_headers,
+        json={'environment': 'DEV', 'catalog': 'migration_dev'},
+    ).status_code == 200
+    generated = client.post(
+        f'/api/projects/{pid}/medallion/generate?environment=DEV', headers=auth_headers,
+    )
+    assert generated.status_code == 200, generated.text
+    assert generated.json()['dependency_validation'] == 'PASSED'
+
+    artifacts = client.get(
+        f'/api/projects/{pid}/medallion/artifacts?environment=DEV', headers=auth_headers,
+    ).json()
+    silver = next(x for x in artifacts if x['layer'] == 'SILVER' and x['target_fqn'].endswith('`Customer`'))
+    assert "NULLIF(TRIM(`CustomerName`), '') AS `customer_name`" in silver['content']
+    assert "to_utc_timestamp(CAST(`UpdatedAt` AS TIMESTAMP), 'UTC') AS `updated_at`" in silver['content']
+    assert 'ROW_NUMBER() OVER (PARTITION BY `CustomerId`' in silver['content']
+    gold = next(x for x in artifacts if x['target_fqn'].endswith('`dim_customer`'))
+    assert "sha2(concat_ws('||'" in gold['content']
+    assert 'AS `dim_customer_key`' in gold['content']
+
+    report = client.get(
+        f'/api/projects/{pid}/medallion/validation-report?environment=DEV', headers=auth_headers,
+    )
+    assert report.status_code == 200, report.text
+    assert report.json()['status'] == 'PASSED'
+    assert report.json()['cycle_nodes'] == []
+
+    detail = client.get(
+        f"/api/projects/{pid}/medallion/artifacts/{gold['artifact_version_id']}", headers=auth_headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()['previous_version'] is None
+    assert detail.json()['lineage']
 
 
 def test_gold_is_not_created_from_unapproved_inference(client,auth_headers):

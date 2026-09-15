@@ -278,6 +278,8 @@ export default function App() {
   const [medDeployment, setMedDeployment] = useState<any>(null),
     [medLogs, setMedLogs] = useState<any[]>([]),
     [medLogFilter, setMedLogFilter] = useState("ALL");
+  const [medValidation, setMedValidation] = useState<any>(null),
+    [artifactInspector, setArtifactInspector] = useState<any>(null);
   const [aiCandidate, setAiCandidate] = useState<any>(null),
     [aiObject, setAiObject] = useState<Artifact | null>(null),
     [aiPlan, setAiPlan] = useState<any>(null),
@@ -341,16 +343,18 @@ export default function App() {
       if (page === "Compatibility" && id)
         setCompat(await api(`/projects/${id}/compatibility/summary`));
       if (page === "Medallion Design" && id) {
-        const [mp, sm, cs, ma]: any = await Promise.all([
+        const [mp, sm, cs, ma, validation]: any = await Promise.all([
           api(`/projects/${id}/medallion/plan?environment=DEV`),
           api(`/projects/${id}/semantics`),
           api(`/projects/${id}/consumers`),
           api(`/projects/${id}/medallion/artifacts?environment=DEV`),
+          api(`/projects/${id}/medallion/validation-report?environment=DEV`),
         ]);
         setMedallion(mp);
         setSemantics(sm);
         setConsumers(cs);
         setMedArts(ma);
+        setMedValidation(validation);
       }
       if (page === "Reviews" && id) {
         setMedArts(
@@ -898,7 +902,20 @@ export default function App() {
       setMedallion(
         await api(`/projects/${pid}/medallion/plan?environment=DEV`),
       );
+      setMedValidation(
+        await api(`/projects/${pid}/medallion/validation-report?environment=DEV`),
+      );
       return r;
+    });
+  }
+  async function inspectMedallionArtifact(versionId: string) {
+    if (!pid) return;
+    await action(async () => {
+      const detail: any = await api(
+        `/projects/${pid}/medallion/artifacts/${versionId}`,
+      );
+      setArtifactInspector(detail);
+      return detail;
     });
   }
   async function reviewMedArtifact(versionId: string, status = "APPROVED") {
@@ -2327,6 +2344,32 @@ export default function App() {
                   automatically.
                 </div>
               </Panel>
+              <Panel title="Release 4 automation & validation">
+                <div className="deployment-summary">
+                  <div className="summary-stat">
+                    <span>Static validation</span>
+                    <Badge s={medValidation?.status || "NOT_RUN"} />
+                  </div>
+                  <div className="summary-stat">
+                    <span>Validated artifacts</span>
+                    <b>{medValidation?.passed_count ?? 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Failed artifacts</span>
+                    <b>{medValidation?.failed_count ?? 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Dependency cycles</span>
+                    <b>{medValidation?.cycle_nodes?.length ?? 0}</b>
+                  </div>
+                </div>
+                <div className="notice">
+                  Silver generation standardizes column names, trims strings,
+                  normalizes timestamps to UTC, and deduplicates by discovered
+                  primary keys. Gold dimensions receive deterministic surrogate
+                  keys. AI repairs always create an unapproved immutable version.
+                </div>
+              </Panel>
               <Panel title="Multi-stage lineage plan">
                 {medallion?.nodes?.length ? (
                   <table>
@@ -2731,6 +2774,15 @@ export default function App() {
                               <button onClick={() => setPage("Reviews")}>
                                 Open governed review
                               </button>
+                              <button
+                                onClick={() =>
+                                  inspectMedallionArtifact(
+                                    x.artifact_version_id,
+                                  )
+                                }
+                              >
+                                Lineage & diff
+                              </button>
                               <details>
                                 <summary>SQL</summary>
                                 <pre>{x.content}</pre>
@@ -2745,6 +2797,52 @@ export default function App() {
                   <Empty text="Generate stage artifacts after the plan is built. All artifacts require review before DEV deployment." />
                 )}
               </Panel>
+              {artifactInspector && (
+                <Panel
+                  title={`Artifact lineage & version diff · ${artifactInspector.target_fqn}`}
+                  actions={
+                    <button onClick={() => setArtifactInspector(null)}>
+                      Close
+                    </button>
+                  }
+                >
+                  <div className="deployment-summary">
+                    <div className="summary-stat">
+                      <span>Current version</span>
+                      <b>v{artifactInspector.version}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Previous version</span>
+                      <b>
+                        {artifactInspector.previous_version
+                          ? `v${artifactInspector.previous_version}`
+                          : "Initial"}
+                      </b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Validation</span>
+                      <Badge s={artifactInspector.validation_status} />
+                    </div>
+                    <div className="summary-stat">
+                      <span>Human review</span>
+                      <Badge s={artifactInspector.review_status} />
+                    </div>
+                  </div>
+                  <details open>
+                    <summary>Lineage</summary>
+                    <pre>
+                      {JSON.stringify(artifactInspector.lineage || [], null, 2)}
+                    </pre>
+                  </details>
+                  <details open>
+                    <summary>SQL diff</summary>
+                    <pre>
+                      {artifactInspector.diff ||
+                        "Initial immutable artifact version — no prior diff."}
+                    </pre>
+                  </details>
+                </Panel>
+              )}
               {medDeployment && (
                 <Panel
                   title={`Medallion deployment logs · ${medDeployment.run_id || "latest run"}`}
