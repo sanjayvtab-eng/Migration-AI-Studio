@@ -99,6 +99,49 @@ END'''
         assert ' AS `LoadDate`' in candidate
 
 
+def test_full_refresh_repair_uses_current_review_artifact_before_ai(db):
+    p=ensure_project(db,'Repair current review artifact')
+    s=add_source(db,p.id,'src','server','MigrationDemo')
+    snapshot={'database':'MigrationDemo','objects':[
+        {'schema':'dbo','name':'Orders','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
+        {'schema':'dbo','name':'OrderItems','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
+        {'schema':'dbo','name':'OrderSummary','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
+        {'schema':'dbo','name':'usp_LoadOrderSummary','type':'PROCEDURE',
+         'definition':'CREATE PROCEDURE dbo.usp_LoadOrderSummary AS BEGIN EXEC dbo.UnsupportedDynamicProcedure; END'},
+    ]}
+    ingest_snapshot(db,p.id,s.id,snapshot); classify_project(db,p.id); create_mappings(db,p.id,'DEV','migration_dev')
+    procedure=db.scalar(select(MigrationObject).where(
+        MigrationObject.project_id==p.id,
+        MigrationObject.object_name=='usp_LoadOrderSummary',
+    ))
+    current=generate_artifact(db,p.id,procedure.id)
+    current.content='''CREATE OR REPLACE PROCEDURE `migration_dev`.`silver`.`usp_LoadOrderSummary`()
+LANGUAGE SQL
+SQL SECURITY INVOKER
+AS BEGIN
+DELETE FROM dbo.OrderSummary;
+INSERT INTO dbo.OrderSummary (OrderID, CustomerID, OrderDate, OrderAmount, LoadDate)
+SELECT o.OrderID, o.CustomerID, CAST(o.OrderDate AS DATE),
+       SUM(oi.Quantity * oi.UnitPrice * (1 - (oi.DiscountPercent / 100))), current_timestamp()
+FROM dbo.Orders o INNER JOIN dbo.OrderItems oi ON o.OrderID = oi.OrderID
+WHERE o.OrderStatus = 'COMPLETED'
+GROUP BY o.OrderID, o.CustomerID, CAST(o.OrderDate AS DATE);
+END;'''
+    db.commit()
+
+    result=analyze_remediation(db,p.id,procedure.id,'DEV',use_ai=False)
+    candidate=result['generated_candidate']
+    assert result['provider']=='DETERMINISTIC_REMEDIATION'
+    assert result['provider_request_sent'] is False
+    assert result['conversion_strategy']=='ATOMIC_FULL_REFRESH_CTAS'
+    assert result['deterministic_validation']['valid'] is True
+    assert 'CREATE OR REPLACE TABLE `migration_dev`.`silver`.`OrderSummary`' in candidate
+    assert '`migration_dev`.`bronze`.`Orders`' in candidate
+    assert '`migration_dev`.`bronze`.`OrderItems`' in candidate
+    assert 'DELETE FROM' not in candidate.upper()
+    assert 'dbo.' not in candidate.lower()
+
+
 def test_accept_remediation_creates_new_unapproved_version(db):
     p,obj=_seed(db)
     r=analyze_remediation(db,p.id,obj.id,'DEV',use_ai=True)
