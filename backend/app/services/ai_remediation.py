@@ -696,29 +696,57 @@ def _rewrite_full_refresh_delete_insert(
     return rewritten, True
 
 
+def _prepare_procedure_body(
+    db: Session,
+    project_id: str,
+    environment: str,
+    definition: str,
+    params: list[dict[str, Any]],
+) -> str:
+    body = _clean_routine_body(definition)
+    body = _replace_parameters(rewrite_common_tsql(body), params)
+    body = _replace_known_references(db, project_id, environment, body)
+    body = _rewrite_static_procedure_calls(body)
+    body = re.sub(r"(?is)\bBEGIN\s+TRAN(?:SACTION)?\s*;?", "", body)
+    body = re.sub(r"(?is)\bCOMMIT\s+TRAN(?:SACTION)?\s*;?", "", body)
+    body = re.sub(r"(?is)\bCOMMIT\s*;?", "", body)
+    body = re.sub(r"(?is)\bROLLBACK\s+TRAN(?:SACTION)?\s*;?", "", body)
+    body = re.sub(r"(?is)\bBEGIN\s+TRY\b\s*;?", "", body)
+    body = re.sub(r"(?is)\bEND\s+TRY\b\s*;?", "", body)
+    body = re.sub(r"(?is)\bBEGIN\s+CATCH\b[\s\S]*?\bEND\s+CATCH\b\s*;?", "", body)
+    return body.strip()
+
+
 def _deterministic_procedure_remediation(
     db: Session, project_id: str, o: MigrationObject, m: MigrationMapping, environment: str
 ) -> RemediationCandidate | None:
     definition = o.definition or ""
     params = _routine_parameters(db, project_id, o.id)
     sig = _parameter_signature(params, procedure=True)
-    body = _clean_routine_body(definition)
-    body = _replace_parameters(rewrite_common_tsql(body), params)
-    body = _replace_known_references(db, project_id, environment, body)
-    body = _rewrite_static_procedure_calls(body)
-
-    clean_body = re.sub(r"(?is)\bBEGIN\s+TRAN(?:SACTION)?\s*;?", "", body)
-    clean_body = re.sub(r"(?is)\bCOMMIT\s+TRAN(?:SACTION)?\s*;?", "", clean_body)
-    clean_body = re.sub(r"(?is)\bCOMMIT\s*;?", "", clean_body)
-    clean_body = re.sub(r"(?is)\bROLLBACK\s+TRAN(?:SACTION)?\s*;?", "", clean_body)
-    clean_body = re.sub(r"(?is)\bBEGIN\s+TRY\b\s*;?", "", clean_body)
-    clean_body = re.sub(r"(?is)\bEND\s+TRY\b\s*;?", "", clean_body)
-    clean_body = re.sub(r"(?is)\bBEGIN\s+CATCH\b[\s\S]*?\bEND\s+CATCH\b\s*;?", "", clean_body)
-    clean_body = clean_body.strip()
+    source_logic = definition
+    clean_body = _prepare_procedure_body(db, project_id, environment, definition, params)
 
     clean_body, full_refresh_rewritten = _rewrite_full_refresh_delete_insert(
         clean_body, output_mapping=m
     )
+
+    # A generated/current artifact may contain a cleaner executable projection
+    # than the original discovery definition (for example after SQL Server
+    # header normalization). Repair the exact governed version visible to the
+    # reviewer before spending an AI request.
+    if not full_refresh_rewritten:
+        current = _current_artifact_version(db, project_id, o.id)
+        if current and current.content and current.content.strip() != definition.strip():
+            current_body = _prepare_procedure_body(
+                db, project_id, environment, current.content, params
+            )
+            current_body, current_rewritten = _rewrite_full_refresh_delete_insert(
+                current_body, output_mapping=m
+            )
+            if current_rewritten:
+                clean_body = current_body
+                full_refresh_rewritten = True
+                source_logic = current.content
 
     if not clean_body or any(x in clean_body.lower() for x in ("goto ", "waitfor ", "sp_executesql")):
         return None
@@ -731,7 +759,7 @@ def _deterministic_procedure_remediation(
     return RemediationCandidate(
         object_id=o.id,
         issue_id=None,
-        source_logic=definition,
+        source_logic=source_logic,
         conversion_strategy=(
             "ATOMIC_FULL_REFRESH_CTAS"
             if full_refresh_rewritten
