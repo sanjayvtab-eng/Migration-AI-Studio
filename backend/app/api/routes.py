@@ -17,6 +17,7 @@ from app.services import environment_provisioning as environment_service
 from app.services import bronze_ingestion
 from app.services import prompt_orchestration
 from app.services import prompt_promotion
+from app.services import master_orchestration
 from app.services.type_compatibility import compatibility_catalog, transport_contract, transport_summary
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
@@ -130,6 +131,15 @@ class PromptPromotionPlanIn(BaseModel):
 class PromptPromotionExecuteIn(BaseModel):
     plan_id: str
     production_confirmed: bool=False
+
+class MasterMigrationPlanIn(BaseModel):
+    prompt: str
+
+class MasterMigrationExecuteIn(BaseModel):
+    plan_id: str
+    workflow_authorized: bool=False
+    production_authorized: bool=False
+    data_replacement_authorized: bool=False
 
 
 
@@ -337,6 +347,36 @@ def prompt_promotion_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
         return {
             "plan":prompt_promotion.get_promotion_plan(db,project_id),
             "execution":prompt_promotion.latest_promotion_execution(db,project_id),
+        }
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/master-migration/plan")
+def master_migration_plan(project_id:str,data:MasterMigrationPlanIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return master_orchestration.generate_master_plan(db,project_id,prompt=data.prompt,actor=actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/master-migration/execute")
+def master_migration_execute(project_id:str,data:MasterMigrationExecuteIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try:
+        return master_orchestration.execute_master_plan(
+            db,project_id,plan_id=data.plan_id,actor=actor,
+            workflow_authorized=data.workflow_authorized,
+            production_authorized=data.production_authorized,
+            data_replacement_authorized=data.data_replacement_authorized,
+        )
+    except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/master-migration/latest")
+def master_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try:
+        return {
+            "plan":master_orchestration.get_master_plan(db,project_id),
+            "execution":master_orchestration.latest_master_execution(db,project_id),
         }
     except Exception as e: _environment_error(e)
 

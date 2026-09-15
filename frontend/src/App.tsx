@@ -308,6 +308,12 @@ export default function App() {
   const [promotionPlan, setPromotionPlan] = useState<any>(null);
   const [promotionExecution, setPromotionExecution] = useState<any>(null);
   const [promotionRunning, setPromotionRunning] = useState(false);
+  const [masterPrompt, setMasterPrompt] = useState(
+    "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks",
+  );
+  const [masterPlan, setMasterPlan] = useState<any>(null);
+  const [masterExecution, setMasterExecution] = useState<any>(null);
+  const [masterRunning, setMasterRunning] = useState(false);
   async function loadProjects() {
     const ps = await api<Project[]>("/projects");
     setProjects(ps);
@@ -406,7 +412,7 @@ export default function App() {
         if (promptPromotion?.execution) setPromotionExecution(promptPromotion.execution);
       }
       if (page === "Migration Workflow" && id) {
-        const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData]: any = await Promise.all([
+        const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData, masterData]: any = await Promise.all([
           api(`/projects/${id}/compatibility/summary`),
           api(`/projects/${id}/medallion/plan?environment=DEV`),
           api(`/projects/${id}/semantics`),
@@ -415,6 +421,7 @@ export default function App() {
           api(`/projects/${id}/module/cutover`),
           api(`/projects/${id}/module/decommission`),
           api(`/projects/${id}/prompt-migration/latest`).catch(() => ({ plan: null, execution: null })),
+          api(`/projects/${id}/master-migration/latest`).catch(() => ({ plan: null, execution: null })),
         ]);
         setCompat(compatibility);
         setMedallion(mp);
@@ -424,6 +431,8 @@ export default function App() {
         setWorkflowOps({ cutover, decommission });
         if (promptData?.plan) setPromptPlan(promptData.plan);
         if (promptData?.execution) setPromptExecution(promptData.execution);
+        setMasterPlan(masterData?.plan || null);
+        setMasterExecution(masterData?.execution || null);
       }
       if (page === "Users") setUsers(await api("/users"));
       if (page === "Administration") setDiag(await api("/system/diagnostics"));
@@ -501,6 +510,65 @@ export default function App() {
       setMsg(e.message);
     } finally {
       setBusy(false);
+    }
+  }
+  async function generateMasterPlan(text?: string) {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const prompt = text || masterPrompt;
+      const result: any = await api(`/projects/${pid}/master-migration/plan`, {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      });
+      setMasterPlan(result);
+      setMasterExecution(null);
+      setMsg(
+        result.status === "NEEDS_USER_INPUT"
+          ? "Resolve the master workflow prerequisites before authorization."
+          : "End-to-end migration plan generated and awaiting one-time authorization.",
+      );
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function executeMasterPlan() {
+    if (!pid || !masterPlan?.plan_id) return;
+    const isResume = masterPlan.status === "FAILED" || masterPlan.status === "PAUSED";
+    if (!isResume) {
+      const confirmed = window.confirm(
+        "Authorize this complete SQL Server migration through DEV, TEST, UAT, and PROD, including governed FULL_LOAD replacement when required? The workflow will stop automatically if any quality gate fails.",
+      );
+      if (!confirmed) return;
+    }
+    setBusy(true);
+    setMasterRunning(true);
+    setMsg(isResume ? "Resuming from the last passed checkpoint..." : "Executing the authorized end-to-end migration...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-migration/execute`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: masterPlan.plan_id,
+          workflow_authorized: !isResume,
+          production_authorized: !isResume,
+          data_replacement_authorized: !isResume,
+        }),
+      });
+      setMasterExecution(result);
+      setMsg(
+        result.status === "COMPLETED"
+          ? "SQL Server migration completed through PROD with all quality gates passed."
+          : `Master workflow stopped at ${result.failed_stage || "a governed gate"}.`,
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setMasterRunning(false);
     }
   }
   async function executePromptPlan() {
@@ -1450,6 +1518,123 @@ export default function App() {
           )}
           {page === "Migration Workflow" && (
             <>
+              {/* Release 6: one prompt, one authorization, full environment chain */}
+              <div className="prompt-studio master-studio">
+                <div className="prompt-studio-head">
+                  <div className="prompt-studio-title">
+                    <Workflow size={20} color="#6ee7b7" />
+                    <div>
+                      <h3>Release 6 · Master End-to-End Orchestrator</h3>
+                      <p>
+                        One prompt and one-time authorization for SQL Server → DEV → TEST → UAT → PROD.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="prompt-badge"><ShieldCheck size={12} /> Policy governed</span>
+                </div>
+                <div className="prompt-input-row">
+                  <input
+                    value={masterPrompt}
+                    onChange={(e) => setMasterPrompt(e.target.value)}
+                    placeholder="Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks"
+                    disabled={busy || masterRunning}
+                  />
+                  <button
+                    className="primary-action"
+                    disabled={!pid || busy || masterRunning || !masterPrompt.trim()}
+                    onClick={() => generateMasterPlan()}
+                  >
+                    <Command size={15} /> Generate Master Plan
+                  </button>
+                </div>
+                <div className="master-safety-line">
+                  <ShieldCheck size={14} /> AI repairs eligible artifacts; deterministic validation and environment quality gates control every promotion.
+                </div>
+
+                {masterPlan && (
+                  <div className="prompt-plan-card master-plan-card">
+                    {masterPlan.status === "NEEDS_USER_INPUT" ? (
+                      <div className="promotion-blocked">
+                        <b><ShieldAlert size={16} /> Master workflow prerequisites required</b>
+                        <ul>{masterPlan.blockers?.map((item: string, index: number) => <li key={index}>{item}</li>)}</ul>
+                        {masterPlan.actionable_steps?.[0] && <small><strong>Next action:</strong> {masterPlan.actionable_steps[0]}</small>}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="promotion-plan-head">
+                          <div>
+                            <small>AUTHORIZED ENVIRONMENT CHAIN</small>
+                            <h4>
+                              {masterPlan.source?.database_name} → Databricks PROD
+                              <Badge s={masterPlan.status} />
+                            </h4>
+                          </div>
+                          {(["PENDING_APPROVAL", "FAILED", "PAUSED"].includes(masterPlan.status)) && (
+                            <button
+                              className="primary-action master-execute-button"
+                              disabled={busy || masterRunning}
+                              onClick={executeMasterPlan}
+                            >
+                              <Play size={15} />
+                              {masterPlan.status === "PENDING_APPROVAL"
+                                ? "Authorize & Run Full Migration"
+                                : "Resume from Last Checkpoint"}
+                            </button>
+                          )}
+                        </div>
+                        <div className="prompt-impact-grid">
+                          <div className="prompt-impact-item"><span>Source tables</span><b>{masterPlan.impact?.table_count || 0}</b></div>
+                          <div className="prompt-impact-item"><span>Estimated rows</span><b>{masterPlan.impact?.estimated_rows || 0}</b></div>
+                          <div className="prompt-impact-item"><span>Authorization</span><b>{masterPlan.authorization ? "GRANTED" : "REQUIRED"}</b></div>
+                          <div className="prompt-impact-item"><span>Risk</span><b>{masterPlan.impact?.risk_level || "HIGH"}</b></div>
+                        </div>
+                        <div className="master-stage-chain">
+                          {masterPlan.stages?.map((stage: any) => {
+                            const checkpoint = masterPlan.checkpoints?.[stage.stage] || {};
+                            return (
+                              <div className="master-stage" key={stage.stage}>
+                                <span>{stage.environment}</span>
+                                <b>{stage.title}</b>
+                                <Badge s={checkpoint.status || "PENDING"} />
+                                <small>{checkpoint.attempts || 0} attempt(s)</small>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {masterExecution && (
+                  <div className="prompt-exec-card master-execution-card">
+                    <div className="promotion-exec-head">
+                      <div>
+                        <small>MASTER RUN {masterExecution.run_id}</small>
+                        <b>SQL Server → Databricks PROD</b>
+                      </div>
+                      <Badge s={masterExecution.status} />
+                    </div>
+                    <div className="prompt-exec-stages master-exec-stages">
+                      {Object.entries(masterExecution.stages || {}).map(([name, stage]: [string, any]) => (
+                        <div className="prompt-exec-step" key={name}>
+                          <span>{name}</span>
+                          <Badge s={stage.status} />
+                          <small>{stage.checkpoint_reused ? "checkpoint reused" : `attempt ${stage.attempts || 1}`}</small>
+                        </div>
+                      ))}
+                    </div>
+                    {masterExecution.status === "FAILED" && (
+                      <div className="prompt-exec-error">
+                        <b><ShieldAlert size={15} /> Safe stop: {masterExecution.failed_stage}</b>
+                        <span>{masterExecution.error}</span>
+                        <small><strong>Next action:</strong> {masterExecution.errors?.[0]?.recommended_action}</small>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Release 3: AI Prompt Migration Studio */}
               <div className="prompt-studio">
                 <div className="prompt-studio-head">
