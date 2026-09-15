@@ -62,6 +62,29 @@ def _record(
     return rec
 
 
+def _reusable_bronze_checkpoint(
+    db: Session, project_id: str, tables: list[MigrationObject]
+) -> dict[str, Any] | None:
+    """Return the latest complete Bronze run only when it matches this plan's tables."""
+    latest = bronze_ingestion.latest(db, project_id)
+    if latest.get("status") != "PASSED" or not latest.get("run_id"):
+        return None
+    expected_sources = {f"{table.schema_name}.{table.object_name}" for table in tables}
+    passed_results = [
+        item for item in latest.get("results", []) if item.get("status") == "PASSED"
+    ]
+    actual_sources = {str(item.get("source")) for item in passed_results}
+    if expected_sources != actual_sources:
+        return None
+    return {
+        "reusable": True,
+        "run_id": latest["run_id"],
+        "table_count": len(passed_results),
+        "rows_transferred": sum(int(item.get("rows_loaded") or 0) for item in passed_results),
+        "completed_at": latest.get("ended_at"),
+    }
+
+
 def parse_and_validate_prompt(
     db: Session,
     project_id: str,
@@ -224,7 +247,22 @@ def generate_prompt_plan(
         ).all()
     )
 
-    estimated_rows = 0
+    if not tables:
+        return {
+            "status": "NEEDS_USER_INPUT",
+            "prompt": prompt.strip(),
+            "blockers": [
+                f"No discovered SQL Server tables are available for {source_info['database_name']}."
+            ],
+            "actionable_steps": [
+                "Run source discovery and confirm that table metadata is visible before generating the migration plan."
+            ],
+            "intent": intent,
+            "source": source_info,
+        }
+
+    bronze_checkpoint = _reusable_bronze_checkpoint(db, project_id, tables)
+    estimated_rows = bronze_checkpoint["rows_transferred"] if bronze_checkpoint else 0
     destinations: list[dict[str, Any]] = []
     for t in tables:
         columns = list(
@@ -283,6 +321,7 @@ def generate_prompt_plan(
             "estimated_rows": estimated_rows,
             "risk_level": risk_level,
             "requires_overwrite": requires_overwrite,
+            "bronze_checkpoint": bronze_checkpoint,
         },
         "stages": stages,
         "destinations": destinations,
@@ -370,6 +409,12 @@ def execute_prompt_plan(
     plan_payload["approved_by"] = actor
     plan_payload["approved_at"] = started_at.isoformat()
     plan_payload["run_id"] = run_id
+    plan_record.payload_json = json.dumps(
+        {"status": "EXECUTING", "run_id": plan_id, "plan": plan_payload},
+        default=str,
+        sort_keys=True,
+    )
+    db.commit()
 
     _record(
         db,
@@ -391,9 +436,19 @@ def execute_prompt_plan(
         "stages": {},
         "errors": [],
     }
+    current_stage = "STARTING"
+    recommended_actions = {
+        "DISCOVERY": "Open Discovery, rerun source discovery, and confirm that SQL Server objects are visible.",
+        "BRONZE_INGESTION": "Open Environment Setup, review the latest Bronze ingestion details, then retry the prompt migration.",
+        "MEDALLION_GENERATION": "Open Medallion Design and review semantic inference, keys, grain, and generated artifact evidence.",
+        "VALIDATION_AND_REMEDIATION": "Open Medallion Design or AI Remediation and review the remaining failed artifacts before retrying.",
+        "DEV_DEPLOYMENT": "Open DEV Deployment and inspect the deployment logs for the failed target artifact.",
+        "RECONCILIATION": "Open DEV Deployment and review source-to-target reconciliation and quality-gate evidence.",
+    }
 
     try:
         # Step 1: Discovery Check
+        current_stage = "DISCOVERY"
         existing_objects = list(
             db.scalars(
                 select(MigrationObject).where(
@@ -409,38 +464,75 @@ def execute_prompt_plan(
             execution_results["stages"]["DISCOVERY"] = {"status": "PASSED", "details": {"objects": len(existing_objects)}}
 
         # Step 2: Bronze Ingestion
-        bronze_res = bronze_ingestion.run(
-            db,
-            project_id,
-            actor=actor,
-            load_mode=intent.get("load_mode", "FULL_LOAD"),
-            source_id=source_id,
-            overwrite_confirmed=overwrite_confirmed or plan_payload.get("impact", {}).get("requires_overwrite", False),
-        )
+        current_stage = "BRONZE_INGESTION"
+        bronze_checkpoint = plan_payload.get("impact", {}).get("bronze_checkpoint") or {}
+        if bronze_checkpoint.get("reusable"):
+            bronze_res = {
+                "status": "PASSED",
+                "passed": bronze_checkpoint.get("table_count", 0),
+                "failed": 0,
+                "run_id": bronze_checkpoint.get("run_id"),
+                "results": [{
+                    "status": "PASSED",
+                    "rows_loaded": bronze_checkpoint.get("rows_transferred", 0),
+                }],
+                "checkpoint_reused": True,
+            }
+        else:
+            bronze_res = bronze_ingestion.run(
+                db,
+                project_id,
+                actor=actor,
+                load_mode=intent.get("load_mode", "FULL_LOAD"),
+                source_id=source_id,
+                replace_existing_data=overwrite_confirmed or plan_payload.get("impact", {}).get("requires_overwrite", False),
+            )
         execution_results["stages"]["BRONZE_INGESTION"] = {
-            "status": bronze_res.get("status", "PASSED"),
-            "tables_ingested": bronze_res.get("table_count", 0),
-            "rows_transferred": bronze_res.get("rows_transferred", 0),
-            "failures": bronze_res.get("failed_count", 0),
+            "status": bronze_res.get("status", "FAILED"),
+            "tables_ingested": bronze_res.get("passed", 0),
+            "rows_transferred": sum(
+                int(item.get("rows_loaded") or 0)
+                for item in bronze_res.get("results", [])
+                if item.get("status") == "PASSED"
+            ),
+            "failures": bronze_res.get("failed", 0),
             "run_id": bronze_res.get("run_id"),
+            "checkpoint_reused": bronze_res.get("checkpoint_reused", False),
         }
-        if bronze_res.get("status") == "FAILED":
-            raise RuntimeError(f"Bronze ingestion failed: {bronze_res.get('error') or 'one or more tables failed'}")
+        if bronze_res.get("status") != "PASSED":
+            failed_items = [
+                item for item in bronze_res.get("results", [])
+                if item.get("status") != "PASSED"
+            ]
+            detail = "; ".join(
+                f"{item.get('source', 'unknown table')}: {item.get('error', 'load failed')}"
+                for item in failed_items[:3]
+            )
+            raise RuntimeError(f"Bronze ingestion did not fully pass: {detail or 'one or more tables failed'}")
 
         # Step 3: Medallion Modeling & Artifact Generation
+        current_stage = "MEDALLION_GENERATION"
         sem_res = medallion.infer_semantics_hybrid(db, project_id)
-        medallion.approve_all_semantics(db, project_id, actor=actor)
+        semantic_approval = medallion.approve_all_semantics(db, project_id, actor=actor)
+        if semantic_approval.get("errors"):
+            raise RuntimeError(
+                "Semantic approval failed: " + "; ".join(semantic_approval["errors"][:3])
+            )
         plan_res = medallion.build_medallion_plan(db, project_id, environment="DEV", catalog=catalog_name)
         art_res = medallion.generate_medallion_artifacts(db, project_id, environment="DEV")
-        medallion.approve_all_medallion_artifacts(db, project_id, environment="DEV", reviewer=actor)
+        generated_count = int(art_res.get("generated_count", art_res.get("generated", 0)) or 0)
+        if generated_count < 1:
+            raise RuntimeError("Medallion generation produced no deployable artifacts")
 
         execution_results["stages"]["MEDALLION_GENERATION"] = {
             "status": "PASSED",
             "nodes_planned": plan_res.get("node_count", 0),
-            "artifacts_generated": art_res.get("generated_count", 0),
+            "artifacts_generated": generated_count,
+            "ai_attempted": sem_res.get("ai_attempted", 0),
         }
 
         # Step 4: Static Validation & AI Remediation
+        current_stage = "VALIDATION_AND_REMEDIATION"
         rem_res = ai_remediation.run_remediation_batch(
             db,
             project_id,
@@ -450,51 +542,73 @@ def execute_prompt_plan(
             reviewer=actor,
             max_objects=50,
         )
-        medallion.approve_all_medallion_artifacts(db, project_id, environment="DEV", reviewer=actor)
+        validation_report = medallion.medallion_validation_report(db, project_id, environment="DEV")
+        if validation_report.get("status") != "PASSED":
+            failed = validation_report.get("failed_artifacts", [])
+            detail = "; ".join(
+                f"{item.get('target_fqn', 'artifact')}: {', '.join(item.get('errors') or ['validation failed'])}"
+                for item in failed[:3]
+            )
+            raise RuntimeError(
+                f"{validation_report.get('failed_count', len(failed))} artifact(s) remain unresolved after remediation"
+                + (f": {detail}" if detail else "")
+            )
+        artifact_approval = medallion.approve_all_medallion_artifacts(
+            db, project_id, environment="DEV", reviewer=actor
+        )
+        if artifact_approval.get("errors"):
+            raise RuntimeError(
+                "Artifact approval failed: " + "; ".join(artifact_approval["errors"][:3])
+            )
         execution_results["stages"]["VALIDATION_AND_REMEDIATION"] = {
             "status": "PASSED",
             "remediated_count": rem_res.get("applied_count", 0),
+            "validated_count": validation_report.get("passed_count", generated_count),
+            "remaining_failures": 0,
         }
 
         # Step 5: DEV Medallion Deployment
-        try:
-            dep_res = medallion.deploy_medallion_dev(
-                db,
-                project_id,
-                allow_destructive=False,
-                actor=actor,
-                run_id=run_id,
-            )
-            execution_results["stages"]["DEV_DEPLOYMENT"] = {
-                "status": dep_res.get("status", "PASSED"),
-                "deployed_count": dep_res.get("deployed_count", 0),
-            }
-        except Exception as dep_err:
-            execution_results["stages"]["DEV_DEPLOYMENT"] = {
-                "status": "WARNING",
-                "message": f"Medallion deployment skipped or warning: {dep_err}",
-            }
+        current_stage = "DEV_DEPLOYMENT"
+        dep_res = medallion.deploy_medallion_dev(
+            db,
+            project_id,
+            allow_destructive=False,
+            actor=actor,
+            run_id=run_id,
+        )
+        if dep_res.get("status") != "PASSED":
+            raise RuntimeError(dep_res.get("error") or "DEV deployment did not pass")
+        execution_results["stages"]["DEV_DEPLOYMENT"] = {
+            "status": "PASSED",
+            "deployed_count": dep_res.get("deployed_count", 0),
+            "run_id": dep_res.get("run_id", run_id),
+        }
 
         # Step 6: Reconciliation & Gate
-        try:
-            rec_res = deployment.run_reconciliation(db, project_id, environment="DEV", actor=actor)
-            gate_res = deployment.evaluate_dev_gate(db, project_id, actor=actor)
-            execution_results["stages"]["RECONCILIATION"] = {
-                "status": gate_res.get("status", "PASSED"),
-                "reconciliation_status": rec_res.get("status"),
-                "gate_status": gate_res.get("status"),
-            }
-        except Exception as rec_err:
-            execution_results["stages"]["RECONCILIATION"] = {
-                "status": "SKIPPED",
-                "message": f"Reconciliation noted: {rec_err}",
-            }
+        current_stage = "RECONCILIATION"
+        rec_res = deployment.run_reconciliation(db, project_id, environment="DEV", actor=actor)
+        gate_res = deployment.evaluate_dev_gate(db, project_id, actor=actor)
+        if rec_res.get("status") != "PASSED" or gate_res.get("status") != "PASSED":
+            raise RuntimeError(
+                f"DEV quality gate did not pass (reconciliation={rec_res.get('status')}, gate={gate_res.get('status')})"
+            )
+        execution_results["stages"]["RECONCILIATION"] = {
+            "status": "PASSED",
+            "reconciliation_status": rec_res.get("status"),
+            "gate_status": gate_res.get("status"),
+        }
 
         ended_at = datetime.utcnow()
         execution_results["status"] = "COMPLETED"
         execution_results["ended_at"] = ended_at.isoformat()
         plan_payload["status"] = "COMPLETED"
         plan_payload["ended_at"] = ended_at.isoformat()
+        plan_record.payload_json = json.dumps(
+            {"status": "COMPLETED", "run_id": plan_id, "plan": plan_payload},
+            default=str,
+            sort_keys=True,
+        )
+        db.commit()
 
         _record(
             db,
@@ -510,9 +624,30 @@ def execute_prompt_plan(
         ended_at = datetime.utcnow()
         execution_results["status"] = "FAILED"
         execution_results["error"] = str(exc)
+        execution_results["failed_stage"] = current_stage
+        execution_results["errors"].append({
+            "stage": current_stage,
+            "message": str(exc),
+            "recommended_action": recommended_actions.get(
+                current_stage, "Review the execution evidence and retry after correcting the blocker."
+            ),
+        })
+        failed_stage = execution_results["stages"].setdefault(current_stage, {})
+        failed_stage.update({
+            "status": "FAILED",
+            "error": str(exc),
+            "recommended_action": recommended_actions.get(current_stage),
+        })
         execution_results["ended_at"] = ended_at.isoformat()
         plan_payload["status"] = "FAILED"
         plan_payload["error"] = str(exc)
+        plan_payload["failed_stage"] = current_stage
+        plan_record.payload_json = json.dumps(
+            {"status": "FAILED", "run_id": plan_id, "plan": plan_payload},
+            default=str,
+            sort_keys=True,
+        )
+        db.commit()
 
         _record(
             db,

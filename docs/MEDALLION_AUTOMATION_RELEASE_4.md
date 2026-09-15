@@ -49,3 +49,20 @@ The artifact detail response contains the current SQL, a unified diff against th
 6. Inspect lineage and SQL diffs; remediate failed artifacts when eligible.
 7. Human-approve current artifact versions.
 8. Deploy the governed set to DEV and reconcile source-to-target results.
+
+## Prompt workflow hardening
+
+The prompt migration workflow now enforces the same Release 4 controls instead of
+reporting a run as completed when a downstream stage was skipped or failed.
+
+- A plan cannot be approved when discovery contains zero SQL Server tables.
+- A latest successful Bronze run is reused only when its complete source-table set
+  exactly matches the newly generated plan.
+- Prompt-triggered full loads pass the Bronze service's governed
+  `replace_existing_data` approval correctly.
+- `PARTIAL` Bronze results, empty Medallion output, unresolved static validation,
+  deployment failures, and reconciliation failures stop the run.
+- Failed executions record the exact stage, sanitized error, and operator action;
+  the Migration Workflow UI displays all three.
+- A prompt plan is persisted as `EXECUTING`, `COMPLETED`, or `FAILED`, preserving
+  the final checkpoint as audit evidence.

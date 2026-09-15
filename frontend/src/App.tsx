@@ -1474,7 +1474,7 @@ export default function App() {
                             <button
                               className="primary-action"
                               style={{ background: "linear-gradient(135deg, #10b981, #059669)", borderColor: "transparent" }}
-                              disabled={busy || promptRunning}
+                              disabled={busy || promptRunning || (promptPlan.impact?.table_count || 0) < 1}
                               onClick={executePromptPlan}
                             >
                               <Play size={15} /> Approve & Execute Migration
@@ -1490,6 +1490,9 @@ export default function App() {
                           <div className="prompt-impact-item">
                             <span>Estimated Volume</span>
                             <b>{promptPlan.impact?.estimated_rows || 0} rows</b>
+                            {promptPlan.impact?.bronze_checkpoint?.reusable && (
+                              <small>Verified Bronze checkpoint available</small>
+                            )}
                           </div>
                           <div className="prompt-impact-item">
                             <span>Risk Assessment</span>
@@ -1581,8 +1584,20 @@ export default function App() {
                             {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
                             {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
                             {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
+                            {v.rows_transferred !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.rows_transferred} rows</small>}
+                            {v.checkpoint_reused && <small style={{ display: "block", marginTop: 2 }}>verified checkpoint reused</small>}
+                            {v.error && <small className="prompt-stage-error">{v.error}</small>}
                           </div>
                         ))}
+                      </div>
+                    )}
+                    {promptExecution.status === "FAILED" && (
+                      <div className="prompt-exec-error">
+                        <b><ShieldAlert size={15} /> Failed stage: {promptExecution.failed_stage || "UNKNOWN"}</b>
+                        <span>{promptExecution.error || "The migration pipeline did not complete."}</span>
+                        {promptExecution.errors?.[0]?.recommended_action && (
+                          <small><strong>Next action:</strong> {promptExecution.errors[0].recommended_action}</small>
+                        )}
                       </div>
                     )}
                   </div>

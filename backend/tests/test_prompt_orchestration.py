@@ -102,6 +102,53 @@ def test_generate_prompt_plan_creates_impact_and_stages(db):
     assert plan["destinations"][0]["gold"] == "migration_dev.gold.dim_customers"
 
 
+def test_generate_prompt_plan_reuses_matching_bronze_checkpoint(db, monkeypatch):
+    project, _ = _seed(db)
+    monkeypatch.setattr(
+        prompt_orchestration.bronze_ingestion,
+        "latest",
+        lambda *a, **kw: {
+            "status": "PASSED", "run_id": "BRI_COMPLETE", "ended_at": "2026-09-15T08:00:00",
+            "results": [{"status": "PASSED", "source": "dbo.Customers", "rows_loaded": 5}],
+        },
+    )
+
+    plan = prompt_orchestration.generate_prompt_plan(
+        db, project.id, "Migrate MigrationDemo to DEV Databricks"
+    )
+
+    assert plan["impact"]["bronze_checkpoint"]["reusable"] is True
+    assert plan["impact"]["bronze_checkpoint"]["run_id"] == "BRI_COMPLETE"
+    assert plan["impact"]["estimated_rows"] == 5
+
+
+def test_generate_prompt_plan_blocks_when_discovery_has_no_tables(db):
+    project = ensure_project(db, "Prompt Plan Without Discovery")
+    add_source(db, project.id, "SQL Server", "localhost", "MigrationDemo")
+    db.add(
+        MigrationDatabricksConfiguration(
+            id=uid("DBC"), project_id=project.id,
+            workspace_host="dbc-example.cloud.databricks.com",
+            http_path="/sql/1.0/warehouses/test",
+            token_env_key="DATABRICKS_TOKEN", catalog_prefix="migration", status="READY",
+        )
+    )
+    db.add(
+        MigrationEnvironmentPlan(
+            id=uid("EVP"), project_id=project.id, environment="DEV",
+            catalog_name="migration_dev", status="PROVISIONED",
+        )
+    )
+    db.commit()
+
+    plan = prompt_orchestration.generate_prompt_plan(
+        db, project.id, "Migrate MigrationDemo to DEV Databricks"
+    )
+
+    assert plan["status"] == "NEEDS_USER_INPUT"
+    assert any("no discovered" in blocker.lower() for blocker in plan["blockers"])
+
+
 def test_execute_prompt_plan_requires_approval(db):
     project, _ = _seed(db)
     with pytest.raises(LookupError, match="not found"):
@@ -116,16 +163,22 @@ def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch):
     plan_id = plan["plan_id"]
 
     # Mock bronze_ingestion.run
+    bronze_call = {}
+
+    def successful_bronze(*args, **kwargs):
+        bronze_call.update(kwargs)
+        return {
+            "status": "PASSED",
+            "passed": 1,
+            "failed": 0,
+            "results": [{"status": "PASSED", "rows_loaded": 50}],
+            "run_id": "RUN_BRONZE_TEST",
+        }
+
     monkeypatch.setattr(
         prompt_orchestration.bronze_ingestion,
         "run",
-        lambda *args, **kwargs: {
-            "status": "PASSED",
-            "table_count": 1,
-            "rows_transferred": 50,
-            "failed_count": 0,
-            "run_id": "RUN_BRONZE_TEST",
-        },
+        successful_bronze,
     )
 
     # Mock medallion calls
@@ -133,6 +186,7 @@ def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch):
     monkeypatch.setattr(prompt_orchestration.medallion, "approve_all_semantics", lambda *a, **kw: {})
     monkeypatch.setattr(prompt_orchestration.medallion, "build_medallion_plan", lambda *a, **kw: {"node_count": 3})
     monkeypatch.setattr(prompt_orchestration.medallion, "generate_medallion_artifacts", lambda *a, **kw: {"generated_count": 3})
+    monkeypatch.setattr(prompt_orchestration.medallion, "medallion_validation_report", lambda *a, **kw: {"status": "PASSED", "passed_count": 3, "failed_count": 0})
     monkeypatch.setattr(prompt_orchestration.medallion, "approve_all_medallion_artifacts", lambda *a, **kw: {})
     monkeypatch.setattr(prompt_orchestration.medallion, "deploy_medallion_dev", lambda *a, **kw: {"status": "PASSED", "deployed_count": 3})
 
@@ -151,11 +205,41 @@ def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch):
     assert res["stages"]["BRONZE_INGESTION"]["status"] == "PASSED"
     assert res["stages"]["MEDALLION_GENERATION"]["status"] == "PASSED"
     assert res["stages"]["RECONCILIATION"]["status"] == "PASSED"
+    assert bronze_call["replace_existing_data"] is False
+    assert "overwrite_confirmed" not in bronze_call
 
     # Check latest execution query
     latest = prompt_orchestration.latest_prompt_execution(db, project.id)
     assert latest is not None
     assert latest["status"] == "COMPLETED"
+
+
+def test_execute_prompt_plan_reports_partial_bronze_failure(db, monkeypatch):
+    project, _ = _seed(db)
+    plan = prompt_orchestration.generate_prompt_plan(
+        db, project.id, "Migrate MigrationDemo to DEV Databricks"
+    )
+    monkeypatch.setattr(
+        prompt_orchestration.bronze_ingestion,
+        "run",
+        lambda *a, **kw: {
+            "status": "PARTIAL", "passed": 1, "failed": 1, "run_id": "BRI_PARTIAL",
+            "results": [
+                {"object_id": "one", "source": "dbo.Customers", "status": "PASSED", "rows_loaded": 5},
+                {"object_id": "two", "source": "dbo.Orders", "status": "FAILED", "error": "warehouse timeout"},
+            ],
+        },
+    )
+
+    result = prompt_orchestration.execute_prompt_plan(db, project.id, plan["plan_id"])
+
+    assert result["status"] == "FAILED"
+    assert result["failed_stage"] == "BRONZE_INGESTION"
+    assert result["stages"]["BRONZE_INGESTION"]["status"] == "FAILED"
+    assert "dbo.Orders" in result["error"]
+    assert result["errors"][0]["recommended_action"]
+
+
 def test_prompt_api_workflow(client, auth_headers, db, monkeypatch):
     p = client.post("/api/projects", headers=auth_headers, json={"name": "Prompt API Project"}).json()
     pid = p["id"]
@@ -198,6 +282,18 @@ def test_prompt_api_workflow(client, auth_headers, db, monkeypatch):
         )
     )
     db.commit()
+    ingest_snapshot(
+        db,
+        pid,
+        s["id"],
+        {
+            "database": "MigrationDemo",
+            "objects": [{
+                "schema": "dbo", "name": "Customers", "type": "TABLE",
+                "columns": [{"name": "CustomerId", "type": "int", "nullable": False}],
+            }],
+        },
+    )
 
     # Plan when provisioned
     res = client.post(
@@ -217,17 +313,19 @@ def test_prompt_api_workflow(client, auth_headers, db, monkeypatch):
         "run",
         lambda *args, **kwargs: {
             "status": "PASSED",
-            "table_count": 0,
-            "rows_transferred": 0,
-            "failed_count": 0,
+            "passed": 1,
+            "failed": 0,
+            "results": [{"status": "PASSED", "rows_loaded": 5}],
             "run_id": "RUN_API_TEST",
         },
     )
     monkeypatch.setattr(prompt_orchestration.medallion, "infer_semantics_hybrid", lambda *a, **kw: {})
     monkeypatch.setattr(prompt_orchestration.medallion, "approve_all_semantics", lambda *a, **kw: {})
     monkeypatch.setattr(prompt_orchestration.medallion, "build_medallion_plan", lambda *a, **kw: {"node_count": 0})
-    monkeypatch.setattr(prompt_orchestration.medallion, "generate_medallion_artifacts", lambda *a, **kw: {"generated_count": 0})
+    monkeypatch.setattr(prompt_orchestration.medallion, "generate_medallion_artifacts", lambda *a, **kw: {"generated_count": 1})
+    monkeypatch.setattr(prompt_orchestration.medallion, "medallion_validation_report", lambda *a, **kw: {"status": "PASSED", "passed_count": 1, "failed_count": 0})
     monkeypatch.setattr(prompt_orchestration.medallion, "approve_all_medallion_artifacts", lambda *a, **kw: {})
+    monkeypatch.setattr(prompt_orchestration.medallion, "deploy_medallion_dev", lambda *a, **kw: {"status": "PASSED", "deployed_count": 1})
     monkeypatch.setattr(prompt_orchestration.ai_remediation, "run_remediation_batch", lambda *a, **kw: {"applied_count": 0})
     monkeypatch.setattr(prompt_orchestration.deployment, "run_reconciliation", lambda *a, **kw: {"status": "PASSED"})
     monkeypatch.setattr(prompt_orchestration.deployment, "evaluate_dev_gate", lambda *a, **kw: {"status": "PASSED"})
