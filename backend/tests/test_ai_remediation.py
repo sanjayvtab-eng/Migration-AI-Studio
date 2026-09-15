@@ -89,6 +89,9 @@ END'''
         assert result['deterministic_validation']['valid'] is True
         assert 'CREATE OR REPLACE PROCEDURE' in candidate
         assert 'CREATE OR REPLACE TABLE' in candidate
+        expected_output = procedure.object_name.removeprefix('usp_Load')
+        assert f'CREATE OR REPLACE TABLE `migration_dev`.`silver`.`{expected_output}`' in candidate
+        assert '`migration_dev`.`bronze`.`Orders`' in candidate
         assert 'DELETE FROM' not in candidate.upper()
         assert 'INSERT INTO' not in candidate.upper()
         assert 'dbo.' not in candidate.lower()
