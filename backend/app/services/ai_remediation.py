@@ -565,6 +565,117 @@ def _deterministic_function_remediation(
     )
 
 
+def _canonical_sql_identifier(value: str) -> str:
+    """Compare bracketed/backticked SQL identifiers without changing their spelling."""
+    return re.sub(r"[\s`\[\]]", "", value or "").lower()
+
+
+def _split_top_level_sql_list(value: str) -> list[str]:
+    """Split a SQL expression list while preserving commas inside calls and strings."""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    i = 0
+    while i < len(value):
+        char = value[i]
+        if quote:
+            if char == quote:
+                if i + 1 < len(value) and value[i + 1] == quote:
+                    i += 1
+                else:
+                    quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char == "," and depth == 0:
+            parts.append(value[start:i].strip())
+            start = i + 1
+        i += 1
+    parts.append(value[start:].strip())
+    return [part for part in parts if part]
+
+
+def _find_top_level_keyword(value: str, keyword: str) -> int:
+    """Return the first top-level SQL keyword offset, ignoring calls and strings."""
+    depth = 0
+    quote: str | None = None
+    upper = value.upper()
+    target = keyword.upper()
+    i = 0
+    while i <= len(value) - len(target):
+        char = value[i]
+        if quote:
+            if char == quote:
+                if i + 1 < len(value) and value[i + 1] == quote:
+                    i += 1
+                else:
+                    quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and upper.startswith(target, i):
+            before = upper[i - 1] if i else " "
+            after_at = i + len(target)
+            after = upper[after_at] if after_at < len(upper) else " "
+            if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+                return i
+        i += 1
+    return -1
+
+
+def _rewrite_full_refresh_delete_insert(body: str) -> tuple[str, bool]:
+    """Convert an unconditional DELETE + INSERT/SELECT reload to atomic CTAS.
+
+    The rewrite is deliberately narrow: the deleted and inserted target must be
+    identical, the INSERT must declare its output columns, and the SELECT must
+    expose the same number of top-level expressions. Anything else remains on
+    the governed AI/manual-review path.
+    """
+    match = re.fullmatch(
+        r"(?is)\s*DELETE\s+FROM\s+(.+?)\s*;\s*"
+        r"INSERT\s+INTO\s+(.+?)\s*\((.*?)\)\s*"
+        r"SELECT\s+(.*?)\s*;?\s*",
+        body,
+    )
+    if not match:
+        return body, False
+
+    delete_target, insert_target, raw_columns, select_tail = match.groups()
+    if _canonical_sql_identifier(delete_target) != _canonical_sql_identifier(insert_target):
+        return body, False
+
+    from_offset = _find_top_level_keyword(select_tail, "FROM")
+    if from_offset < 0:
+        return body, False
+    expressions = _split_top_level_sql_list(select_tail[:from_offset])
+    columns = _split_top_level_sql_list(raw_columns)
+    if not expressions or len(expressions) != len(columns):
+        return body, False
+
+    projected: list[str] = []
+    for expression, column in zip(expressions, columns):
+        clean_column = column.strip().strip("[]`").replace("`", "``")
+        if not clean_column or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", clean_column):
+            return body, False
+        projected.append(f"        {expression.strip()} AS `{clean_column}`")
+
+    from_tail = select_tail[from_offset:].strip().rstrip(";")
+    rewritten = (
+        f"CREATE OR REPLACE TABLE {insert_target.strip()} AS\n"
+        "SELECT\n"
+        + ",\n".join(projected)
+        + f"\n{from_tail};"
+    )
+    return rewritten, True
+
+
 def _deterministic_procedure_remediation(
     db: Session, project_id: str, o: MigrationObject, m: MigrationMapping, environment: str
 ) -> RemediationCandidate | None:
@@ -585,6 +696,8 @@ def _deterministic_procedure_remediation(
     clean_body = re.sub(r"(?is)\bBEGIN\s+CATCH\b[\s\S]*?\bEND\s+CATCH\b\s*;?", "", clean_body)
     clean_body = clean_body.strip()
 
+    clean_body, full_refresh_rewritten = _rewrite_full_refresh_delete_insert(clean_body)
+
     if not clean_body or any(x in clean_body.lower() for x in ("goto ", "waitfor ", "sp_executesql")):
         return None
 
@@ -597,15 +710,29 @@ def _deterministic_procedure_remediation(
         object_id=o.id,
         issue_id=None,
         source_logic=definition,
-        conversion_strategy="STRIP_TRANSACTION_WRAPPERS_TO_SQL_PROCEDURE",
+        conversion_strategy=(
+            "ATOMIC_FULL_REFRESH_CTAS"
+            if full_refresh_rewritten
+            else "STRIP_TRANSACTION_WRAPPERS_TO_SQL_PROCEDURE"
+        ),
         generated_candidate=validation["normalized_candidate"],
         confidence=0.95 if validation["valid"] else 0.50,
         assumptions=[
             "Databricks Delta Lake is ACID by default; explicit transaction boundaries are omitted.",
             "Static SQL statements run atomically within the procedure body.",
+            *(
+                ["The unconditional source DELETE plus INSERT represents an intentional full-table refresh."]
+                if full_refresh_rewritten
+                else []
+            ),
         ],
         risks=[
             "Multi-statement rollback behavior differs from full procedural transactions.",
+            *(
+                ["CREATE OR REPLACE TABLE replaces the target table atomically and must be approved as full-load behavior."]
+                if full_refresh_rewritten
+                else []
+            ),
         ],
         validation_plan=[
             "Run artifact-version-specific static validation.",
