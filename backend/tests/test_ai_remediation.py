@@ -38,6 +38,64 @@ def test_deterministic_first_remediation_creates_valid_candidate(db):
     assert r['auto_deployed'] is False
 
 
+def test_full_refresh_procedure_remediation_uses_atomic_ctas_without_ai(db):
+    p=ensure_project(db,'Full refresh procedure remediation')
+    s=add_source(db,p.id,'src','server','MigrationDemo')
+    customer_sales='''CREATE PROCEDURE dbo.usp_LoadCustomerSales AS BEGIN
+DELETE FROM dbo.CustomerSales;
+INSERT INTO dbo.CustomerSales
+(CustomerID, CustomerName, Country, OrderCount, TotalSales, LoadDate)
+SELECT c.CustomerID, LTRIM(RTRIM(c.CustomerName)), c.Country,
+       COUNT(DISTINCT o.OrderID),
+       SUM(oi.Quantity * oi.UnitPrice * (1 - (oi.DiscountPercent / 100))),
+       current_timestamp()
+FROM dbo.Customers c
+INNER JOIN dbo.Orders o ON c.CustomerID = o.CustomerID
+INNER JOIN dbo.OrderItems oi ON o.OrderID = oi.OrderID
+WHERE o.OrderStatus = 'COMPLETED'
+GROUP BY c.CustomerID, c.CustomerName, c.Country;
+END'''
+    order_summary='''CREATE PROCEDURE dbo.usp_LoadOrderSummary AS BEGIN
+DELETE FROM dbo.OrderSummary;
+INSERT INTO dbo.OrderSummary (OrderID, CustomerID, OrderDate, OrderAmount, LoadDate)
+SELECT o.OrderID, o.CustomerID, CAST(o.OrderDate AS DATE),
+       SUM(oi.Quantity * oi.UnitPrice * (1 - (oi.DiscountPercent / 100))),
+       current_timestamp()
+FROM dbo.Orders o
+INNER JOIN dbo.OrderItems oi ON o.OrderID = oi.OrderID
+WHERE o.OrderStatus = 'COMPLETED'
+GROUP BY o.OrderID, o.CustomerID, CAST(o.OrderDate AS DATE);
+END'''
+    snapshot={'database':'MigrationDemo','objects':[
+        {'schema':'dbo','name':'Customers','type':'TABLE','columns':[{'name':'CustomerID','type':'int'}]},
+        {'schema':'dbo','name':'Orders','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
+        {'schema':'dbo','name':'OrderItems','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
+        {'schema':'dbo','name':'CustomerSales','type':'TABLE','columns':[{'name':'CustomerID','type':'int'}]},
+        {'schema':'dbo','name':'OrderSummary','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
+        {'schema':'dbo','name':'usp_LoadCustomerSales','type':'PROCEDURE','definition':customer_sales},
+        {'schema':'dbo','name':'usp_LoadOrderSummary','type':'PROCEDURE','definition':order_summary},
+    ]}
+    ingest_snapshot(db,p.id,s.id,snapshot); classify_project(db,p.id); create_mappings(db,p.id,'DEV','migration_dev')
+    procedures=db.scalars(select(MigrationObject).where(
+        MigrationObject.project_id==p.id, MigrationObject.object_type=='PROCEDURE'
+    )).all()
+
+    for procedure in procedures:
+        result=analyze_remediation(db,p.id,procedure.id,'DEV',use_ai=False)
+        candidate=result['generated_candidate']
+        assert result['provider']=='DETERMINISTIC_REMEDIATION'
+        assert result['provider_request_sent'] is False
+        assert result['conversion_strategy']=='ATOMIC_FULL_REFRESH_CTAS'
+        assert result['deterministic_validation']['valid'] is True
+        assert 'CREATE OR REPLACE PROCEDURE' in candidate
+        assert 'CREATE OR REPLACE TABLE' in candidate
+        assert 'DELETE FROM' not in candidate.upper()
+        assert 'INSERT INTO' not in candidate.upper()
+        assert 'dbo.' not in candidate.lower()
+        assert 'LANGUAGE SQL\nSQL SECURITY INVOKER' in candidate
+        assert ' AS `LoadDate`' in candidate
+
+
 def test_accept_remediation_creates_new_unapproved_version(db):
     p,obj=_seed(db)
     r=analyze_remediation(db,p.id,obj.id,'DEV',use_ai=True)
