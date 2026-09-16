@@ -352,6 +352,18 @@ export default function App() {
       }
       if (moduleMap[page] && id)
         setRecords(await api(`/projects/${id}/module/${moduleMap[page]}`));
+      if (id && ["Medallion Design", "Deployments", "Migration Workflow"].includes(page)) {
+        const [status, projectLogs]: any = await Promise.all([
+          api(`/projects/${id}/medallion/deployments/dev/status`),
+          api(`/projects/${id}/deployments/dev/logs?limit=1000`),
+        ]);
+        const logs: any = status.run_id
+          ? await api(`/projects/${id}/medallion/deployments/${status.run_id}/logs`)
+          : { logs: [] };
+        setMedDeployment(status);
+        setMedLogs(logs.logs || []);
+        setLogView(projectLogs.logs || []);
+      }
       if (page === "Compatibility" && id)
         setCompat(await api(`/projects/${id}/compatibility/summary`));
       if (page === "Medallion Design" && id) {
@@ -382,15 +394,13 @@ export default function App() {
         setAiProvider(provider);
       }
       if (page === "Deployments" && id) {
-        const [reconciliation, legacyDeployment, medallionDeployment]: any =
+        const [reconciliation, legacyDeployment]: any =
           await Promise.all([
             api(`/projects/${id}/deployments/dev/reconciliation/latest`),
             api(`/projects/${id}/deployments/dev/status`),
-            api(`/projects/${id}/medallion/deployments/dev/status`),
           ]);
         setReconResult(reconciliation);
         setDeployment(legacyDeployment);
-        setMedDeployment(medallionDeployment);
       }
       if (page === "Waves" && id) {
         const [status, recon, uatStatus, uatReconciliation, prodStatus, prodReconciliation, promptPromotion]: any = await Promise.all([
@@ -476,13 +486,15 @@ export default function App() {
     setMsg("");
     try {
       const r = await fn();
-      setMsg("Completed successfully");
       await refresh();
+      setMsg(r?.status === "FAILED" ? r.error || "Execution failed. Review the saved logs." : "Completed successfully");
       return r;
     } catch (e: any) {
       if (String(e.message).includes("Invalid or expired token") || String(e.message).includes("Authentication required")) {
         localStorage.removeItem("mf_token");
         setReady(false);
+      } else {
+        await refresh();
       }
       setMsg(e.message);
       return null;
@@ -573,6 +585,10 @@ export default function App() {
   }
   async function executePromptPlan() {
     if (!pid || !promptPlan?.plan_id) return;
+    const overwriteConfirmed = Boolean(promptPlan.impact?.requires_overwrite) && window.confirm(
+      "Authorize FULL_LOAD replacement of existing DEV Bronze data when its checkpoint cannot be reused?",
+    );
+    if (promptPlan.impact?.requires_overwrite && !overwriteConfirmed) return;
     setBusy(true);
     setPromptRunning(true);
     setMsg("Executing governed migration pipeline...");
@@ -581,7 +597,7 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           plan_id: promptPlan.plan_id,
-          overwrite_confirmed: promptPlan.impact?.requires_overwrite || false,
+          overwrite_confirmed: overwriteConfirmed,
         }),
       });
       setPromptExecution(res);
@@ -1120,9 +1136,10 @@ export default function App() {
     });
   }
   async function copyMedallionLogs() {
-    if (!medLogs.length) return;
+    const logs = medLogs.length ? medLogs : logView;
+    if (!logs.length) return;
     try {
-      await navigator.clipboard.writeText(JSON.stringify(medLogs, null, 2));
+      await navigator.clipboard.writeText(JSON.stringify(logs, null, 2));
       setMsg("Medallion deployment logs copied");
     } catch {
       setMsg("Unable to copy logs. Use Download CSV instead.");
@@ -3107,9 +3124,13 @@ export default function App() {
                   </details>
                 </Panel>
               )}
-              {medDeployment && (
+
+            </>
+          )}
+
+              {(page === "Medallion Design" || page === "Deployments") && medDeployment && (
                 <Panel
-                  title={`Medallion deployment logs · ${medDeployment.run_id || "latest run"}`}
+                  title={`Deployment attempts and logs · ${medDeployment.run_id || "latest run"}`}
                   actions={
                     <div className="deploy-actions">
                       <select
@@ -3121,15 +3142,15 @@ export default function App() {
                         <option value="FAILED">Failed</option>
                       </select>
                       <button
-                        disabled={!medLogs.length}
+                        disabled={!medLogs.length && !logView.length}
                         onClick={copyMedallionLogs}
                       >
                         <ScrollText size={14} />
                         Copy Logs
                       </button>
                       <button
-                        disabled={!medLogs.length || busy}
-                        onClick={downloadMedallionLogs}
+                        disabled={!pid || busy}
+                        onClick={medDeployment.run_id ? downloadMedallionLogs : downloadDevLogs}
                       >
                         <Download size={14} />
                         Download CSV
@@ -3149,13 +3170,13 @@ export default function App() {
                     <div className="summary-stat">
                       <span>Deployed</span>
                       <b>
-                        {medLogs.filter((x) => x.status === "PASSED").length}
+                        {medDeployment.deployed ?? medLogs.filter((x) => x.status === "PASSED" && x.details?.medallion_node_id).length}
                       </b>
                     </div>
                     <div className="summary-stat">
                       <span>Failed</span>
                       <b>
-                        {medLogs.filter((x) => x.status === "FAILED").length}
+                        {medDeployment.failed ?? medLogs.filter((x) => x.status === "FAILED" && x.details?.medallion_node_id).length}
                       </b>
                     </div>
                   </div>
@@ -3200,7 +3221,7 @@ export default function App() {
                                 <td>
                                   <Badge s={x.status || "-"} />
                                 </td>
-                                <td>{d.load?.rows ?? d.action ?? "-"}</td>
+                                <td>{d.load?.rows_loaded ?? d.load?.rows ?? d.action ?? (d.medallion_run_started ? "Run started" : d.medallion_run_complete ? "Run completed" : d.medallion_run_finished ? "Run failed" : "-")}</td>
                                 <td>{d.error || x.message || "-"}</td>
                               </tr>
                             );
@@ -3210,10 +3231,22 @@ export default function App() {
                   ) : (
                     <Empty text="No object-level evidence was recorded for this deployment run." />
                   )}
+                  {medDeployment.error && <div className="notice">{medDeployment.failed_target && <b>{medDeployment.failed_target}: </b>}{medDeployment.error}</div>}
+                  <details>
+                    <summary>Workflow and Bronze ingestion logs</summary>
+                    <button disabled={!pid || busy} onClick={downloadDevLogs}>Download full DEV log</button>
+                    {logView.length ? <table>
+                      <thead><tr><th>Time</th><th>Stage</th><th>Status</th><th>Run</th><th>Target</th><th>Message</th></tr></thead>
+                      <tbody>{logView.map((row: any, i: number) => <tr key={`${row.run_id}-${i}`}>
+                        <td>{row.timestamp ? new Date(row.timestamp).toLocaleString() : "-"}</td>
+                        <td>{row.step || row.category}</td><td><Badge s={row.status || "-"} /></td>
+                        <td><code>{row.run_id || "-"}</code></td><td>{row.target_fqn || "-"}</td>
+                        <td>{row.message || "-"}</td>
+                      </tr>)}</tbody>
+                    </table> : <Empty text="No workflow or ingestion attempts have been recorded for this project." />}
+                  </details>
                 </Panel>
               )}
-            </>
-          )}
 
           {page === "Mappings" && (
             <Panel

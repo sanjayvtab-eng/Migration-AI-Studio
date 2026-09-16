@@ -176,6 +176,22 @@ def _environment_log_rows(db: Session, project_id: str, environment: str) -> lis
                 "message": payload.get("error") or payload.get("remediation") or payload.get("message"),
                 "details": payload,
             })
+    for record in db.scalars(select(CanonicalRecord).where(
+        CanonicalRecord.project_id == project_id,
+        CanonicalRecord.record_type.in_(["BRONZE_INGESTION", "PROMPT_MIGRATION_RUN", "MASTER_MIGRATION_RUN"]),
+    )).all():
+        payload = _decode_payload_json(record.payload_json)
+        results = payload.get("results") or {}
+        if env != "DEV":
+            continue
+        rows.append({
+            "timestamp": record.created_at, "category": record.record_type,
+            "status": payload.get("status"), "environment": record.environment or env,
+            "object_id": record.object_id, "run_id": payload.get("run_id"),
+            "step": results.get("failed_stage") or payload.get("action"),
+            "target_fqn": payload.get("target_fqn"),
+            "message": payload.get("error") or results.get("error"), "details": payload,
+        })
     rows.sort(key=lambda x: str(x.get("timestamp") or ""), reverse=True)
     return rows
 
@@ -1156,7 +1172,7 @@ def deployment_logs_download(project_id:str,format:str="csv",db:Session=Depends(
 
 def _medallion_run_log_rows(db:Session,project_id:str,run_id:str) -> list[dict]:
     return [row for row in _dev_log_rows(db,project_id)
-            if row.get("run_id")==run_id and (row.get("details") or {}).get("medallion_node_id")]
+            if row.get("run_id")==run_id and row.get("category")=="DEPLOYMENT"]
 
 
 @router.get("/projects/{project_id}/medallion/deployments/{run_id}/logs")
@@ -1165,8 +1181,9 @@ def medallion_deployment_logs(project_id:str,run_id:str,db:Session=Depends(get_d
     rows=_medallion_run_log_rows(db,project_id,run_id)
     return {
         "project_id":project_id,"environment":"DEV","run_id":run_id,"count":len(rows),
-        "passed":sum(1 for row in rows if row.get("status")=="PASSED"),
-        "failed":sum(1 for row in rows if row.get("status")=="FAILED"),"logs":rows,
+        "passed":sum(1 for row in rows if row.get("status")=="PASSED" and row["details"].get("medallion_node_id")),
+        "failed":sum(1 for row in rows if row.get("status")=="FAILED" and row["details"].get("medallion_node_id"))
+                  or int(any(row.get("status")=="FAILED" for row in rows)),"logs":rows,
     }
 
 

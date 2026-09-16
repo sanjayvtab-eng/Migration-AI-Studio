@@ -443,7 +443,7 @@ def execute_prompt_plan(
         "BRONZE_INGESTION": "Open Environment Setup, review the latest Bronze ingestion details, then retry the prompt migration.",
         "MEDALLION_GENERATION": "Open Medallion Design and review semantic inference, keys, grain, and generated artifact evidence.",
         "VALIDATION_AND_REMEDIATION": "Open Medallion Design or AI Remediation and review the remaining failed artifacts before retrying.",
-        "DEV_DEPLOYMENT": "Open DEV Deployment and inspect the deployment logs for the failed target artifact.",
+        "DEV_DEPLOYMENT": "Open DEV Deployment → Deployment attempts and logs. Review the failed target and Bronze reuse/replacement evidence before resuming.",
         "RECONCILIATION": "Open DEV Deployment and review source-to-target reconciliation and quality-gate evidence.",
     }
 
@@ -479,19 +479,15 @@ def execute_prompt_plan(
 
         # Step 2: Bronze Ingestion
         current_stage = "BRONZE_INGESTION"
-        bronze_checkpoint = plan_payload.get("impact", {}).get("bronze_checkpoint") or {}
-        if bronze_checkpoint.get("reusable"):
-            bronze_res = {
-                "status": "PASSED",
-                "passed": bronze_checkpoint.get("table_count", 0),
-                "failed": 0,
-                "run_id": bronze_checkpoint.get("run_id"),
-                "results": [{
-                    "status": "PASSED",
-                    "rows_loaded": bronze_checkpoint.get("rows_transferred", 0),
-                }],
-                "checkpoint_reused": True,
-            }
+        tables = [obj for obj in existing_objects if obj.object_type == "TABLE"]
+        if not tables:
+            tables = list(db.scalars(select(MigrationObject).where(
+                MigrationObject.project_id == project_id, MigrationObject.source_id == source_id,
+                MigrationObject.object_type == "TABLE",
+            )).all())
+        bronze_checkpoint = bronze_ingestion.verified_checkpoint(db, project_id, tables)
+        if bronze_checkpoint:
+            bronze_res = bronze_checkpoint
         else:
             bronze_res = bronze_ingestion.run(
                 db,
@@ -499,7 +495,7 @@ def execute_prompt_plan(
                 actor=actor,
                 load_mode=intent.get("load_mode", "FULL_LOAD"),
                 source_id=source_id,
-                replace_existing_data=overwrite_confirmed or plan_payload.get("impact", {}).get("requires_overwrite", False),
+                replace_existing_data=overwrite_confirmed,
             )
         execution_results["stages"]["BRONZE_INGESTION"] = {
             "status": bronze_res.get("status", "FAILED"),
@@ -587,7 +583,17 @@ def execute_prompt_plan(
             db,
             project_id,
             allow_destructive=False,
+            replace_existing_data=overwrite_confirmed,
+            reuse_bronze=True,
+            parent_run_id=run_id,
         )
+        execution_results["stages"]["DEV_DEPLOYMENT"] = {
+            "status": dep_res.get("status", "FAILED"),
+            "deployed_count": dep_res.get("count", len(dep_res.get("deployed", []))),
+            "run_id": dep_res.get("run_id"),
+            "failed_target": dep_res.get("failed_target"),
+            "error": dep_res.get("error"),
+        }
         if dep_res.get("status") != "PASSED":
             raise RuntimeError(dep_res.get("error") or "DEV deployment did not pass")
         execution_results["stages"]["DEV_DEPLOYMENT"] = {

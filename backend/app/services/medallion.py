@@ -41,6 +41,7 @@ from app.services.engine import (
 )
 from app.services.rules import classify_function, classify_procedure, classify_trigger, map_sqlserver_type
 from app.core.config import get_settings
+from app.services.databricks_client import with_project_databricks
 from app.services.ai_remediation import call_structured_llm
 
 SEMANTIC_ROLES = {"FACT", "DIMENSION", "AGGREGATE", "KPI", "REPORTING", "ENTITY"}
@@ -1876,8 +1877,68 @@ def _layer_order(layer: str) -> int:
     return {"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(layer, 9)
 
 
+def _deploy_legacy_bronze(db, project_id, obj, node, item, run_id,
+                          batch_size, max_rows, allow_destructive, replace_existing_data):
+    from app.services.databricks_client import execute_sql
+    from app.services.deployment import _apply_table_schema_policy, load_bronze_table
+    transient = MigrationMapping(project_id=project_id, object_id=obj.id,
+                                 source_fqn=f"{obj.database_name}.{obj.schema_name}.{obj.object_name}",
+                                 target_fqn=node.target_fqn, target_layer="BRONZE", environment="DEV")
+    policy = _apply_table_schema_policy(db, project_id, obj, transient, allow_destructive)
+    if policy["action"] == "CREATE":
+        execute_sql(item["content"], safe_retry=False)
+    elif policy["action"] == "REPLACE":
+        if not allow_destructive:
+            raise RuntimeError("DEV replacement requires explicit destructive approval")
+        execute_sql(f"DROP TABLE {node.target_fqn}", safe_retry=False)
+        execute_sql(item["content"], safe_retry=False)
+    load = load_bronze_table(db, project_id, obj, transient, run_id, batch_size, max_rows,
+                             "FULL_LOAD", replace_existing_data=replace_existing_data or allow_destructive)
+    return {"schema_policy": policy, "load": load}
+
+
+@with_project_databricks
 def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: bool = False,
-                         batch_size: int = 10000, max_rows: int | None = None) -> dict[str, Any]:
+                         batch_size: int = 10000, max_rows: int | None = None,
+                         replace_existing_data: bool = False, reuse_bronze: bool = True,
+                         parent_run_id: str | None = None) -> dict[str, Any]:
+    """Persist every deployment attempt, including failures before artifact execution."""
+    from app.models.canonical import MigrationDeployment
+    from app.services.deployment import databricks_workspace_identity
+    if not db.get(MigrationProject, project_id):
+        raise LookupError("Project not found")
+    run_id = uid("MDR")
+
+    def record(status, **details):
+        db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=None,
+                                   environment="DEV", status=status,
+                                   payload_json=_json({"run_id": run_id,
+                                                       "parent_run_id": parent_run_id,
+                                                       "databricks_workspace": databricks_workspace_identity(),
+                                                       **details})))
+        db.commit()
+
+    record("RUNNING", medallion_run_started=True)
+    try:
+        result = _deploy_medallion_dev(
+            db, project_id, run_id=run_id, allow_destructive=allow_destructive,
+            batch_size=batch_size, max_rows=max_rows,
+            replace_existing_data=replace_existing_data, reuse_bronze=reuse_bronze,
+            parent_run_id=parent_run_id,
+        )
+    except Exception as exc:
+        record("FAILED", medallion_run_finished=True, error=str(exc))
+        raise
+    if result.get("status") != "PASSED":
+        record("FAILED", medallion_run_finished=True, error=result.get("error"),
+               failed_target=result.get("failed_target"))
+    return result
+
+
+def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
+                         allow_destructive: bool, batch_size: int, max_rows: int | None,
+                         replace_existing_data: bool, reuse_bronze: bool,
+                         parent_run_id: str | None) -> dict[str, Any]:
     """Deploy reviewed Medallion artifacts in Bronze -> Silver -> Gold order.
 
     Bronze data loading reuses the existing metadata-driven loader. Schema drift remains
@@ -1887,10 +1948,9 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
     from app.models.canonical import MigrationDeployment
     from app.services.databricks_client import execute_sql
     from app.services.deployment import (
-        _apply_table_schema_policy,
         databricks_workspace_identity,
-        load_bronze_table,
     )
+    from app.services import bronze_ingestion, environment_provisioning
 
     env = "DEV"
     artifacts = list_medallion_artifacts(db, project_id, environment=env)
@@ -1924,7 +1984,12 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
         MigrationMedallionNode.environment == env,
     )).all()}
     object_by_id = {o.id: o for o in db.scalars(select(MigrationObject).where(MigrationObject.project_id == project_id)).all()}
-    run_id = uid("MDR")
+    config = environment_provisioning.get_configuration(db, project_id)
+    bronze_objects = [object_by_id[n.source_object_id] for n in node_by_id.values()
+                      if n.layer == "BRONZE" and n.source_object_id in object_by_id
+                      and object_by_id[n.source_object_id].object_type == "TABLE"]
+    checkpoint = bronze_ingestion.verified_checkpoint(db, project_id, bronze_objects) if reuse_bronze and max_rows is None else None
+    reusable = {item["object_id"]: item for item in (checkpoint or {}).get("results", [])}
     deployed = []
     for item in sorted(artifacts, key=lambda x:(_layer_order(x["layer"]), x["target_fqn"].lower())):
         node = node_by_id[item["node_id"]]
@@ -1933,26 +1998,35 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
             if node.node_type == "ARCHITECTURE_REVIEW":
                 detail = {"action": "ARCHITECTURE_REVIEW_ACKNOWLEDGED"}
             elif node.layer == "BRONZE" and obj and obj.object_type == "TABLE":
-                transient = MigrationMapping(project_id=project_id, object_id=obj.id,
-                                             source_fqn=f"{obj.database_name}.{obj.schema_name}.{obj.object_name}",
-                                             target_fqn=node.target_fqn, target_layer="BRONZE", environment="DEV")
-                policy = _apply_table_schema_policy(db, project_id, obj, transient, allow_destructive)
-                if policy["action"] == "CREATE":
-                    execute_sql(item["content"], safe_retry=False)
-                elif policy["action"] == "REPLACE":
-                    if not allow_destructive:
-                        raise RuntimeError("DEV replacement requires explicit destructive approval")
-                    execute_sql(f"DROP TABLE {node.target_fqn}", safe_retry=False)
-                    execute_sql(item["content"], safe_retry=False)
-                load = load_bronze_table(db, project_id, obj, transient, run_id, batch_size, max_rows,
-                                         "FULL_LOAD", replace_existing_data=allow_destructive)
-                detail = {"schema_policy": policy, "load": load}
+                if obj.id in reusable:
+                    evidence = reusable[obj.id]
+                    if evidence["target_fqn"].replace("`", "").lower() != node.target_fqn.replace("`", "").lower():
+                        raise RuntimeError("Verified Bronze checkpoint target does not match the approved Medallion target")
+                    detail = {"action": "REUSE_VERIFIED_BRONZE", "checkpoint_reused": True,
+                              "bronze_run_id": checkpoint["run_id"], "load": evidence}
+                elif config is not None:
+                    # Reuse the project-scoped atomic loader, including its approval gate.
+                    plan, _ = bronze_ingestion._requirements(db, project_id)
+                    target = bronze_ingestion._fqn(plan.catalog_name, "bronze", obj.object_name)
+                    if target.replace("`", "").lower() != node.target_fqn.replace("`", "").lower():
+                        raise RuntimeError("Project Bronze plan does not match the approved Medallion target")
+                    load = bronze_ingestion._load_table(
+                        db, project_id, run_id, plan, obj, batch_size=batch_size,
+                        max_rows=max_rows, load_mode="FULL_LOAD",
+                        replace_existing_data=replace_existing_data or allow_destructive,
+                    )
+                    detail = {"action": "LOAD_BRONZE", "load": load}
+                else:
+                    detail = _deploy_legacy_bronze(db, project_id, obj, node, item, run_id,
+                                                 batch_size, max_rows, allow_destructive,
+                                                 replace_existing_data)
             else:
                 execute_sql(item["content"], safe_retry=False)
                 detail = {"action": "EXECUTE_ARTIFACT"}
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
                                        environment="DEV", status="PASSED",
                                        payload_json=_json({"run_id": run_id,
+                                                           "parent_run_id": parent_run_id,
                                                            "databricks_workspace": databricks_workspace_identity(),
                                                            "medallion_node_id": node.id,
                                                            "layer": node.layer, "target_fqn": node.target_fqn,
@@ -1963,6 +2037,7 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
                                        environment="DEV", status="FAILED",
                                        payload_json=_json({"run_id": run_id,
+                                                           "parent_run_id": parent_run_id,
                                                            "databricks_workspace": databricks_workspace_identity(),
                                                            "medallion_node_id": node.id,
                                                            "layer": node.layer, "target_fqn": node.target_fqn,
@@ -1972,6 +2047,7 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
     db.add(MigrationDeployment(
         id=uid("DPL"), project_id=project_id, object_id=None, environment="DEV", status="PASSED",
         payload_json=_json({"run_id": run_id,
+                            "parent_run_id": parent_run_id,
                             "databricks_workspace": databricks_workspace_identity(),
                             "medallion_run_complete": True,
                             "deployed": len(deployed), "expected": len(artifacts)}),

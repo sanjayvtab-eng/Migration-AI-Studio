@@ -34,7 +34,7 @@ from app.models.canonical import (
     MigrationReconciliation,
     MigrationReconciliationDetail,
 )
-from app.services.databricks_client import execute_sql, databricks_connection
+from app.services.databricks_client import execute_sql, databricks_connection, with_project_databricks, workspace_host
 from app.services.engine import compare_schema, topo_order, uid
 from app.services.discovery import test_sqlserver_connection
 from app.services.source_connector import connector_info, request as connector_request, TableStream
@@ -70,7 +70,7 @@ def _payload(row) -> dict[str, Any]:
 
 def databricks_workspace_identity() -> str:
     """Return the non-secret identity used to scope target ownership."""
-    host = (get_settings().databricks_host or "").strip().lower()
+    host = (workspace_host() or "").strip().lower()
     host = re.sub(r"^https?://", "", host).rstrip("/")
     return host
 
@@ -270,6 +270,7 @@ def _dependency_order(db: Session, project_id: str, object_ids: set[str]) -> lis
     return [x for x in ordered if x in object_ids] + remaining
 
 
+@with_project_databricks
 def dev_precheck(db: Session, project_id: str, test_databricks: bool = True, ignore_deployment_issues: bool = False) -> dict[str, Any]:
     if not db.get(MigrationProject, project_id):
         raise ValueError("Project not found")
@@ -398,6 +399,7 @@ def _source_rows(src, obj, cols, sql_text, max_rows):
             yield cursor
 
 
+@with_project_databricks
 def load_bronze_table(db: Session, project_id: str, obj: MigrationObject, mapping: MigrationMapping,
                       run_id: str, batch_size: int, max_rows: int | None, load_mode: str,
                       replace_existing_data: bool) -> dict[str, Any]:
@@ -465,6 +467,7 @@ def load_bronze_table(db: Session, project_id: str, obj: MigrationObject, mappin
     return {"status": "PASSED", "rows": rows_loaded, "transport": summary, "contract": contract}
 
 
+@with_project_databricks
 def deploy_dev(db: Session, project_id: str, *, allow_destructive: bool = False,
                batch_size: int | None = None, max_rows: int | None = None,
                load_mode: str | None = None, replace_existing_data: bool = False,
@@ -665,8 +668,36 @@ def _latest_successful_medallion_run(
 def medallion_deployment_status(
     db: Session, project_id: str, environment: str = "DEV"
 ) -> dict[str, Any]:
-    """Return read-only evidence for the latest complete Medallion deployment."""
+    """Report the latest attempt, including failed and incomplete deployment runs."""
     env = environment.upper()
+    rows = list(db.scalars(select(MigrationDeployment).where(
+        MigrationDeployment.project_id == project_id,
+        MigrationDeployment.environment == env,
+    ).order_by(MigrationDeployment.created_at.desc())).all())
+    attempts = [row for row in rows if any(_payload(row).get(key) for key in (
+        "medallion_node_id", "medallion_run_started", "medallion_run_finished", "medallion_run_complete",
+    ))]
+    if attempts:
+        run_id = _payload(attempts[0]).get("run_id")
+        run_rows = [row for row in attempts if _payload(row).get("run_id") == run_id]
+        objects = [row for row in run_rows if _payload(row).get("medallion_node_id")]
+        failure = next((row for row in run_rows if row.status == "FAILED"), None)
+        complete = any(_payload(row).get("medallion_run_complete") for row in run_rows)
+        status = "FAILED" if failure else "PASSED" if complete else "RUNNING" if any(
+            _payload(row).get("medallion_run_started") for row in run_rows
+        ) else "INCOMPLETE"
+        # Accept complete manifests recorded before explicit run markers were added.
+        previous = _latest_successful_medallion_run(db, project_id, env)
+        if not failure and previous and previous[0] == run_id:
+            status = "PASSED"
+        failed_payload = _payload(failure) if failure else {}
+        return {
+            "environment": env, "status": status, "run_id": run_id,
+            "deployed": sum(row.status == "PASSED" for row in objects),
+            "failed": sum(row.status == "FAILED" for row in objects) or int(failure is not None),
+            "failed_target": failed_payload.get("failed_target") or failed_payload.get("target_fqn"),
+            "error": failed_payload.get("error"),
+        }
     deployment = _latest_successful_medallion_run(db, project_id, env)
     if not deployment:
         return {
@@ -787,6 +818,7 @@ def _reconcile_medallion_run(
     return {**summary, "status": overall, "details": details}
 
 
+@with_project_databricks
 def run_reconciliation(
     db: Session,
     project_id: str,
@@ -797,6 +829,9 @@ def run_reconciliation(
     # evidence already persists the project, environment, deployment run,
     # artifact versions, and timestamps used for audit.
     env = environment.upper()
+    latest_attempt = medallion_deployment_status(db, project_id, env)
+    if latest_attempt.get("status") in {"FAILED", "RUNNING", "INCOMPLETE"}:
+        raise ValueError(f"Latest {env} Medallion deployment is {latest_attempt['status']}; resolve it before reconciliation")
     medallion = _latest_successful_medallion_run(db, project_id, env)
     if medallion:
         return _reconcile_medallion_run(db, project_id, env, medallion[0], medallion[1])
@@ -867,6 +902,9 @@ def latest_reconciliation(db: Session, project_id: str, environment: str = "DEV"
 
 def evaluate_dev_gate(db: Session, project_id: str) -> dict[str, Any]:
     blockers: list[str] = []
+    latest_attempt = medallion_deployment_status(db, project_id, "DEV")
+    if latest_attempt.get("status") in {"FAILED", "RUNNING", "INCOMPLETE"}:
+        blockers.append(f"Latest DEV Medallion deployment is {latest_attempt['status']}")
     medallion = _latest_successful_medallion_run(db, project_id, "DEV")
     deployment = db.scalars(select(MigrationRun).where(
         MigrationRun.project_id == project_id, MigrationRun.environment == "DEV",
@@ -922,11 +960,15 @@ def evaluate_dev_gate(db: Session, project_id: str) -> dict[str, Any]:
             "deployment_run_id": deployment_run_id}
 
 
+@with_project_databricks
 def test_promotion_precheck(db: Session, project_id: str, test_databricks: bool = True) -> dict[str, Any]:
     """Validate that the exact successful DEV Medallion manifest can enter TEST."""
     if not db.get(MigrationProject, project_id):
         raise ValueError("Project not found")
     blockers: list[dict[str, str]] = []
+    latest_attempt = medallion_deployment_status(db, project_id, "DEV")
+    if latest_attempt.get("status") in {"FAILED", "RUNNING", "INCOMPLETE"}:
+        blockers.append({"code": "DEV_LATEST_ATTEMPT", "message": "Resolve the latest DEV Medallion deployment before promotion."})
     dev_gate = db.scalars(select(MigrationQualityGate).where(
         MigrationQualityGate.project_id == project_id,
         MigrationQualityGate.environment == "DEV",
@@ -982,6 +1024,7 @@ def _replace_catalog(value: str, source_catalog: str, target_catalog: str) -> st
     return re.sub(rf"(?i)(?<![A-Za-z0-9_]){re.escape(source_catalog)}(?![A-Za-z0-9_])", target_catalog, value)
 
 
+@with_project_databricks
 def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
     """Promote the immutable, gate-approved DEV Medallion manifest into TEST."""
     precheck = test_promotion_precheck(db, project_id, test_databricks=True)
@@ -1084,11 +1127,15 @@ def evaluate_test_gate(db: Session, project_id: str) -> dict[str, Any]:
             "blockers": blockers, "deployment_run_id": deployment_run_id}
 
 
+@with_project_databricks
 def uat_promotion_precheck(db: Session, project_id: str, test_databricks: bool = True) -> dict[str, Any]:
     """Validate that the exact successful TEST Medallion manifest can enter UAT."""
     if not db.get(MigrationProject, project_id):
         raise ValueError("Project not found")
     blockers: list[dict[str, str]] = []
+    latest_attempt = medallion_deployment_status(db, project_id, "TEST")
+    if latest_attempt.get("status") in {"FAILED", "RUNNING", "INCOMPLETE"}:
+        blockers.append({"code": "TEST_LATEST_ATTEMPT", "message": "Resolve the latest TEST Medallion deployment before promotion."})
     test_gate = db.scalars(select(MigrationQualityGate).where(
         MigrationQualityGate.project_id == project_id,
         MigrationQualityGate.environment == "TEST",
@@ -1139,6 +1186,7 @@ def uat_promotion_precheck(db: Session, project_id: str, test_databricks: bool =
     return result
 
 
+@with_project_databricks
 def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
     """Promote the immutable, gate-approved TEST Medallion manifest into UAT."""
     precheck = uat_promotion_precheck(db, project_id, test_databricks=True)
@@ -1243,11 +1291,15 @@ def evaluate_uat_gate(db: Session, project_id: str) -> dict[str, Any]:
             "blockers": blockers, "deployment_run_id": deployment_run_id}
 
 
+@with_project_databricks
 def prod_promotion_precheck(db: Session, project_id: str, test_databricks: bool = True) -> dict[str, Any]:
     """Validate that the exact successful UAT Medallion manifest can enter PROD."""
     if not db.get(MigrationProject, project_id):
         raise ValueError("Project not found")
     blockers: list[dict[str, str]] = []
+    latest_attempt = medallion_deployment_status(db, project_id, "UAT")
+    if latest_attempt.get("status") in {"FAILED", "RUNNING", "INCOMPLETE"}:
+        blockers.append({"code": "UAT_LATEST_ATTEMPT", "message": "Resolve the latest UAT Medallion deployment before promotion."})
     uat_gate = db.scalars(select(MigrationQualityGate).where(
         MigrationQualityGate.project_id == project_id,
         MigrationQualityGate.environment == "UAT",
@@ -1298,6 +1350,7 @@ def prod_promotion_precheck(db: Session, project_id: str, test_databricks: bool 
     return result
 
 
+@with_project_databricks
 def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
     """Promote the immutable, gate-approved UAT Medallion manifest into PROD."""
     precheck = prod_promotion_precheck(db, project_id, test_databricks=True)

@@ -157,7 +157,8 @@ def test_execute_prompt_plan_requires_approval(db):
 
 
 @pytest.mark.parametrize("master_workflow", [False, True])
-def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch, master_workflow):
+@pytest.mark.parametrize("overwrite_confirmed", [False, True])
+def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch, master_workflow, overwrite_confirmed):
     project, source = _seed(db, provisioned=True, db_ready=True)
     if master_workflow:
         plan = master_orchestration.generate_master_plan(
@@ -239,23 +240,27 @@ def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch, master_workflo
         master = master_orchestration.execute_master_plan(
             db, project.id, plan_id=plan_id, actor="admin",
             workflow_authorized=True, production_authorized=True,
+            data_replacement_authorized=overwrite_confirmed,
         )
         assert master["status"] == "COMPLETED", master.get("error")
         assert promotions == ["TEST", "UAT", "PROD"]
         res = master["stages"]["DEV_MIGRATION"]["details"]
     else:
         res = prompt_orchestration.execute_prompt_plan(
-            db, project.id, plan_id=plan_id, actor="admin"
+            db, project.id, plan_id=plan_id, actor="admin",
+            overwrite_confirmed=overwrite_confirmed
         )
     assert res["status"] == "COMPLETED", res.get("error")
     assert res["stages"]["BRONZE_INGESTION"]["status"] == "PASSED"
     assert res["stages"]["MEDALLION_GENERATION"]["status"] == "PASSED"
     assert res["stages"]["RECONCILIATION"]["status"] == "PASSED"
-    assert bronze_call["replace_existing_data"] is False
+    assert bronze_call["replace_existing_data"] is overwrite_confirmed
     assert "overwrite_confirmed" not in bronze_call
     assert res["stages"]["DEV_DEPLOYMENT"]["deployed_count"] == 3
     assert res["stages"]["DEV_DEPLOYMENT"]["run_id"] == "MDR_TEST"
-    deploy.assert_called_once_with(db, project.id, allow_destructive=False)
+    deploy.assert_called_once_with(db, project.id, allow_destructive=False,
+                                  replace_existing_data=overwrite_confirmed, reuse_bronze=True,
+                                  parent_run_id=res["run_id"])
     reconcile.assert_called_once_with(db, project.id, environment="DEV", actor="admin")
     gate.assert_called_once_with(db, project.id)
 

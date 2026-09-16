@@ -313,7 +313,9 @@ def test_medallion_dev_deployment_is_review_gated_and_layer_ordered(client,auth_
 
     logs=client.get(f"/api/projects/{pid}/medallion/deployments/{result['run_id']}/logs",headers=auth_headers)
     assert logs.status_code==200
-    assert logs.json()['count']==len(result['deployed'])
+    assert sum(bool(row['details'].get('medallion_node_id')) for row in logs.json()['logs'])==len(result['deployed'])
+    assert any(row['details'].get('medallion_run_started') for row in logs.json()['logs'])
+    assert any(row['details'].get('medallion_run_complete') for row in logs.json()['logs'])
     assert logs.json()['passed']==len(result['deployed'])
     assert logs.json()['failed']==0
     download=client.get(f"/api/projects/{pid}/medallion/deployments/{result['run_id']}/logs/download",headers=auth_headers)

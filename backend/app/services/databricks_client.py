@@ -1,10 +1,44 @@
 from __future__ import annotations
 import time
+from contextvars import ContextVar
+from functools import wraps
 from app.core.config import get_settings
+
+_project_scope = ContextVar("databricks_project_scope", default=None)
+
+
+def with_project_databricks(function):
+    """Keep nested SQL calls scoped to this request's project, including retries."""
+    @wraps(function)
+    def scoped(db, project_id, *args, **kwargs):
+        scope_token = _project_scope.set((db, project_id))
+        try:
+            return function(db, project_id, *args, **kwargs)
+        finally:
+            _project_scope.reset(scope_token)
+    return scoped
+
+
+def _project_configuration():
+    scope = _project_scope.get()
+    if scope is None:
+        return None
+    from app.services.environment_provisioning import get_configuration
+    db, project_id = scope
+    return get_configuration(db, project_id)
+
+
+def workspace_host():
+    row = _project_configuration()
+    return row.workspace_host if row else get_settings().databricks_host
 
 TRANSIENT = ("warehouse is starting","connection reset","temporary service unavailable","gateway timeout","rate limit","deadlock")
 
 def execute_sql(statement: str, safe_retry: bool=True):
+    if _project_configuration() is not None:
+        from app.services.environment_provisioning import project_execute
+        db, project_id = _project_scope.get()
+        return project_execute(db, project_id, statement, safe_retry=safe_retry)
     s=get_settings()
     if not all([s.databricks_host,s.databricks_http_path,s.databricks_token]): raise RuntimeError("Databricks connection is not configured")
     from databricks import sql
@@ -47,6 +81,10 @@ def execute_sql_with_credentials(
 
 
 def databricks_connection():
+    if _project_configuration() is not None:
+        from app.services.environment_provisioning import project_connection
+        db, project_id = _project_scope.get()
+        return project_connection(db, project_id)
     s=get_settings()
     if not all([s.databricks_host,s.databricks_http_path,s.databricks_token]):
         raise RuntimeError("Databricks connection is not configured")

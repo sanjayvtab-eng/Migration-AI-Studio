@@ -387,6 +387,8 @@ def _load_table(
         "expected_rows": expected_rows,
         "target_rows": target_rows,
         "load_mode": load_mode,
+        "source_hash": table.source_hash,
+        "workspace_host": environment_provisioning.get_configuration(db, project_id).workspace_host,
         "transport": transport_summary(columns),
     }
 
@@ -570,7 +572,7 @@ def latest(db: Session, project_id: str) -> dict[str, Any]:
             "TABLE_INGESTED",
             "TABLE_INGESTION_FAILED",
         }:
-            results.append(payload)
+            results.append({"object_id": record.object_id, **payload})
     return {
         "run_id": run.id,
         "status": run.status,
@@ -581,3 +583,48 @@ def latest(db: Session, project_id: str) -> dict[str, Any]:
         "failed": sum(1 for item in results if item.get("status") == "FAILED"),
         "results": results,
     }
+
+
+def verified_checkpoint(db: Session, project_id: str, tables: list[MigrationObject]) -> dict[str, Any] | None:
+    """Reuse completed ingestion only after checking the current source and target."""
+    evidence = latest(db, project_id)
+    if evidence.get("status") != "PASSED" or not evidence.get("run_id") or not tables:
+        return None
+    plan = environment_provisioning.get_dev_plan(db, project_id)
+    if not plan or plan.status != "PROVISIONED":
+        return None
+    results = {item.get("object_id"): item for item in evidence.get("results", [])}
+    verified = []
+    from app.services.engine import compare_schema
+    for table in tables:
+        item = results.get(table.id)
+        target = _fqn(plan.catalog_name, "bronze", table.object_name)
+        normalize = lambda value: str(value or "").replace("`", "").lower()
+        if (not item or item.get("status") != "PASSED"
+                or normalize(item.get("target_fqn")) != normalize(target)
+                or item.get("source") != f"{table.schema_name}.{table.object_name}"):
+            return None
+        source = db.get(MigrationSource, table.source_id)
+        if not source or source.project_id != project_id:
+            return None
+        # Newly recorded fingerprints invalidate checkpoints after discovery/config changes.
+        config = environment_provisioning.get_configuration(db, project_id)
+        if item.get("workspace_host") and (not config or item["workspace_host"] != config.workspace_host):
+            return None
+        if item.get("source_hash") and item["source_hash"] != table.source_hash:
+            return None
+        source_rows = _source_count(source, table)
+        target_rows = _target_count(db, project_id, target)
+        if target_rows != source_rows or target_rows != item.get("target_rows"):
+            return None
+        columns = _columns(db, project_id, table.id)
+        expected = [{"name": c.column_name, "type": map_sqlserver_type(c.data_type, c.precision, c.scale)} for c in columns]
+        expected += [{"name": "_migration_ingested_at", "type": "TIMESTAMP"},
+                     {"name": "_migration_source_system", "type": "STRING"}]
+        rows = environment_provisioning.project_execute(db, project_id, f"DESCRIBE TABLE {target}")
+        actual = [{"name": str(row[0]), "type": str(row[1])} for row in rows
+                  if row and row[0] and not str(row[0]).startswith("#")]
+        if compare_schema(expected, actual)["status"] != "IDENTICAL":
+            return None
+        verified.append({**item, "checkpoint_reused": True})
+    return {**evidence, "results": verified, "checkpoint_reused": True}
