@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import create_autospec
 from sqlalchemy import select
 
 from app.models.entities import (
@@ -9,7 +10,7 @@ from app.models.entities import (
     MigrationProject,
     MigrationSource,
 )
-from app.services import prompt_orchestration
+from app.services import master_orchestration, prompt_orchestration
 from app.services.engine import add_source, ensure_project, ingest_snapshot, uid
 
 
@@ -155,11 +156,18 @@ def test_execute_prompt_plan_requires_approval(db):
         prompt_orchestration.execute_prompt_plan(db, project.id, "NON_EXISTENT_PLAN")
 
 
-def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch):
+@pytest.mark.parametrize("master_workflow", [False, True])
+def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch, master_workflow):
     project, source = _seed(db, provisioned=True, db_ready=True)
-    plan = prompt_orchestration.generate_prompt_plan(
-        db, project.id, "Migrate MigrationDemo from SQL Server to DEV Databricks"
-    )
+    if master_workflow:
+        plan = master_orchestration.generate_master_plan(
+            db, project.id,
+            "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks",
+        )
+    else:
+        plan = prompt_orchestration.generate_prompt_plan(
+            db, project.id, "Migrate MigrationDemo from SQL Server to DEV Databricks"
+        )
     plan_id = plan["plan_id"]
 
     # Mock bronze_ingestion.run
@@ -188,25 +196,68 @@ def test_execute_prompt_plan_end_to_end_governed(db, monkeypatch):
     monkeypatch.setattr(prompt_orchestration.medallion, "generate_medallion_artifacts", lambda *a, **kw: {"generated_count": 3})
     monkeypatch.setattr(prompt_orchestration.medallion, "medallion_validation_report", lambda *a, **kw: {"status": "PASSED", "passed_count": 3, "failed_count": 0})
     monkeypatch.setattr(prompt_orchestration.medallion, "approve_all_medallion_artifacts", lambda *a, **kw: {})
-    monkeypatch.setattr(prompt_orchestration.medallion, "deploy_medallion_dev", lambda *a, **kw: {"status": "PASSED", "deployed_count": 3})
+    deploy = create_autospec(
+        prompt_orchestration.medallion.deploy_medallion_dev,
+        return_value={"status": "PASSED", "count": 3, "run_id": "MDR_TEST"},
+    )
+    monkeypatch.setattr(prompt_orchestration.medallion, "deploy_medallion_dev", deploy)
 
     # Mock ai_remediation
     monkeypatch.setattr(prompt_orchestration.ai_remediation, "run_remediation_batch", lambda *a, **kw: {"applied_count": 0})
 
     # Mock deployment & reconciliation
-    monkeypatch.setattr(prompt_orchestration.deployment, "run_reconciliation", lambda *a, **kw: {"status": "PASSED"})
-    monkeypatch.setattr(prompt_orchestration.deployment, "evaluate_dev_gate", lambda *a, **kw: {"status": "PASSED"})
+    reconcile = create_autospec(
+        prompt_orchestration.deployment.run_reconciliation,
+        return_value={"status": "PASSED", "run_id": "MDR_TEST"},
+    )
+    gate = create_autospec(
+        prompt_orchestration.deployment.evaluate_dev_gate,
+        return_value={"status": "PASSED"},
+    )
+    monkeypatch.setattr(prompt_orchestration.deployment, "run_reconciliation", reconcile)
+    monkeypatch.setattr(prompt_orchestration.deployment, "evaluate_dev_gate", gate)
 
     # Execute plan
-    res = prompt_orchestration.execute_prompt_plan(
-        db, project.id, plan_id=plan_id, actor="admin"
-    )
-    assert res["status"] == "COMPLETED"
+    if master_workflow:
+        promotions = []
+
+        def generate_promotion(db, project_id, prompt, actor="admin"):
+            target = prompt.rsplit(" ", 1)[-1]
+            promotions.append(target)
+            return {"status": "PENDING_APPROVAL", "plan_id": f"PLAN_{target}"}
+
+        monkeypatch.setattr(
+            master_orchestration.prompt_promotion, "generate_promotion_plan",
+            create_autospec(master_orchestration.prompt_promotion.generate_promotion_plan,
+                            side_effect=generate_promotion),
+        )
+        monkeypatch.setattr(
+            master_orchestration.prompt_promotion, "execute_promotion_plan",
+            create_autospec(master_orchestration.prompt_promotion.execute_promotion_plan,
+                            return_value={"status": "COMPLETED"}),
+        )
+        master = master_orchestration.execute_master_plan(
+            db, project.id, plan_id=plan_id, actor="admin",
+            workflow_authorized=True, production_authorized=True,
+        )
+        assert master["status"] == "COMPLETED", master.get("error")
+        assert promotions == ["TEST", "UAT", "PROD"]
+        res = master["stages"]["DEV_MIGRATION"]["details"]
+    else:
+        res = prompt_orchestration.execute_prompt_plan(
+            db, project.id, plan_id=plan_id, actor="admin"
+        )
+    assert res["status"] == "COMPLETED", res.get("error")
     assert res["stages"]["BRONZE_INGESTION"]["status"] == "PASSED"
     assert res["stages"]["MEDALLION_GENERATION"]["status"] == "PASSED"
     assert res["stages"]["RECONCILIATION"]["status"] == "PASSED"
     assert bronze_call["replace_existing_data"] is False
     assert "overwrite_confirmed" not in bronze_call
+    assert res["stages"]["DEV_DEPLOYMENT"]["deployed_count"] == 3
+    assert res["stages"]["DEV_DEPLOYMENT"]["run_id"] == "MDR_TEST"
+    deploy.assert_called_once_with(db, project.id, allow_destructive=False)
+    reconcile.assert_called_once_with(db, project.id, environment="DEV", actor="admin")
+    gate.assert_called_once_with(db, project.id)
 
     # Check latest execution query
     latest = prompt_orchestration.latest_prompt_execution(db, project.id)
@@ -238,6 +289,51 @@ def test_execute_prompt_plan_reports_partial_bronze_failure(db, monkeypatch):
     assert result["stages"]["BRONZE_INGESTION"]["status"] == "FAILED"
     assert "dbo.Orders" in result["error"]
     assert result["errors"][0]["recommended_action"]
+
+
+@pytest.mark.parametrize("connector_mode", [False, True])
+def test_execute_prompt_plan_rediscovers_and_persists_missing_metadata(db, monkeypatch, connector_mode):
+    project, source = _seed(db)
+    plan = prompt_orchestration.generate_prompt_plan(
+        db, project.id, "Migrate MigrationDemo to DEV Databricks"
+    )
+    db.query(MigrationObject).filter_by(project_id=project.id).delete()
+    db.commit()
+    snapshot = {
+        "database": "MigrationDemo",
+        "objects": [{
+            "schema": "dbo", "name": "Customers", "type": "TABLE",
+            "columns": [{"name": "CustomerId", "type": "int", "nullable": False}],
+        }],
+    }
+    discover = create_autospec(prompt_orchestration.discovery.discover_sqlserver,
+                              return_value=snapshot)
+    monkeypatch.setattr(prompt_orchestration.discovery, "discover_sqlserver", discover)
+    # Use the same source transport as Bronze ingestion, including local connectors.
+    from app.services import source_connector
+    monkeypatch.setattr(source_connector, "connector_info",
+                        lambda source_id: {"mode": "CONNECTOR" if connector_mode else "DIRECT"})
+    request = create_autospec(source_connector.request, return_value=snapshot)
+    monkeypatch.setattr(source_connector, "request", request)
+    monkeypatch.setattr(
+        prompt_orchestration.bronze_ingestion, "run",
+        lambda *a, **kw: {"status": "FAILED", "failed": 1, "results": []},
+    )
+
+    result = prompt_orchestration.execute_prompt_plan(db, project.id, plan["plan_id"])
+
+    assert result["failed_stage"] == "BRONZE_INGESTION", result.get("error")
+    assert result["stages"]["DISCOVERY"]["status"] == "PASSED"
+    assert db.query(MigrationObject).filter_by(project_id=project.id,
+                                               object_name="Customers").count() == 1
+    if connector_mode:
+        request.assert_called_once_with(source.id, "discover")
+        discover.assert_not_called()
+    else:
+        request.assert_not_called()
+        discover.assert_called_once_with(
+            prompt_orchestration.bronze_ingestion._source_connection_string(source)
+        )
 
 
 def test_prompt_api_workflow(client, auth_headers, db, monkeypatch):

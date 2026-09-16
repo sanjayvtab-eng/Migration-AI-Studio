@@ -25,7 +25,8 @@ from app.services import medallion
 from app.services import ai_remediation
 from app.services import deployment
 from app.services import discovery
-from app.services.engine import uid
+from app.services import source_connector
+from app.services.engine import ingest_snapshot, uid
 
 
 def _payload(value: str | None) -> dict[str, Any]:
@@ -458,7 +459,20 @@ def execute_prompt_plan(
             ).all()
         )
         if not existing_objects and source_id:
-            disc_res = discovery.discover_sqlserver(db, source_id, project_id, actor=actor)
+            source = db.get(MigrationSource, source_id)
+            if not source or source.project_id != project_id:
+                raise LookupError("Source not found in project")
+            if source_connector.connector_info(source_id)["mode"] == "CONNECTOR":
+                snapshot = source_connector.request(source_id, "discover")
+            else:
+                snapshot = discovery.discover_sqlserver(
+                    bronze_ingestion._source_connection_string(source)
+                )
+            disc_res = {
+                "counts": ingest_snapshot(db, project_id, source_id, snapshot),
+                "database": snapshot.get("database"),
+                "objects": len(snapshot.get("objects", [])),
+            }
             execution_results["stages"]["DISCOVERY"] = {"status": "PASSED", "details": disc_res}
         else:
             execution_results["stages"]["DISCOVERY"] = {"status": "PASSED", "details": {"objects": len(existing_objects)}}
@@ -573,21 +587,19 @@ def execute_prompt_plan(
             db,
             project_id,
             allow_destructive=False,
-            actor=actor,
-            run_id=run_id,
         )
         if dep_res.get("status") != "PASSED":
             raise RuntimeError(dep_res.get("error") or "DEV deployment did not pass")
         execution_results["stages"]["DEV_DEPLOYMENT"] = {
             "status": "PASSED",
-            "deployed_count": dep_res.get("deployed_count", 0),
+            "deployed_count": dep_res.get("count", dep_res.get("deployed_count", 0)),
             "run_id": dep_res.get("run_id", run_id),
         }
 
         # Step 6: Reconciliation & Gate
         current_stage = "RECONCILIATION"
         rec_res = deployment.run_reconciliation(db, project_id, environment="DEV", actor=actor)
-        gate_res = deployment.evaluate_dev_gate(db, project_id, actor=actor)
+        gate_res = deployment.evaluate_dev_gate(db, project_id)
         if rec_res.get("status") != "PASSED" or gate_res.get("status") != "PASSED":
             raise RuntimeError(
                 f"DEV quality gate did not pass (reconciliation={rec_res.get('status')}, gate={gate_res.get('status')})"
