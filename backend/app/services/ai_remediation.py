@@ -718,7 +718,12 @@ def _prepare_procedure_body(
 
 
 def _deterministic_procedure_remediation(
-    db: Session, project_id: str, o: MigrationObject, m: MigrationMapping, environment: str
+    db: Session,
+    project_id: str,
+    o: MigrationObject,
+    m: MigrationMapping,
+    environment: str,
+    preferred_definition: str | None = None,
 ) -> RemediationCandidate | None:
     definition = o.definition or ""
     params = _routine_parameters(db, project_id, o.id)
@@ -736,9 +741,15 @@ def _deterministic_procedure_remediation(
     # reviewer before spending an AI request.
     if not full_refresh_rewritten:
         current = _current_artifact_version(db, project_id, o.id)
+        fallback_definitions: list[str] = []
+        if preferred_definition and preferred_definition.strip() != definition.strip():
+            fallback_definitions.append(preferred_definition)
         if current and current.content and current.content.strip() != definition.strip():
+            if all(current.content.strip() != item.strip() for item in fallback_definitions):
+                fallback_definitions.append(current.content)
+        for fallback_definition in fallback_definitions:
             current_body = _prepare_procedure_body(
-                db, project_id, environment, current.content, params
+                db, project_id, environment, fallback_definition, params
             )
             current_body, current_rewritten = _rewrite_full_refresh_delete_insert(
                 current_body, output_mapping=m
@@ -746,7 +757,8 @@ def _deterministic_procedure_remediation(
             if current_rewritten:
                 clean_body = current_body
                 full_refresh_rewritten = True
-                source_logic = current.content
+                source_logic = fallback_definition
+                break
 
     if not clean_body or any(x in clean_body.lower() for x in ("goto ", "waitfor ", "sp_executesql")):
         return None
@@ -1198,7 +1210,12 @@ def _normalized_result(
 
 
 def analyze_remediation(
-    db: Session, project_id: str, object_id: str, environment: str = "DEV", use_ai: bool = True
+    db: Session,
+    project_id: str,
+    object_id: str,
+    environment: str = "DEV",
+    use_ai: bool = True,
+    artifact_content: str | None = None,
 ) -> dict[str, Any]:
     o = db.get(MigrationObject, object_id)
     if not o or o.project_id != project_id:
@@ -1219,7 +1236,10 @@ def analyze_remediation(
     if o.object_type == "FUNCTION":
         local = _deterministic_function_remediation(db, project_id, o, m, environment)
     elif o.object_type == "PROCEDURE":
-        local = _deterministic_procedure_remediation(db, project_id, o, m, environment)
+        local = _deterministic_procedure_remediation(
+            db, project_id, o, m, environment,
+            preferred_definition=artifact_content,
+        )
     attempts: list[dict[str, Any]] = []
     if local and local.deterministic_validation.get("valid"):
         local.issue_id = issue.id if issue else None
@@ -1520,6 +1540,7 @@ def remediate_one_artifact(
     use_ai: bool = True,
     reviewer: str = "system",
     confirmed_blocker: str | None = None,
+    artifact_content: str | None = None,
 ) -> dict[str, Any]:
     """Create and statically validate one new artifact version without approving it.
 
@@ -1551,7 +1572,10 @@ def remediate_one_artifact(
     if item.get("route") == "COMPATIBILITY_ENGINE":
         raise ValueError("Runtime compatibility failures must be repaired and resumed from Deployments")
 
-    candidate = analyze_remediation(db, project_id, object_id, env, use_ai)
+    candidate = analyze_remediation(
+        db, project_id, object_id, env, use_ai,
+        artifact_content=artifact_content,
+    )
     if not candidate["deterministic_validation"].get("valid"):
         errors = candidate["deterministic_validation"].get("errors") or ["No safe executable candidate was produced"]
         return {
