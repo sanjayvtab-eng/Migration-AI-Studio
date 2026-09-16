@@ -107,7 +107,11 @@ def test_full_refresh_repair_uses_current_review_artifact_before_ai(db):
         {'schema':'dbo','name':'OrderItems','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
         {'schema':'dbo','name':'OrderSummary','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
         {'schema':'dbo','name':'usp_LoadOrderSummary','type':'PROCEDURE',
-         'definition':'CREATE PROCEDURE dbo.usp_LoadOrderSummary AS BEGIN EXEC dbo.UnsupportedDynamicProcedure; END'},
+         'definition':'''CREATE PROCEDURE dbo.usp_LoadOrderSummary AS BEGIN
+DELETE FROM dbo.OrderSummary;
+INSERT INTO dbo.OrderSummary (OrderID)
+SELECT legacy.OrderID FROM dbo.LegacyOrders legacy;
+END'''},
     ]}
     ingest_snapshot(db,p.id,s.id,snapshot); classify_project(db,p.id); create_mappings(db,p.id,'DEV','migration_dev')
     procedure=db.scalar(select(MigrationObject).where(
@@ -150,7 +154,11 @@ def test_reviews_medallion_bridge_repairs_exact_visible_artifact_without_ai(db):
         {'schema':'dbo','name':'OrderItems','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
         {'schema':'dbo','name':'OrderSummary','type':'TABLE','columns':[{'name':'OrderID','type':'int'}]},
         {'schema':'dbo','name':'usp_LoadOrderSummary','type':'PROCEDURE',
-         'definition':'CREATE PROCEDURE dbo.usp_LoadOrderSummary AS BEGIN EXEC dbo.UnsupportedDynamicProcedure; END'},
+         'definition':'''CREATE PROCEDURE dbo.usp_LoadOrderSummary AS BEGIN
+DELETE FROM dbo.OrderSummary;
+INSERT INTO dbo.OrderSummary (OrderID)
+SELECT legacy.OrderID FROM dbo.LegacyOrders legacy;
+END'''},
     ]}
     ingest_snapshot(db,p.id,s.id,snapshot); classify_project(db,p.id); create_mappings(db,p.id,'DEV','migration_dev')
     procedure=db.scalar(select(MigrationObject).where(
