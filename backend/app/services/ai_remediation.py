@@ -728,82 +728,84 @@ def _deterministic_procedure_remediation(
     definition = o.definition or ""
     params = _routine_parameters(db, project_id, o.id)
     sig = _parameter_signature(params, procedure=True)
-    source_logic = definition
-    clean_body = _prepare_procedure_body(db, project_id, environment, definition, params)
+    current = _current_artifact_version(db, project_id, o.id)
 
-    clean_body, full_refresh_rewritten = _rewrite_full_refresh_delete_insert(
-        clean_body, output_mapping=m
-    )
+    # The version selected on the Reviews page is authoritative for this repair.
+    # Try it before the discovery definition, and never stop merely because a
+    # rewrite pattern matched: the resulting candidate must also validate.
+    definitions: list[str] = []
+    for value in (
+        preferred_definition,
+        current.content if current else None,
+        definition,
+    ):
+        if not value or not value.strip():
+            continue
+        if any(value.strip() == existing.strip() for existing in definitions):
+            continue
+        definitions.append(value)
 
-    # A generated/current artifact may contain a cleaner executable projection
-    # than the original discovery definition (for example after SQL Server
-    # header normalization). Repair the exact governed version visible to the
-    # reviewer before spending an AI request.
-    if not full_refresh_rewritten:
-        current = _current_artifact_version(db, project_id, o.id)
-        fallback_definitions: list[str] = []
-        if preferred_definition and preferred_definition.strip() != definition.strip():
-            fallback_definitions.append(preferred_definition)
-        if current and current.content and current.content.strip() != definition.strip():
-            if all(current.content.strip() != item.strip() for item in fallback_definitions):
-                fallback_definitions.append(current.content)
-        for fallback_definition in fallback_definitions:
-            current_body = _prepare_procedure_body(
-                db, project_id, environment, fallback_definition, params
-            )
-            current_body, current_rewritten = _rewrite_full_refresh_delete_insert(
-                current_body, output_mapping=m
-            )
-            if current_rewritten:
-                clean_body = current_body
-                full_refresh_rewritten = True
-                source_logic = fallback_definition
-                break
+    best_invalid: RemediationCandidate | None = None
+    for source_logic in definitions:
+        clean_body = _prepare_procedure_body(
+            db, project_id, environment, source_logic, params
+        )
+        clean_body, full_refresh_rewritten = _rewrite_full_refresh_delete_insert(
+            clean_body, output_mapping=m
+        )
+        if not clean_body or any(
+            token in clean_body.lower()
+            for token in ("goto ", "waitfor ", "sp_executesql")
+        ):
+            continue
 
-    if not clean_body or any(x in clean_body.lower() for x in ("goto ", "waitfor ", "sp_executesql")):
-        return None
-
-    candidate = (
-        f"CREATE OR REPLACE PROCEDURE {m.target_fqn}({sig})\n"
-        f"LANGUAGE SQL\nSQL SECURITY INVOKER\nAS BEGIN\n{clean_body.rstrip(';')};\nEND;"
-    )
-    validation = validate_candidate_content(o, m, candidate)
-    return RemediationCandidate(
-        object_id=o.id,
-        issue_id=None,
-        source_logic=source_logic,
-        conversion_strategy=(
-            "ATOMIC_FULL_REFRESH_CTAS"
-            if full_refresh_rewritten
-            else "STRIP_TRANSACTION_WRAPPERS_TO_SQL_PROCEDURE"
-        ),
-        generated_candidate=validation["normalized_candidate"],
-        confidence=0.95 if validation["valid"] else 0.50,
-        assumptions=[
-            "Databricks Delta Lake is ACID by default; explicit transaction boundaries are omitted.",
-            "Static SQL statements run atomically within the procedure body.",
-            *(
-                ["The unconditional source DELETE plus INSERT represents an intentional full-table refresh."]
+        candidate = (
+            f"CREATE OR REPLACE PROCEDURE {m.target_fqn}({sig})\n"
+            f"LANGUAGE SQL\nSQL SECURITY INVOKER\nAS BEGIN\n{clean_body.rstrip(';')};\nEND;"
+        )
+        validation = validate_candidate_content(o, m, candidate)
+        result = RemediationCandidate(
+            object_id=o.id,
+            issue_id=None,
+            source_logic=source_logic,
+            conversion_strategy=(
+                "ATOMIC_FULL_REFRESH_CTAS"
                 if full_refresh_rewritten
-                else []
+                else "STRIP_TRANSACTION_WRAPPERS_TO_SQL_PROCEDURE"
             ),
-        ],
-        risks=[
-            "Multi-statement rollback behavior differs from full procedural transactions.",
-            *(
-                ["CREATE OR REPLACE TABLE replaces the target table atomically and must be approved as full-load behavior."]
-                if full_refresh_rewritten
-                else []
-            ),
-        ],
-        validation_plan=[
-            "Run artifact-version-specific static validation.",
-            "Execute in DEV environment to verify parameters and DML statements.",
-        ],
-        provider="DETERMINISTIC_REMEDIATION",
-        model=None,
-        deterministic_validation=validation,
-    )
+            generated_candidate=validation["normalized_candidate"],
+            confidence=0.95 if validation["valid"] else 0.50,
+            assumptions=[
+                "Databricks Delta Lake is ACID by default; explicit transaction boundaries are omitted.",
+                "Static SQL statements run atomically within the procedure body.",
+                *(
+                    ["The unconditional source DELETE plus INSERT represents an intentional full-table refresh."]
+                    if full_refresh_rewritten
+                    else []
+                ),
+            ],
+            risks=[
+                "Multi-statement rollback behavior differs from full procedural transactions.",
+                *(
+                    ["CREATE OR REPLACE TABLE replaces the target table atomically and must be approved as full-load behavior."]
+                    if full_refresh_rewritten
+                    else []
+                ),
+            ],
+            validation_plan=[
+                "Run artifact-version-specific static validation.",
+                "Execute in DEV environment to verify parameters and DML statements.",
+            ],
+            provider="DETERMINISTIC_REMEDIATION",
+            model=None,
+            deterministic_validation=validation,
+        )
+        if validation["valid"]:
+            return result
+        if best_invalid is None:
+            best_invalid = result
+
+    return best_invalid
 
 
 def _context(db: Session, project_id: str, o: MigrationObject, environment: str) -> dict[str, Any]:
