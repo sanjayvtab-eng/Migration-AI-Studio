@@ -1639,6 +1639,7 @@ def list_medallion_artifacts(db: Session, project_id: str, *, environment: str =
             "source_object_id": node.source_object_id,
             "source_object_type": source_obj.object_type if source_obj else None,
             "target_fqn": node.target_fqn, "version": version.version, "content": version.content,
+            "content_hash": version.content_hash,
             "executable": version.executable, "validation_status": version.validation_status,
             "validation": _loads(version.validation_json, {}), "review_status": version.review_status,
             "reviewer": version.reviewer, "reviewed_at": version.reviewed_at,
@@ -1646,9 +1647,35 @@ def list_medallion_artifacts(db: Session, project_id: str, *, environment: str =
     return sorted(result, key=lambda x:({"BRONZE":1,"SILVER":2,"GOLD":3}.get(x["layer"],9), x["target_fqn"].lower()))
 
 
+def _revalidate_current_routines(db: Session, project_id: str, environment: str) -> list[str]:
+    """Invalidate stale PASSED evidence when current runtime checks find a blocker."""
+    changed = False
+    blockers = []
+    for item in list_medallion_artifacts(db, project_id, environment=environment):
+        kind = item.get("source_object_type") or ""
+        if kind not in {"FUNCTION", "PROCEDURE"} or item.get("node_type") == "ARCHITECTURE_REVIEW":
+            continue
+        issues = databricks_routine_contract_issues(item["content"], kind)
+        if not issues:
+            continue
+        blockers.append(f"{item['target_fqn']} v{item['version']} ({item['artifact_version_id']}): {'; '.join(issues)}")
+        version = db.get(MigrationStageArtifactVersion, item["artifact_version_id"])
+        evidence = _loads(version.validation_json, {})
+        evidence["errors"] = list(dict.fromkeys([*evidence.get("errors", []), *issues]))
+        version.validation_json = _json(evidence)
+        version.validation_status = "FAILED"
+        version.executable = False
+        db.get(MigrationMedallionNode, version.node_id).status = "REVIEW_REQUIRED"
+        changed = True
+    if changed:
+        db.commit()
+    return blockers
+
+
 def medallion_validation_report(db: Session, project_id: str, *, environment: str = "DEV") -> dict[str, Any]:
     """Return deterministic artifact and dependency evidence for the Release 4 UI."""
     env = environment.upper()
+    _revalidate_current_routines(db, project_id, env)
     nodes = list(db.scalars(select(MigrationMedallionNode).where(
         MigrationMedallionNode.project_id == project_id,
         MigrationMedallionNode.environment == env,
@@ -1743,6 +1770,12 @@ def review_medallion_artifact(db: Session, project_id: str, version_id: str, *, 
         node = db.get(MigrationMedallionNode, version.node_id)
         if not node or node.node_type != "ARCHITECTURE_REVIEW":
             raise ValueError("Approval blocked: artifact must be executable and validation must PASSED")
+    if state == "APPROVED":
+        node = db.get(MigrationMedallionNode, version.node_id)
+        obj = db.get(MigrationObject, node.source_object_id) if node and node.source_object_id else None
+        issues = databricks_routine_contract_issues(version.content, obj.object_type if obj else "")
+        if issues:
+            raise ValueError("Approval blocked by current Databricks routine validation: " + "; ".join(issues))
     version.review_status = state; version.reviewer = reviewer; version.reviewed_at = datetime.utcnow()
 
     # A repaired Medallion routine is derived from a governed source-object
@@ -1797,15 +1830,14 @@ def remediate_medallion_artifact(
     artifact = db.get(MigrationStageArtifact, version.artifact_id)
     if not artifact or artifact.project_id != project_id or artifact.current_version != version.version:
         raise ValueError("Only the current Medallion artifact version can be remediated")
-    if version.executable and version.validation_status == "PASSED":
-        raise ValueError("Artifact already passed validation and is ready for human review")
-
     node = db.get(MigrationMedallionNode, version.node_id)
     obj = db.get(MigrationObject, node.source_object_id) if node and node.source_object_id else None
     if not node or node.project_id != project_id or not obj or obj.project_id != project_id:
         raise ValueError("Failed Medallion artifact has no source object for remediation")
     if obj.object_type not in {"PROCEDURE", "FUNCTION"}:
         raise ValueError(f"{obj.object_type} artifact requires manual architecture review")
+    if version.executable and version.validation_status == "PASSED" and not databricks_routine_contract_issues(version.content, obj.object_type):
+        raise ValueError("Artifact already passed validation and is ready for human review")
 
     mapping = db.scalar(select(MigrationMapping).where(
         MigrationMapping.project_id == project_id,
@@ -1953,6 +1985,12 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
     from app.services import bronze_ingestion, environment_provisioning
 
     env = "DEV"
+    runtime_contract_blockers = _revalidate_current_routines(db, project_id, env)
+    if runtime_contract_blockers:
+        raise ValueError(
+            "Medallion deployment blocked by Databricks routine preflight. Repair and review the corrected "
+            "artifact version: " + " | ".join(runtime_contract_blockers)
+        )
     artifacts = list_medallion_artifacts(db, project_id, environment=env)
     if not artifacts:
         raise ValueError("No Medallion artifacts generated")
@@ -1962,22 +2000,12 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
         or (x.get("node_type") != "ARCHITECTURE_REVIEW" and (x["validation_status"] != "PASSED" or not x["executable"]))
     ]
     if blockers:
-        raise ValueError(f"Medallion deployment blocked: {len(blockers)} artifact(s) are not approved/executable/validated")
-
-    runtime_contract_blockers = []
-    for item in artifacts:
-        if item.get("node_type") == "ARCHITECTURE_REVIEW":
-            continue
-        issues = databricks_routine_contract_issues(
-            item["content"], item.get("source_object_type") or item.get("node_type") or ""
+        details = " | ".join(
+            f"{item['target_fqn']} v{item['version']} ({item['artifact_version_id']}): "
+            + "; ".join(item.get("validation", {}).get("errors") or ["approval/validation required"])
+            for item in blockers
         )
-        if issues:
-            runtime_contract_blockers.append(f"{item['target_fqn']}: {'; '.join(issues)}")
-    if runtime_contract_blockers:
-        raise ValueError(
-            "Medallion deployment blocked by Databricks routine preflight. Regenerate and review the corrected "
-            "artifact version: " + " | ".join(runtime_contract_blockers)
-        )
+        raise ValueError(f"Medallion deployment blocked: {len(blockers)} artifact(s) are not approved/executable/validated. Repair and review the current version: {details}")
 
     node_by_id = {n.id: n for n in db.scalars(select(MigrationMedallionNode).where(
         MigrationMedallionNode.project_id == project_id,
@@ -2030,7 +2058,9 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                                                            "databricks_workspace": databricks_workspace_identity(),
                                                            "medallion_node_id": node.id,
                                                            "layer": node.layer, "target_fqn": node.target_fqn,
-                                                           "artifact_version_id": item["artifact_version_id"], **detail})))
+                                                           "artifact_version_id": item["artifact_version_id"],
+                                                           "artifact_version": item["version"],
+                                                           "artifact_content_hash": item["content_hash"], **detail})))
             node.status = "DEPLOYED"; deployed.append({"target_fqn": node.target_fqn, "layer": node.layer, "status": "PASSED"})
             db.commit()
         except Exception as exc:
@@ -2041,7 +2071,9 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                                                            "databricks_workspace": databricks_workspace_identity(),
                                                            "medallion_node_id": node.id,
                                                            "layer": node.layer, "target_fqn": node.target_fqn,
-                                                           "artifact_version_id": item["artifact_version_id"], "error": str(exc)})))
+                                                           "artifact_version_id": item["artifact_version_id"],
+                                                           "artifact_version": item["version"],
+                                                           "artifact_content_hash": item["content_hash"], "error": str(exc)})))
             node.status = "FAILED"; db.commit()
             return {"run_id": run_id, "status": "FAILED", "failed_target": node.target_fqn, "error": str(exc), "deployed": deployed}
     db.add(MigrationDeployment(

@@ -12,34 +12,47 @@ def sha(text: str) -> str: return hashlib.sha256(text.encode()).hexdigest()
 def qident(v: str) -> str: return "`" + v.replace("`","``") + "`"
 
 
+def _sql_code(content: str) -> str:
+    """Mask literals/comments while retaining offsets and quoted identifiers."""
+    pattern = r"'(?:(?:'')|[^'])*'|\"(?:(?:\"\")|[^\"])*\"|--[^\n]*|/\*.*?\*/|\$\$.*?\$\$"
+    return re.sub(pattern, lambda m: re.sub(r"[^\n]", " ", m.group()), content, flags=re.S)
+
+
 def normalize_databricks_routine_contract(content: str, object_type: str) -> str:
     """Apply safe, deterministic Databricks clauses without changing routine logic."""
     kind = object_type.upper()
+    code = _sql_code(content)
     if kind == "PROCEDURE":
-        if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?PROCEDURE\b", content):
+        if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?PROCEDURE\b", code):
             return content
-        if re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", content):
+        if re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", code):
             return content
-        language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", content)
+        language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", code)
         if not language:
             return content
         remainder = content[language.end():].lstrip()
         return content[:language.end()] + "\nSQL SECURITY INVOKER\n" + remainder
 
     if kind == "FUNCTION":
-        if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?FUNCTION\b", content):
+        if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?FUNCTION\b", code):
             return content
-        reads_data = bool(re.search(r"(?is)\b(?:FROM|JOIN)\b", content))
-        has_contains = bool(re.search(r"(?is)\bCONTAINS\s+SQL\b", content))
-        has_reads = bool(re.search(r"(?is)\bREADS\s+SQL\s+DATA\b", content))
+        # SQL functions use RETURN expression/query; AS is for other body forms.
+        # Limit this rewrite to the first body RETURN, never literals/comments.
+        body = re.search(r"(?is)\bRETURN\b", code)
+        if body:
+            invalid_as = re.search(r"(?is)\bAS\s*$", code[:body.start()])
+            if invalid_as:
+                content = content[:invalid_as.start()] + content[body.start():]
+        code = _sql_code(content)
+        reads_data = bool(re.search(r"(?is)\b(?:FROM|JOIN)\b", code))
+        contains = re.search(r"(?is)\bCONTAINS\s+SQL\b", code)
+        has_reads = bool(re.search(r"(?is)\bREADS\s+SQL\s+DATA\b", code))
 
-        if reads_data and has_contains:
-            if has_reads:
-                content = re.sub(r"(?is)\bCONTAINS\s+SQL\s*\n?", "", content)
-            else:
-                content = re.sub(r"(?is)\bCONTAINS\s+SQL\b", "READS SQL DATA", content)
+        if reads_data and contains:
+            replacement = "" if has_reads else "READS SQL DATA"
+            content = content[:contains.start()] + replacement + content[contains.end():]
         elif reads_data and not has_reads:
-            language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", content)
+            language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", code)
             if language:
                 remainder = content[language.end():].lstrip()
                 content = content[:language.end()] + "\nREADS SQL DATA\n" + remainder
@@ -54,29 +67,47 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
     if kind not in {"PROCEDURE", "FUNCTION"}:
         return []
     issues: list[str] = []
-    header = re.search(rf"(?is)\bCREATE\s+OR\s+REPLACE\s+{kind}\b", content)
-    language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", content)
+    code = _sql_code(content)
+    header = re.search(rf"(?is)\bCREATE\s+OR\s+REPLACE\s+{kind}\b", code)
+    language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", code)
     if not header:
         issues.append(f"Databricks {kind.lower()} must use CREATE OR REPLACE {kind}")
     if not language:
         issues.append(f"Databricks {kind.lower()} is missing LANGUAGE SQL")
     if kind == "PROCEDURE":
-        security = re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", content)
+        security = re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", code)
         if not security:
             issues.append("Databricks procedure is missing SQL SECURITY INVOKER")
         elif language and security.start() < language.end():
             issues.append("Databricks procedure SQL SECURITY clause must follow LANGUAGE SQL")
     elif kind == "FUNCTION":
-        has_contains = bool(re.search(r"(?is)\bCONTAINS\s+SQL\b", content))
-        has_reads = bool(re.search(r"(?is)\bREADS\s+SQL\s+DATA\b", content))
-        reads_data = bool(re.search(r"(?is)\b(?:FROM|JOIN)\b", content))
+        body = re.search(r"(?is)\bRETURN\b", code)
+        if not body:
+            issues.append("Databricks SQL function is missing RETURN expression/query")
+        elif re.search(r"(?is)\bAS\s*$", code[:body.start()]):
+            issues.append("Databricks SQL function must use RETURN, not AS RETURN")
+        if body:
+            # A same-name comparison cannot distinguish a column from a parameter.
+            # Do not guess which side to rewrite in an AI candidate.
+            ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+            signature = re.search(r"(?is)\bFUNCTION\s+[^\s(]+\s*\((.*?)\)\s*RETURNS\b", code)
+            parameters = {name.strip('`').lower() for name in re.findall(
+                rf"(?:^|,)\s*({ident})\s+[A-Za-z_]\w*", signature.group(1) if signature else ""
+            )}
+            for comparison in re.finditer(rf"(?<![\w`.])({ident})\s*=\s*({ident})(?![\w`.]|\s*\.)", code[body.end():]):
+                left, right = (part.strip('`').lower() for part in comparison.groups())
+                if left == right and left in parameters and re.search(r"(?i)\b(?:FROM|JOIN)\b", code[body.end():]):
+                    issues.append(f"Ambiguous function filter {left} = {right}; qualify the column and function parameter separately")
+        has_contains = bool(re.search(r"(?is)\bCONTAINS\s+SQL\b", code))
+        has_reads = bool(re.search(r"(?is)\bREADS\s+SQL\s+DATA\b", code))
+        reads_data = bool(re.search(r"(?is)\b(?:FROM|JOIN)\b", code))
         if has_contains and reads_data:
             issues.append(
                 "Databricks SQL function that accesses a table/view cannot specify CONTAINS SQL; use READS SQL DATA instead"
             )
         if has_contains and has_reads:
             issues.append("Databricks SQL function cannot specify both CONTAINS SQL and READS SQL DATA")
-        data_clause = re.search(r"(?is)\b(?:CONTAINS\s+SQL|READS\s+SQL\s+DATA)\b", content)
+        data_clause = re.search(r"(?is)\b(?:CONTAINS\s+SQL|READS\s+SQL\s+DATA)\b", code)
         if data_clause and language and data_clause.start() < language.end():
             issues.append("Databricks function data access clause must follow LANGUAGE SQL")
     return issues
@@ -204,12 +235,16 @@ def _parameter_signature(params: list[dict], *, procedure: bool=False) -> str:
     return ", ".join(parts)
 
 
-def _replace_parameters(text: str, params: list[dict]) -> str:
+def _replace_parameters(text: str, params: list[dict], *, routine_name: str | None = None) -> str:
     out=text
     for p in params:
         raw=str(p.get("name") or "").strip()
         if raw.startswith("@"):
-            out=re.sub(rf"(?<![\w@]){re.escape(raw)}\b",qident(raw[1:]),out,flags=re.I)
+            replacement = (qident(routine_name) + "." if routine_name else "") + qident(raw[1:])
+            code = _sql_code(out)
+            matches = list(re.finditer(rf"(?<![\w@]){re.escape(raw)}\b", code, flags=re.I))
+            for match in reversed(matches):
+                out = out[:match.start()] + replacement + out[match.end():]
     return out
 
 
@@ -274,7 +309,7 @@ def _convert_function(db: Session, project_id: str, o: MigrationObject, m: Migra
     params=_routine_parameters(db,project_id,o.id)
     sig=_parameter_signature(params)
     ft,target=classify_function(definition)
-    rewritten=_replace_known_references(db,project_id,environment,_replace_parameters(rewrite_common_tsql(definition),params))
+    rewritten=_replace_known_references(db,project_id,environment,_replace_parameters(rewrite_common_tsql(definition),params, routine_name=m.target_fqn.split('.')[-1].strip('`')))
 
     # Inline table-valued function: RETURN (SELECT ...)
     if ft=="INLINE_TVF":

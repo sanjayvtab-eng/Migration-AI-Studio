@@ -367,20 +367,20 @@ export default function App() {
       if (page === "Compatibility" && id)
         setCompat(await api(`/projects/${id}/compatibility/summary`));
       if (page === "Medallion Design" && id) {
-        const [mp, sm, cs, ma, validation]: any = await Promise.all([
+        const [mp, sm, cs, validation]: any = await Promise.all([
           api(`/projects/${id}/medallion/plan?environment=DEV`),
           api(`/projects/${id}/semantics`),
           api(`/projects/${id}/consumers`),
-          api(`/projects/${id}/medallion/artifacts?environment=DEV`),
           api(`/projects/${id}/medallion/validation-report?environment=DEV`),
         ]);
         setMedallion(mp);
         setSemantics(sm);
         setConsumers(cs);
-        setMedArts(ma);
+        setMedArts(await api(`/projects/${id}/medallion/artifacts?environment=DEV`));
         setMedValidation(validation);
       }
       if (page === "Reviews" && id) {
+        setMedValidation(await api(`/projects/${id}/medallion/validation-report?environment=DEV`));
         setMedArts(
           await api(`/projects/${id}/medallion/artifacts?environment=DEV`),
         );
@@ -3187,7 +3187,7 @@ export default function App() {
                           <th>Time</th>
                           <th>Layer</th>
                           <th>Target</th>
-                          <th>Version ID</th>
+                          <th>Artifact version / ID</th>
                           <th>Status</th>
                           <th>Rows / action</th>
                           <th>Error</th>
@@ -3216,7 +3216,8 @@ export default function App() {
                                   <code>{x.target_fqn || "-"}</code>
                                 </td>
                                 <td>
-                                  <code>{d.artifact_version_id || "-"}</code>
+                                  {d.artifact_version != null && <b>v{d.artifact_version} </b>}
+                                  <code title={d.artifact_content_hash || ""}>{d.artifact_version_id || "-"}</code>
                                 </td>
                                 <td>
                                   <Badge s={x.status || "-"} />
