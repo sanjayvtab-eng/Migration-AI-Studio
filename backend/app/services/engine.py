@@ -18,6 +18,59 @@ def _sql_code(content: str) -> str:
     return re.sub(pattern, lambda m: re.sub(r"[^\n]", " ", m.group()), content, flags=re.S)
 
 
+def _function_signature(content: str) -> re.Match | None:
+    ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+    qualified = rf"{ident}(?:\s*\.\s*{ident})*"
+    return re.search(
+        rf"(?is)\bFUNCTION\s+({qualified})\s*\((.*?)\)\s*RETURNS\b", _sql_code(content)
+    )
+
+
+def _function_parameter_declarations(content: str) -> list[tuple[int, int, list[str]]]:
+    """Read declaration names without splitting commas inside parameter types."""
+    signature = _function_signature(content)
+    if not signature:
+        return []
+    code = _sql_code(content)
+    ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+    qualified = rf"{ident}(?:\s*\.\s*{ident})*"
+    start, end = signature.span(2)
+    delimiters = re.sub(r"`(?:``|[^`])+`", lambda match: ' ' * len(match.group()), code)
+    segment_start = start
+    depth = 0
+    declarations = []
+    # Include a sentinel comma to flush the last top-level declaration.
+    for offset in range(start, end + 1):
+        char = delimiters[offset] if offset < end else ','
+        if char in '(<':
+            depth += 1
+        elif char in ')>':
+            depth = max(0, depth - 1)
+        elif char == ',' and depth == 0:
+            match = re.match(rf"\s*({qualified})\s+[A-Za-z_]\w*", code[segment_start:offset])
+            if match:
+                declarations.append((segment_start + match.start(1), segment_start + match.end(1),
+                                     re.findall(ident, match.group(1))))
+            segment_start = offset + 1
+    return declarations
+
+
+def _qualified_function_declaration_repairs(content: str) -> list[tuple[int, int, str]]:
+    """Shorten only declarations scoped to the routine being created."""
+    signature = _function_signature(content)
+    if not signature:
+        return []
+    ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+    routine = [part.strip('`').replace('``', '`').lower() for part in
+               re.findall(ident, signature.group(1))]
+    repairs = []
+    for start, end, parts in _function_parameter_declarations(content):
+        prefix = [part.strip('`').replace('``', '`').lower() for part in parts[:-1]]
+        if prefix and len(prefix) <= len(routine) and prefix == routine[-len(prefix):]:
+            repairs.append((start, end, parts[-1]))
+    return repairs
+
+
 def _overqualified_function_parameters(content: str) -> list[tuple[int, int, str]]:
     """Find declared parameters prefixed by this routine's catalog/schema.
 
@@ -29,17 +82,14 @@ def _overqualified_function_parameters(content: str) -> list[tuple[int, int, str
     code = _sql_code(content)
     ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
     qualified = rf"{ident}(?:\s*\.\s*{ident})*"
-    signature = re.search(
-        rf"(?is)\bFUNCTION\s+({qualified})\s*\((.*?)\)\s*RETURNS\b", code
-    )
+    signature = _function_signature(content)
     if not signature:
         return []
     routine = re.findall(ident, signature.group(1))
     if len(routine) < 2:
         return []
-    parameters = {name.strip('`').replace('``', '`').lower() for name in re.findall(
-        rf"(?:^|,)\s*({ident})\s+[A-Za-z_]\w*", signature.group(2)
-    )}
+    parameters = {parts[-1].strip('`').replace('``', '`').lower() for _, _, parts in
+                  _function_parameter_declarations(content) if len(parts) == 1}
     body = re.search(r"(?is)\bRETURN\b", code[signature.end():])
     if not body:
         return []
@@ -73,6 +123,8 @@ def normalize_databricks_routine_contract(content: str, object_type: str) -> str
     if kind == "FUNCTION":
         if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?FUNCTION\b", code):
             return content
+        for start, end, replacement in reversed(_qualified_function_declaration_repairs(content)):
+            content = content[:start] + replacement + content[end:]
         for start, end, replacement in reversed(_overqualified_function_parameters(content)):
             content = content[:start] + replacement + content[end:]
         code = _sql_code(content)
@@ -121,6 +173,12 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
         elif language and security.start() < language.end():
             issues.append("Databricks procedure SQL SECURITY clause must follow LANGUAGE SQL")
     elif kind == "FUNCTION":
+        declarations = _function_parameter_declarations(content)
+        if any(len(parts) > 1 for _, _, parts in declarations):
+            issues.append("Invalid function parameter declaration; declare parameter_name data_type without a routine qualifier")
+        names = [parts[-1].strip('`').replace('``', '`').lower() for _, _, parts in declarations]
+        if len(names) != len(set(names)):
+            issues.append("Duplicate function parameter names are not allowed")
         if _overqualified_function_parameters(content):
             issues.append("Invalid function parameter qualification; use routine.parameter without catalog/schema")
         body = re.search(r"(?is)\bRETURN\b", code)
@@ -132,10 +190,7 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
             # A same-name comparison cannot distinguish a column from a parameter.
             # Do not guess which side to rewrite in an AI candidate.
             ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
-            signature = re.search(r"(?is)\bFUNCTION\s+[^\s(]+\s*\((.*?)\)\s*RETURNS\b", code)
-            parameters = {name.strip('`').lower() for name in re.findall(
-                rf"(?:^|,)\s*({ident})\s+[A-Za-z_]\w*", signature.group(1) if signature else ""
-            )}
+            parameters = set(names)
             for comparison in re.finditer(rf"(?<![\w`.])({ident})\s*=\s*({ident})(?![\w`.]|\s*\.)", code[body.end():]):
                 left, right = (part.strip('`').lower() for part in comparison.groups())
                 if left == right and left in parameters and re.search(r"(?i)\b(?:FROM|JOIN)\b", code[body.end():]):
@@ -285,7 +340,10 @@ def _replace_parameters(text: str, params: list[dict], *, routine_name: str | No
             replacement = (qident(routine_name) + "." if routine_name else "") + qident(raw[1:])
             code = _sql_code(out)
             matches = list(re.finditer(rf"(?<![\w@]){re.escape(raw)}\b", code, flags=re.I))
+            signature = _function_signature(out) if routine_name else None
             for match in reversed(matches):
+                if signature and signature.start(2) <= match.start() < signature.end(2):
+                    continue
                 out = out[:match.start()] + replacement + out[match.end():]
     return out
 

@@ -11,6 +11,7 @@ from app.services.ai_remediation import validate_candidate_content
 from app.services.engine import (
     add_source, classify_project, create_mappings, databricks_routine_contract_issues,
     ensure_project, generate_artifact, ingest_snapshot, normalize_databricks_routine_contract,
+    _replace_parameters,
 )
 
 
@@ -31,6 +32,10 @@ RETURN COALESCE(
     (SELECT SUM(oi.Quantity * oi.UnitPrice * (1 - (oi.DiscountPercent / 100)))
      FROM `migration_dev`.`silver`.`OrderItems` AS oi
      WHERE oi.OrderID = {FQN}.`OrderID`), 0);'''
+
+QUALIFIED_DECLARATION_SQL = OVERQUALIFIED_SQL.replace(
+    '(OrderID INT)', '(\n    `fn_CalculateOrderAmount`.`OrderID` INT\n)'
+).replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
 
 
 def _seed(db):
@@ -100,6 +105,69 @@ def test_ai_v3_parameter_scope_is_rejected_and_safely_normalized():
     assert normalize_databricks_routine_contract(sql, 'FUNCTION') == sql
 
 
+@pytest.mark.parametrize('prefix', [
+    '`fn_CalculateOrderAmount`', 'fn_CalculateOrderAmount',
+    '`migration_dev`.`silver`.`fn_CalculateOrderAmount`',
+])
+def test_ai_v4_qualified_declaration_is_rejected_and_normalized(prefix):
+    sql = QUALIFIED_DECLARATION_SQL.replace(
+        '`fn_CalculateOrderAmount`.`OrderID` INT', prefix + '.`OrderID` INT'
+    )
+    assert any('parameter declaration' in issue for issue in
+               databricks_routine_contract_issues(sql, 'FUNCTION'))
+    fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
+    assert fixed == sql.replace(prefix + '.`OrderID` INT', '`OrderID` INT')
+    assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in fixed
+    assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
+    assert normalize_databricks_routine_contract(fixed, 'FUNCTION') == fixed
+
+
+def test_declaration_repair_does_not_guess_foreign_scope_and_blocks_duplicate_names():
+    foreign = QUALIFIED_DECLARATION_SQL.replace(
+        '`fn_CalculateOrderAmount`.`OrderID` INT', '`OtherFunction`.`OrderID` INT'
+    )
+    assert normalize_databricks_routine_contract(foreign, 'FUNCTION') == foreign
+    assert databricks_routine_contract_issues(foreign, 'FUNCTION')
+    duplicate = QUALIFIED_DECLARATION_SQL.replace(
+        '`fn_CalculateOrderAmount`.`OrderID` INT', '`fn_CalculateOrderAmount`.`OrderID` INT, OrderID INT'
+    )
+    fixed = normalize_databricks_routine_contract(duplicate, 'FUNCTION')
+    assert any('Duplicate function parameter' in issue for issue in
+               databricks_routine_contract_issues(fixed, 'FUNCTION'))
+
+
+def test_declaration_repair_preserves_nested_types_defaults_and_comments():
+    sql = QUALIFIED_DECLARATION_SQL.replace(
+        '`fn_CalculateOrderAmount`.`OrderID` INT',
+        "`fn_CalculateOrderAmount`.`OrderID` INT, amount DECIMAL(18,2) DEFAULT 0, "
+        "payload STRUCT<x: INT, y: ARRAY<INT>>, text STRING DEFAULT 'fn_CalculateOrderAmount.x'"
+    ) + '\n-- fn_CalculateOrderAmount.OrderID INT\n'
+    fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
+    assert fixed == sql.replace('`fn_CalculateOrderAmount`.`OrderID` INT', '`OrderID` INT')
+    assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
+
+
+def test_declaration_parser_keeps_quoted_commas_and_nested_types_separate():
+    sql = QUALIFIED_DECLARATION_SQL.replace(
+        '`fn_CalculateOrderAmount`.`OrderID` INT',
+        '`a,b` DECIMAL(18,2), payload STRUCT<x: INT, y: INT>, '
+        '`fn_CalculateOrderAmount`.`OrderID` INT'
+    )
+    assert databricks_routine_contract_issues(sql, 'FUNCTION')
+    fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
+    assert fixed == sql.replace('`fn_CalculateOrderAmount`.`OrderID` INT', '`OrderID` INT')
+    assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
+
+
+def test_tsql_parameter_reference_rewrite_does_not_qualify_declarations():
+    source = '''CREATE FUNCTION dbo.fn_CalculateOrderAmount(@OrderID INT)
+RETURNS INT AS BEGIN RETURN (SELECT COUNT(*) FROM dbo.OrderItems
+WHERE OrderID = @OrderID); END'''
+    fixed = _replace_parameters(source, [{'name': '@OrderID'}], routine_name='fn_CalculateOrderAmount')
+    assert 'fn_CalculateOrderAmount(@OrderID INT)' in fixed
+    assert 'WHERE OrderID = `fn_CalculateOrderAmount`.`OrderID`' in fixed
+
+
 @pytest.mark.parametrize('scope', [
     'migration_dev.silver.fn_CalculateOrderAmount.OrderID',
     '`MIGRATION_DEV` . silver . `fn_CalculateOrderAmount` . OrderID',
@@ -126,17 +194,18 @@ def test_parameter_normalization_preserves_literals_comments_and_unrelated_field
         assert normalize_databricks_routine_contract(sql, 'FUNCTION') == sql
 
 
-def test_approved_ai_v3_is_blocked_until_new_version_repaired_and_approved(db, monkeypatch):
+@pytest.mark.parametrize('bad_sql', [OVERQUALIFIED_SQL, QUALIFIED_DECLARATION_SQL])
+def test_approved_ai_sql_is_blocked_until_new_version_repaired_and_approved(db, monkeypatch, bad_sql):
     project, old = _seed(db)
-    old.content = OVERQUALIFIED_SQL
-    old.content_hash = hashlib.sha256(OVERQUALIFIED_SQL.encode()).hexdigest()
+    old.content = bad_sql
+    old.content_hash = hashlib.sha256(bad_sql.encode()).hexdigest()
     db.commit()
     statements = []
     monkeypatch.setattr(databricks_client, 'execute_sql', lambda sql, **kw: statements.append(sql))
-    with pytest.raises(ValueError, match='parameter qualification'):
+    with pytest.raises(ValueError, match='parameter (qualification|declaration)'):
         medallion.deploy_medallion_dev(db, project.id)
     assert not statements and old.validation_status == 'FAILED'
-    assert old.content == OVERQUALIFIED_SQL
+    assert old.content == bad_sql
     report = medallion.medallion_validation_report(db, project.id)
     assert any(x['artifact_version_id'] == old.id for x in report['failed_artifacts'])
     with pytest.raises(ValueError, match='Approval blocked'):
@@ -146,12 +215,14 @@ def test_approved_ai_v3_is_blocked_until_new_version_repaired_and_approved(db, m
     from app.services import ai_remediation
     monkeypatch.setattr(ai_remediation, '_deterministic_function_remediation', lambda *a, **kw: None)
     monkeypatch.setattr(ai_remediation, '_call_llm', lambda *a, **kw: (
-        {'generated_candidate': OVERQUALIFIED_SQL, 'confidence': 0.9}, 'GEMINI', 'qa-model'
+        {'generated_candidate': bad_sql, 'confidence': 0.9}, 'GEMINI', 'qa-model'
     ))
     repaired = medallion.remediate_medallion_artifact(db, project.id, old.id, use_ai=True, reviewer='architect')
     current = db.get(MigrationStageArtifactVersion, repaired['artifact_version_id'])
     assert current.id != old.id and current.version == old.version + 1
     assert current.review_status == 'PENDING_REVIEW'
+    assert not any('parameter declaration' in issue for issue in
+                   databricks_routine_contract_issues(current.content, 'FUNCTION'))
     assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in current.content
     assert not databricks_routine_contract_issues(current.content, 'FUNCTION')
     medallion.review_medallion_artifact(db, project.id, current.id, status='APPROVED', reviewer='architect')
