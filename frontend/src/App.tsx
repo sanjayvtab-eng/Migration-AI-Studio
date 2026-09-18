@@ -1613,7 +1613,10 @@ export default function App() {
                                 <span>{stage.environment}</span>
                                 <b>{stage.title}</b>
                                 <Badge s={checkpoint.status || "PENDING"} />
-                                <small>{checkpoint.attempts || 0} attempt(s)</small>
+                                <small>{checkpoint.attempts || 0} / {checkpoint.max_attempts || 3} attempt(s)</small>
+                                {checkpoint.retry_renewals > 0 && (
+                                  <small>Retries renewed after approved SQL changed · {checkpoint.total_attempts} total attempts</small>
+                                )}
                               </div>
                             );
                           })}

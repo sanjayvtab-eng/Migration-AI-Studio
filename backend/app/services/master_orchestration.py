@@ -9,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import CanonicalRecord, MigrationProject, MigrationSource
-from app.services import prompt_orchestration, prompt_promotion
-from app.services.engine import uid
+from app.models.canonical import MigrationDeployment
+from app.services import medallion, prompt_orchestration, prompt_promotion
+from app.services.engine import databricks_routine_contract_issues, sha, uid
 
 
 MASTER_STAGES = (
@@ -83,6 +84,75 @@ def _save_plan(db: Session, record: CanonicalRecord, plan: dict[str, Any]) -> No
         sort_keys=True,
     )
     db.commit()
+
+
+def _dev_retry_evidence(db: Session, project_id: str) -> dict[str, Any]:
+    """Snapshot actual SQL so internally generated versions cannot renew retries."""
+    return {
+        item["target_fqn"]: {
+            "artifact_version_id": item["artifact_version_id"],
+            "version": item["version"],
+            "content_hash": sha(item["content"]),
+            "approved": bool(
+                item["review_status"] == "APPROVED"
+                and item["validation_status"] == "PASSED"
+                and item["executable"]
+                and not databricks_routine_contract_issues(
+                    item["content"], item.get("source_object_type") or ""
+                )
+            ),
+        }
+        for item in medallion.list_medallion_artifacts(db, project_id, environment="DEV")
+    }
+
+
+def _legacy_dev_retry_evidence(db: Session, project_id: str) -> dict[str, Any]:
+    """Recover the last failed SQL revision for plans created before snapshots."""
+    failures = db.scalars(select(MigrationDeployment).where(
+        MigrationDeployment.project_id == project_id,
+        MigrationDeployment.environment == "DEV",
+        MigrationDeployment.status == "FAILED",
+    ).order_by(MigrationDeployment.created_at.desc())).all()
+    for failure in failures:
+        evidence = _payload(failure.payload_json)
+        if evidence.get("artifact_version_id") and evidence.get("target_fqn"):
+            content_hash = evidence.get("artifact_content_hash")
+            # Older runs may not include a hash. Without recorded evidence of
+            # different SQL, do not silently grant an exhausted plan retries.
+            return {evidence["target_fqn"]: evidence} if content_hash else {}
+    return {}
+
+
+def _renew_dev_retries(
+    db: Session, project_id: str, plan: dict[str, Any], checkpoint: dict[str, Any],
+    run_id: str, actor: str,
+) -> bool:
+    previous = checkpoint.get("retry_evidence")
+    if previous is None:
+        previous = _legacy_dev_retry_evidence(db, project_id)
+    current = _dev_retry_evidence(db, project_id)
+    corrections = {
+        target: {"previous": old, "current": current[target]}
+        for target, old in previous.items()
+        if target in current and current[target]["approved"]
+        and (old.get("content_hash") or old.get("artifact_content_hash"))
+        and current[target]["content_hash"] != (old.get("content_hash") or old.get("artifact_content_hash"))
+    }
+    if not corrections:
+        return False
+    _record(
+        db, project_id, record_type="MASTER_STAGE_RETRY_RENEWAL", status="RENEWED",
+        run_id=run_id, plan_id=plan["plan_id"], stage="DEV_MIGRATION", actor=actor,
+        previous_checkpoint=dict(checkpoint), corrections=corrections,
+        reason="Validated and approved DEV SQL changed since the failed attempts",
+    )
+    checkpoint.update({
+        "total_attempts": int(checkpoint.get("total_attempts", checkpoint.get("attempts", 0))),
+        "attempts": 0,
+        "retry_renewals": int(checkpoint.get("retry_renewals") or 0) + 1,
+        "retry_evidence": current,
+    })
+    return True
 
 
 def _full_environment_scope(prompt: str) -> bool:
@@ -359,15 +429,26 @@ def execute_master_plan(
             result["stages"][stage] = {**checkpoint, "checkpoint_reused": True}
             continue
         attempts = int(checkpoint.get("attempts") or 0)
+        checkpoint["max_attempts"] = MAX_STAGE_ATTEMPTS
+        if stage == "DEV_MIGRATION" and attempts > 0 and checkpoint.get("status") == "FAILED":
+            if _renew_dev_retries(db, project_id, plan, checkpoint, run_id, actor):
+                attempts = 0
         if attempts >= MAX_STAGE_ATTEMPTS:
             stage_result = {
                 "status": "FAILED",
                 "error": f"{title} reached the maximum of {MAX_STAGE_ATTEMPTS} attempts",
+                "errors": [{"recommended_action": (
+                    "Repair and approve corrected DEV SQL, then resume this master plan. "
+                    "The retry budget renews only when validated, approved SQL has changed."
+                    if stage == "DEV_MIGRATION" else
+                    f"Resolve the {environment} evidence and generate a new authorized master plan."
+                )}],
             }
         else:
             checkpoint.update({
                 "status": "RUNNING",
                 "attempts": attempts + 1,
+                "total_attempts": int(checkpoint.get("total_attempts", attempts)) + 1,
                 "started_at": _now(),
             })
             _save_plan(db, record, plan)
@@ -375,6 +456,10 @@ def execute_master_plan(
                 stage_result = _run_stage(db, project_id, plan, stage, actor)
             except Exception as exc:
                 stage_result = {"status": "FAILED", "error": str(exc)}
+            if stage == "DEV_MIGRATION":
+                # Save the final inputs after in-stage generation/remediation,
+                # so merely pressing Resume cannot refresh its own budget.
+                checkpoint["retry_evidence"] = _dev_retry_evidence(db, project_id)
 
         if stage_result.get("status") != "COMPLETED":
             error_message = stage_result.get("error") or f"{title} did not complete"

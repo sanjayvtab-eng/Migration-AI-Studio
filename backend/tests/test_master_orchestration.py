@@ -1,8 +1,12 @@
+import json
 import pytest
 
-from app.models.entities import CanonicalRecord
-from app.services import master_orchestration
-from app.services.engine import add_source, ensure_project
+from app.models.entities import (CanonicalRecord, MigrationSource, MigrationStageArtifact,
+                                 MigrationStageArtifactVersion)
+from app.models.canonical import MigrationDeployment
+from app.services import master_orchestration, medallion, databricks_client, deployment
+from app.services.engine import (add_source, ensure_project, classify_project, create_mappings,
+                                 ingest_snapshot, sha, uid)
 
 
 MASTER_PROMPT = (
@@ -59,6 +63,134 @@ def _mock_successful_chain(monkeypatch, calls):
     monkeypatch.setattr(
         master_orchestration.prompt_promotion, "execute_promotion_plan", promotion_execute
     )
+
+
+def _procedure_artifact(db, project, *, invalid=True):
+    source = db.query(MigrationSource).filter_by(project_id=project.id).one()
+    ingest_snapshot(db, project.id, source.id, {'database': 'MigrationDemo', 'objects': [
+        {'schema': 'dbo', 'name': 'usp_LoadCustomerSales', 'type': 'PROCEDURE',
+         'definition': 'CREATE PROCEDURE dbo.usp_LoadCustomerSales AS BEGIN SELECT 1 AS result; END',
+         'parameters': []},
+    ]})
+    classify_project(db, project.id)
+    create_mappings(db, project.id, 'DEV', 'migration_dev')
+    medallion.build_medallion_plan(db, project.id, environment='DEV', catalog='migration_dev')
+    medallion.generate_medallion_artifacts(db, project.id)
+    item = medallion.list_medallion_artifacts(db, project.id)[0]
+    version = db.get(MigrationStageArtifactVersion, item['artifact_version_id'])
+    if invalid:
+        version.content = version.content.replace('LANGUAGE SQL', 'LANGUAGE SQL\nREADS SQL DATA')
+        version.content_hash = sha(version.content)
+    version.review_status = 'APPROVED'
+    db.commit()
+    return item, version
+
+
+def _fail_dev_three_times(db, project, plan, monkeypatch, calls, stage_runner=None):
+    monkeypatch.setattr(master_orchestration, '_run_stage', stage_runner or (
+        lambda *a, **kw: calls.append('DEV') or {'status': 'FAILED', 'error': 'DEV deployment failed'}
+    ))
+    for attempt in range(3):
+        result = master_orchestration.execute_master_plan(
+            db, project.id, plan['plan_id'], workflow_authorized=attempt == 0,
+            production_authorized=attempt == 0,
+        )
+        assert result['status'] == 'FAILED'
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_capped_master_resume_runs_new_approved_sql_without_losing_authorization(db, monkeypatch, legacy):
+    project = _project(db)
+    _mock_dev_plan(monkeypatch)
+    item, old = _procedure_artifact(db, project)
+    plan = master_orchestration.generate_master_plan(db, project.id, MASTER_PROMPT)
+    calls = []
+    original_runner = master_orchestration._run_stage
+    _fail_dev_three_times(db, project, plan, monkeypatch, calls)
+    capped = master_orchestration.execute_master_plan(db, project.id, plan['plan_id'])
+    assert len(calls) == 3 and 'maximum of 3' in capped['error']
+    saved = master_orchestration.get_master_plan(db, project.id, plan['plan_id'])
+    authorization = saved['authorization']
+    if legacy:
+        saved['checkpoints']['DEV_MIGRATION'].pop('retry_evidence')
+        saved['checkpoints']['DEV_MIGRATION'].pop('total_attempts')
+        record = master_orchestration._master_plan_record(db, project.id, plan['plan_id'])
+        master_orchestration._save_plan(db, record, saved)
+        db.add(MigrationDeployment(id=uid('DPL'), project_id=project.id, environment='DEV', status='FAILED',
+            payload_json=json.dumps({'target_fqn': item['target_fqn'], 'artifact_version_id': old.id,
+                                     'artifact_content_hash': old.content_hash})))
+        db.commit()
+    repaired = medallion.remediate_medallion_artifact(db, project.id, old.id, use_ai=False, reviewer='architect')
+    # A repair candidate alone cannot renew an exhausted budget.
+    still_blocked = master_orchestration.execute_master_plan(db, project.id, plan['plan_id'])
+    assert still_blocked['status'] == 'FAILED' and len(calls) == 3
+    assert not db.query(CanonicalRecord).filter_by(record_type='MASTER_STAGE_RETRY_RENEWAL').count()
+    medallion.review_medallion_artifact(db, project.id, repaired['artifact_version_id'],
+                                      status='APPROVED', reviewer='architect')
+    monkeypatch.setattr(master_orchestration, '_run_stage', original_runner)
+    _mock_successful_chain(monkeypatch, calls)
+    executed_sql = []
+    monkeypatch.setattr(databricks_client, 'execute_sql', lambda sql, **kw: executed_sql.append(sql))
+    monkeypatch.setattr(deployment, 'databricks_workspace_identity', lambda: 'qa-workspace')
+    def execute_dev(*args, **kwargs):
+        calls.append('DEV')
+        deployment_result = medallion.deploy_medallion_dev(db, project.id)
+        return {**deployment_result, 'status': 'COMPLETED' if deployment_result['status'] == 'PASSED' else 'FAILED'}
+    monkeypatch.setattr(master_orchestration.prompt_orchestration, 'execute_prompt_plan', execute_dev)
+    result = master_orchestration.execute_master_plan(db, project.id, plan['plan_id'])
+    assert result['status'] == 'COMPLETED', result.get('error')
+    checkpoint = result['stages']['DEV_MIGRATION']
+    assert checkpoint['attempts'] == 1 and checkpoint['total_attempts'] == 4
+    assert checkpoint['retry_renewals'] == 1
+    assert result['authorization'] == authorization
+    assert checkpoint['retry_evidence'][item['target_fqn']]['artifact_version_id'] == repaired['artifact_version_id']
+    assert executed_sql == [db.get(MigrationStageArtifactVersion, repaired['artifact_version_id']).content]
+    logs = db.query(MigrationDeployment).filter_by(project_id=project.id, status='PASSED').all()
+    assert any(json.loads(log.payload_json).get('artifact_version_id') == repaired['artifact_version_id'] for log in logs)
+    audit = db.query(CanonicalRecord).filter_by(project_id=project.id, record_type='MASTER_STAGE_RETRY_RENEWAL').one()
+    evidence = json.loads(audit.payload_json)
+    assert evidence['previous_checkpoint']['attempts'] == 3
+    assert evidence['corrections'][item['target_fqn']]['previous'].get('artifact_version_id') == old.id
+    assert len(calls) == 10  # three failed DEV runs, then DEV and all three promotion pairs
+
+
+def test_new_version_with_identical_sql_does_not_renew_retries(db, monkeypatch):
+    project = _project(db)
+    _mock_dev_plan(monkeypatch)
+    item, old = _procedure_artifact(db, project, invalid=False)
+    plan = master_orchestration.generate_master_plan(db, project.id, MASTER_PROMPT)
+    calls = []
+    _fail_dev_three_times(db, project, plan, monkeypatch, calls)
+    artifact = db.get(MigrationStageArtifact, old.artifact_id)
+    new = MigrationStageArtifactVersion(id=uid('MSV'), project_id=project.id, artifact_id=old.artifact_id,
+        node_id=old.node_id, version=old.version + 1, content=old.content, content_hash=sha(old.content),
+        validation_status='PASSED', executable=True, review_status='PENDING_REVIEW')
+    db.add(new)
+    artifact.current_version = new.version
+    db.commit()
+    medallion.review_medallion_artifact(db, project.id, new.id, status='APPROVED', reviewer='architect')
+    result = master_orchestration.execute_master_plan(db, project.id, plan['plan_id'])
+    assert result['status'] == 'FAILED' and 'maximum of 3' in result['error']
+    assert len(calls) == 3
+    assert not db.query(CanonicalRecord).filter_by(record_type='MASTER_STAGE_RETRY_RENEWAL').count()
+
+
+def test_internal_artifact_changes_do_not_refresh_the_next_resume_budget(db, monkeypatch):
+    project = _project(db)
+    _mock_dev_plan(monkeypatch)
+    item, old = _procedure_artifact(db, project, invalid=False)
+    plan = master_orchestration.generate_master_plan(db, project.id, MASTER_PROMPT)
+    calls = []
+    def generate_and_fail(*args, **kwargs):
+        calls.append('DEV')
+        old.content = old.content.replace(f'SELECT {len(calls)} ', f'SELECT {len(calls) + 1} ')
+        old.content_hash = sha(old.content)
+        db.commit()
+        return {'status': 'FAILED', 'error': 'Deployment failed after in-stage remediation'}
+    _fail_dev_three_times(db, project, plan, monkeypatch, calls, stage_runner=generate_and_fail)
+    blocked = master_orchestration.execute_master_plan(db, project.id, plan['plan_id'])
+    assert 'maximum of 3' in blocked['error'] and len(calls) == 3
 
 
 def test_master_plan_requires_explicit_full_production_scope(db):
