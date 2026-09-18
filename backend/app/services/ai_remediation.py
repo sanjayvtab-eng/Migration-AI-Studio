@@ -456,8 +456,21 @@ def _extract_definition_parameters(definition: str) -> list[dict[str, Any]]:
 
 
 def _deterministic_function_remediation(
-    db: Session, project_id: str, o: MigrationObject, m: MigrationMapping, environment: str
+    db: Session, project_id: str, o: MigrationObject, m: MigrationMapping, environment: str,
+    preferred_definition: str | None = None,
 ) -> RemediationCandidate | None:
+    if preferred_definition:
+        validation = validate_candidate_content(o, m, preferred_definition)
+        if validation["valid"]:
+            return RemediationCandidate(
+                object_id=o.id, issue_id=None, source_logic=preferred_definition,
+                conversion_strategy="PRESERVE_CURRENT_SQL_FUNCTION_LOGIC",
+                generated_candidate=validation["normalized_candidate"], confidence=0.95,
+                assumptions=["Preserve the current function's query and business calculation."],
+                risks=["Validate numeric and null behavior against source results in DEV."],
+                validation_plan=["Review the new version before DEV execution.", "Reconcile source and target results."],
+                provider="DETERMINISTIC_REMEDIATION", model=None, deterministic_validation=validation,
+            )
     definition = o.definition or ""
     params = _routine_parameters(db, project_id, o.id)
     if not params:
@@ -938,7 +951,7 @@ def _remediation_idempotency_key(
     """Fingerprint only inputs that can change the governed remediation result."""
     cfg = get_settings()
     payload = {
-        "routine_validation_revision": "sql-routine-header-contract-v5",
+        "routine_validation_revision": "sql-routine-column-contract-v6",
         "object_id": o.id,
         "source_hash": o.source_hash,
         "target_fqn": m.target_fqn,
@@ -952,6 +965,7 @@ def _remediation_idempotency_key(
             "technical_details": issue.technical_details if issue else None,
         },
         "current_artifact_version_id": context.get("current_artifact_version_id"),
+        "preferred_artifact_hash": context.get("preferred_artifact_hash"),
         "validation": context.get("validation"),
         "columns": context.get("columns"),
         "available_mappings": context.get("available_mappings"),
@@ -1240,11 +1254,13 @@ def analyze_remediation(
     if issue_route == "COMPATIBILITY_ENGINE":
         raise ValueError("Runtime compatibility failures are handled by the deterministic compatibility engine, not by rewriting migration SQL with AI")
     context = _context(db, project_id, o, environment)
+    context["preferred_artifact_hash"] = sha(artifact_content) if artifact_content is not None else None
     idempotency_key = _remediation_idempotency_key(o, m, issue, environment, context)
 
     local = None
     if o.object_type == "FUNCTION":
-        local = _deterministic_function_remediation(db, project_id, o, m, environment)
+        local = _deterministic_function_remediation(db, project_id, o, m, environment,
+                                                   preferred_definition=artifact_content)
     elif o.object_type == "PROCEDURE":
         local = _deterministic_procedure_remediation(
             db, project_id, o, m, environment,

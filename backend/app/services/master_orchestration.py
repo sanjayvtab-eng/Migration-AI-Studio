@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.entities import CanonicalRecord, MigrationProject, MigrationSource
 from app.models.canonical import MigrationDeployment
 from app.services import medallion, prompt_orchestration, prompt_promotion
-from app.services.engine import databricks_routine_contract_issues, sha, uid
+from app.services.engine import sha, uid
 
 
 MASTER_STAGES = (
@@ -97,8 +97,8 @@ def _dev_retry_evidence(db: Session, project_id: str) -> dict[str, Any]:
                 item["review_status"] == "APPROVED"
                 and item["validation_status"] == "PASSED"
                 and item["executable"]
-                and not databricks_routine_contract_issues(
-                    item["content"], item.get("source_object_type") or ""
+                and not medallion.medallion_routine_issues(
+                    db, project_id, "DEV", item["content"], item.get("source_object_type") or ""
                 )
             ),
         }

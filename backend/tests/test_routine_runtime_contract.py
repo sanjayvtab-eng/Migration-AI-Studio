@@ -318,7 +318,7 @@ def test_approved_ai_sql_is_blocked_until_new_version_repaired_and_approved(db, 
     assert current.review_status == 'PENDING_REVIEW'
     assert not any('parameter declaration' in issue for issue in
                    databricks_routine_contract_issues(current.content, 'FUNCTION'))
-    assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in current.content
+    assert 'WHERE oi.`order_id` = `fn_CalculateOrderAmount`.`OrderID`' in current.content
     assert not databricks_routine_contract_issues(current.content, 'FUNCTION')
     medallion.review_medallion_artifact(db, project.id, current.id, status='APPROVED', reviewer='architect')
     medallion.generate_medallion_artifacts(db, project.id)

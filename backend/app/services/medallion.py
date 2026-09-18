@@ -33,6 +33,7 @@ from app.services.engine import (
     _convert_function,
     _convert_procedure,
     _retarget_view_header,
+    _sql_code,
     databricks_routine_contract_issues,
     normalize_databricks_routine_contract,
     qident,
@@ -1530,6 +1531,41 @@ def _retarget_repaired_routine(content: str, object_type: str, target_fqn: str) 
     return normalize_databricks_routine_contract(retargeted, object_type)
 
 
+def _bind_routine_columns(db: Session, project_id: str, environment: str, content: str) -> tuple[str, list[str]]:
+    from app.services.routine_columns import bind_columns
+
+    schemas = {}
+    nodes = db.scalars(select(MigrationMedallionNode).where(
+        MigrationMedallionNode.project_id == project_id,
+        MigrationMedallionNode.environment == environment.upper(),
+        MigrationMedallionNode.layer.in_(["BRONZE", "SILVER"]),
+    )).all()
+    for node in nodes:
+        obj = db.get(MigrationObject, node.source_object_id) if node.source_object_id else None
+        if not obj or obj.object_type != "TABLE":
+            continue
+        schema = {}
+        for column in _columns(db, project_id, obj.id):
+            target = _snake_case(column.column_name) if node.layer == "SILVER" else column.column_name
+            schema[column.column_name.lower()] = target
+            schema[target.lower()] = target
+        if node.layer == "BRONZE":
+            schema.update({name: name for name in ("_migration_ingested_at", "_migration_source_system")})
+        schemas[tuple(part.strip('`').replace('``', '`').lower() for part in node.target_fqn.split('.'))] = schema
+    return bind_columns(content, schemas)
+
+
+def medallion_routine_issues(db: Session, project_id: str, environment: str, content: str, kind: str) -> list[str]:
+    issues = databricks_routine_contract_issues(content, kind)
+    if kind not in {"FUNCTION", "PROCEDURE"}:
+        return issues
+    bound, column_errors = _bind_routine_columns(db, project_id, environment, content)
+    if bound != content:
+        issues.append("Routine column names do not match the referenced Medallion relation schema; "
+                      "repair the artifact to use the planned Silver column names")
+    return list(dict.fromkeys([*issues, *column_errors]))
+
+
 def generate_medallion_artifacts(db: Session, project_id: str, *, environment: str = "DEV") -> dict[str, Any]:
     env = environment.upper()
     nodes = list(db.scalars(select(MigrationMedallionNode).where(
@@ -1554,6 +1590,9 @@ def generate_medallion_artifacts(db: Session, project_id: str, *, environment: s
         if source_obj and source_obj.object_type in {"PROCEDURE", "FUNCTION"}:
             content = normalize_databricks_routine_contract(content, source_obj.object_type)
             contract_errors = databricks_routine_contract_issues(content, source_obj.object_type)
+            if not contract_errors:
+                content, column_errors = _bind_routine_columns(db, project_id, env, content)
+                contract_errors.extend(column_errors)
             if contract_errors:
                 executable = False
                 errors = list(dict.fromkeys([*errors, *contract_errors]))
@@ -1655,7 +1694,7 @@ def _revalidate_current_routines(db: Session, project_id: str, environment: str)
         kind = item.get("source_object_type") or ""
         if kind not in {"FUNCTION", "PROCEDURE"} or item.get("node_type") == "ARCHITECTURE_REVIEW":
             continue
-        issues = databricks_routine_contract_issues(item["content"], kind)
+        issues = medallion_routine_issues(db, project_id, environment, item["content"], kind)
         if not issues:
             continue
         blockers.append(f"{item['target_fqn']} v{item['version']} ({item['artifact_version_id']}): {'; '.join(issues)}")
@@ -1773,7 +1812,8 @@ def review_medallion_artifact(db: Session, project_id: str, version_id: str, *, 
     if state == "APPROVED":
         node = db.get(MigrationMedallionNode, version.node_id)
         obj = db.get(MigrationObject, node.source_object_id) if node and node.source_object_id else None
-        issues = databricks_routine_contract_issues(version.content, obj.object_type if obj else "")
+        issues = medallion_routine_issues(db, project_id, node.environment if node else "DEV",
+                                         version.content, obj.object_type if obj else "")
         if issues:
             raise ValueError("Approval blocked by current Databricks routine validation: " + "; ".join(issues))
     version.review_status = state; version.reviewer = reviewer; version.reviewed_at = datetime.utcnow()
@@ -1836,7 +1876,7 @@ def remediate_medallion_artifact(
         raise ValueError("Failed Medallion artifact has no source object for remediation")
     if obj.object_type not in {"PROCEDURE", "FUNCTION"}:
         raise ValueError(f"{obj.object_type} artifact requires manual architecture review")
-    if version.executable and version.validation_status == "PASSED" and not databricks_routine_contract_issues(version.content, obj.object_type):
+    if version.executable and version.validation_status == "PASSED" and not medallion_routine_issues(db, project_id, env, version.content, obj.object_type):
         raise ValueError("Artifact already passed validation and is ready for human review")
 
     mapping = db.scalar(select(MigrationMapping).where(
@@ -1857,10 +1897,18 @@ def remediate_medallion_artifact(
     # that failed Medallion generation, including version-specific validation.
     generate_artifact(db, project_id, obj.id, env)
     static_validate(db, project_id, obj.id, env)
+    repair_input = version.content
+    # Resolve parameter/column ambiguity before renaming columns. Renaming both
+    # sides of OrderID = OrderID would otherwise hide the existing blocker.
+    normalized = normalize_databricks_routine_contract(repair_input, obj.object_type)
+    if not databricks_routine_contract_issues(normalized, obj.object_type):
+        repair_input, column_errors = _bind_routine_columns(db, project_id, env, repair_input)
+        if column_errors:
+            raise ValueError("Routine column binding requires schema review: " + "; ".join(column_errors))
     repaired = remediate_one_artifact(
         db, project_id, obj.id, environment=env, use_ai=use_ai, reviewer=reviewer,
         confirmed_blocker=f"MEDALLION_STAGE_VALIDATION:{version.id}",
-        artifact_content=version.content,
+        artifact_content=repair_input,
     )
     if repaired.get("status") != "READY_FOR_REVIEW":
         errors = repaired.get("errors") or repaired.get("static_validation", {}).get("issues") or []
@@ -1870,7 +1918,9 @@ def remediate_medallion_artifact(
     if not source_version or source_version.project_id != project_id:
         raise ValueError("Validated remediation candidate was not found")
     content = _retarget_repaired_routine(source_version.content, obj.object_type, node.target_fqn)
+    content, column_errors = _bind_routine_columns(db, project_id, env, content)
     contract_errors = databricks_routine_contract_issues(content, obj.object_type)
+    contract_errors.extend(column_errors)
     if contract_errors:
         raise ValueError("Remediation candidate failed Databricks routine validation: " + "; ".join(contract_errors))
     content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -1905,8 +1955,30 @@ def remediate_medallion_artifact(
     }
 
 
-def _layer_order(layer: str) -> int:
-    return {"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(layer, 9)
+def _deployment_artifact_order(db: Session, project_id: str, environment: str,
+                               artifacts: list[dict[str, Any]], nodes: dict[str, MigrationMedallionNode]) -> list[dict[str, Any]]:
+    """Include current repaired SQL dependencies, which may differ from source lineage."""
+    edges = list(db.scalars(select(MigrationMedallionEdge).where(
+        MigrationMedallionEdge.project_id == project_id,
+        MigrationMedallionEdge.environment == environment,
+    )).all())
+    ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+    qualified = rf"{ident}\s*\.\s*{ident}\s*\.\s*{ident}"
+
+    def key(value: str) -> tuple[str, ...]:
+        return tuple(part.strip('`').replace('``', '`').lower() for part in re.findall(ident, value))
+
+    by_target = {key(node.target_fqn): node for node in nodes.values()}
+    for item in artifacts:
+        for match in re.finditer(qualified, _sql_code(item["content"])):
+            producer = by_target.get(key(match.group()))
+            if producer and producer.id != item["node_id"]:
+                edges.append(MigrationMedallionEdge(from_node_id=producer.id, to_node_id=item["node_id"]))
+    by_id = {item["node_id"]: item for item in artifacts}
+    ordered, cycles = _topological_stage_order([nodes[node_id] for node_id in by_id], edges)
+    if cycles:
+        raise ValueError("Medallion deployment dependency cycle detected in current artifact SQL: " + ", ".join(cycles))
+    return [by_id[node.id] for node in ordered]
 
 
 def _deploy_legacy_bronze(db, project_id, obj, node, item, run_id,
@@ -2011,6 +2083,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
         MigrationMedallionNode.project_id == project_id,
         MigrationMedallionNode.environment == env,
     )).all()}
+    artifacts = _deployment_artifact_order(db, project_id, env, artifacts, node_by_id)
     object_by_id = {o.id: o for o in db.scalars(select(MigrationObject).where(MigrationObject.project_id == project_id)).all()}
     config = environment_provisioning.get_configuration(db, project_id)
     bronze_objects = [object_by_id[n.source_object_id] for n in node_by_id.values()
@@ -2019,7 +2092,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
     checkpoint = bronze_ingestion.verified_checkpoint(db, project_id, bronze_objects) if reuse_bronze and max_rows is None else None
     reusable = {item["object_id"]: item for item in (checkpoint or {}).get("results", [])}
     deployed = []
-    for item in sorted(artifacts, key=lambda x:(_layer_order(x["layer"]), x["target_fqn"].lower())):
+    for item in artifacts:
         node = node_by_id[item["node_id"]]
         obj = object_by_id.get(node.source_object_id)
         try:
