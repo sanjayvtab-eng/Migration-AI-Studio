@@ -105,6 +105,16 @@ def _overqualified_function_parameters(content: str) -> list[tuple[int, int, str
     return replacements
 
 
+def _procedure_header_code(content: str) -> str:
+    """Mask identifiers too, and restrict clause checks to the routine header."""
+    code = _sql_code(content)
+    code = re.sub(r"`(?:``|[^`])+`", lambda match: ' ' * len(match.group()), code)
+    body = re.search(r"(?is)\bAS\s+(?:[A-Za-z_]\w*\s*:\s*)?BEGIN\b", code)
+    if not body:
+        body = re.search(r"(?is)\bBEGIN\b", code)
+    return code[:body.start()] if body else code
+
+
 def normalize_databricks_routine_contract(content: str, object_type: str) -> str:
     """Apply safe, deterministic Databricks clauses without changing routine logic."""
     kind = object_type.upper()
@@ -112,6 +122,13 @@ def normalize_databricks_routine_contract(content: str, object_type: str) -> str
     if kind == "PROCEDURE":
         if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?PROCEDURE\b", code):
             return content
+        # READS SQL DATA / CONTAINS SQL are function characteristics, not
+        # procedure characteristics. Never rewrite the compound body.
+        invalid = list(re.finditer(r"(?is)\b(?:READS\s+SQL\s+DATA|CONTAINS\s+SQL)\b",
+                                   _procedure_header_code(content)))
+        for match in reversed(invalid):
+            content = content[:match.start()] + content[match.end():]
+        code = _procedure_header_code(content)
         if re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", code):
             return content
         language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", code)
@@ -160,14 +177,18 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
         return []
     issues: list[str] = []
     code = _sql_code(content)
+    clause_code = _procedure_header_code(content) if kind == "PROCEDURE" else code
     header = re.search(rf"(?is)\bCREATE\s+OR\s+REPLACE\s+{kind}\b", code)
-    language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", code)
+    language = re.search(r"(?is)\bLANGUAGE\s+SQL\b", clause_code)
     if not header:
         issues.append(f"Databricks {kind.lower()} must use CREATE OR REPLACE {kind}")
     if not language:
         issues.append(f"Databricks {kind.lower()} is missing LANGUAGE SQL")
     if kind == "PROCEDURE":
-        security = re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", code)
+        for invalid in re.finditer(r"(?is)\b(?:READS\s+SQL\s+DATA|CONTAINS\s+SQL)\b", clause_code):
+            clause = ' '.join(invalid.group().upper().split())
+            issues.append(f"Databricks procedure does not support {clause}; omit this function-only header clause")
+        security = re.search(r"(?is)\bSQL\s+SECURITY\s+(?:INVOKER|DEFINER)\b", clause_code)
         if not security:
             issues.append("Databricks procedure is missing SQL SECURITY INVOKER")
         elif language and security.start() < language.end():

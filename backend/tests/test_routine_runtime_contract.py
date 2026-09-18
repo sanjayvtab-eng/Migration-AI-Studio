@@ -37,6 +37,101 @@ QUALIFIED_DECLARATION_SQL = OVERQUALIFIED_SQL.replace(
     '(OrderID INT)', '(\n    `fn_CalculateOrderAmount`.`OrderID` INT\n)'
 ).replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
 
+PROC_FQN = '`migration_dev`.`silver`.`usp_LoadCustomerSales`'
+BAD_PROCEDURE_SQL = f'''CREATE OR REPLACE PROCEDURE {PROC_FQN}()
+LANGUAGE SQL
+READS SQL DATA
+SQL SECURITY INVOKER
+AS BEGIN
+CREATE OR REPLACE TABLE `migration_dev`.`silver`.`CustomerSales` AS
+SELECT CustomerID, SUM(Amount) AS TotalAmount
+FROM `migration_dev`.`bronze`.`Orders` GROUP BY CustomerID;
+END;'''
+
+
+@pytest.mark.parametrize('clause', ['READS SQL DATA', 'CONTAINS SQL'])
+@pytest.mark.parametrize('has_security', [True, False])
+def test_invalid_procedure_data_access_clause_is_blocked_and_repaired(clause, has_security):
+    sql = BAD_PROCEDURE_SQL.replace('READS SQL DATA', clause)
+    if not has_security:
+        sql = sql.replace('SQL SECURITY INVOKER\n', '')
+    assert any(clause in issue for issue in databricks_routine_contract_issues(sql, 'PROCEDURE'))
+    result = validate_candidate_content(SimpleNamespace(object_type='PROCEDURE'),
+                                        SimpleNamespace(target_fqn=PROC_FQN), sql)
+    assert result['valid'], result['errors']
+    fixed = result['normalized_candidate']
+    assert clause not in fixed
+    assert fixed.count('SQL SECURITY INVOKER') == 1
+    assert fixed.split('AS BEGIN', 1)[1] == sql.split('AS BEGIN', 1)[1]
+    assert normalize_databricks_routine_contract(fixed, 'PROCEDURE') == fixed
+
+
+def test_procedure_clause_repair_preserves_function_clauses_literals_comments_and_body():
+    extra = "\n-- READS SQL DATA\n/* CONTAINS SQL */\n"
+    sql = BAD_PROCEDURE_SQL.replace('LANGUAGE SQL', "LANGUAGE SQL\nCOMMENT 'READS SQL DATA'")
+    sql = sql.replace('END;', "SELECT 'CONTAINS SQL' AS message;\nEND;") + extra
+    fixed = normalize_databricks_routine_contract(sql, 'PROCEDURE')
+    assert fixed == sql.replace('\nREADS SQL DATA\n', '\n\n')
+    assert not databricks_routine_contract_issues(fixed, 'PROCEDURE')
+    function = OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
+    assert normalize_databricks_routine_contract(function, 'FUNCTION') == function
+    assert not databricks_routine_contract_issues(function, 'FUNCTION')
+
+
+@pytest.mark.parametrize('use_ai', [False, True])
+def test_approved_procedure_is_repaired_as_new_reviewable_version_and_deployed(db, monkeypatch, use_ai):
+    project = ensure_project(db, 'Procedure clause repair')
+    source = add_source(db, project.id, 'source', 'server', 'MigrationDemo')
+    ingest_snapshot(db, project.id, source.id, {'database': 'MigrationDemo', 'objects': [
+        {'schema': 'dbo', 'name': 'usp_LoadCustomerSales', 'type': 'PROCEDURE',
+         'definition': 'CREATE PROCEDURE dbo.usp_LoadCustomerSales AS BEGIN SELECT 1 AS result; END',
+         'parameters': []},
+    ]})
+    classify_project(db, project.id)
+    create_mappings(db, project.id, 'DEV', 'migration_dev')
+    medallion.build_medallion_plan(db, project.id, environment='DEV', catalog='migration_dev')
+    medallion.generate_medallion_artifacts(db, project.id)
+    item = next(x for x in medallion.list_medallion_artifacts(db, project.id) if x['target_fqn'] == PROC_FQN)
+    old = db.get(MigrationStageArtifactVersion, item['artifact_version_id'])
+    old.content = BAD_PROCEDURE_SQL
+    old.content_hash = hashlib.sha256(old.content.encode()).hexdigest()
+    old.validation_status = 'PASSED'
+    old.review_status = 'APPROVED'
+    old.executable = True
+    db.commit()
+    statements = []
+    monkeypatch.setattr(databricks_client, 'execute_sql', lambda sql, **kw: statements.append(sql))
+    with pytest.raises(ValueError, match='READS SQL DATA'):
+        medallion.deploy_medallion_dev(db, project.id)
+    assert not statements and old.validation_status == 'FAILED'
+    report = medallion.medallion_validation_report(db, project.id)
+    assert any(x['artifact_version_id'] == old.id for x in report['failed_artifacts'])
+    from app.services import ai_remediation
+    if use_ai:
+        monkeypatch.setattr(ai_remediation, '_deterministic_procedure_remediation', lambda *a, **kw: None)
+        monkeypatch.setattr(ai_remediation, '_call_llm', lambda *a, **kw: (
+            {'generated_candidate': BAD_PROCEDURE_SQL, 'confidence': 0.9}, 'GEMINI', 'qa-model'
+        ))
+    repaired = medallion.remediate_medallion_artifact(db, project.id, old.id, use_ai=use_ai, reviewer='architect')
+    current = db.get(MigrationStageArtifactVersion, repaired['artifact_version_id'])
+    assert current.version == old.version + 1 and current.review_status == 'PENDING_REVIEW'
+    assert 'READS SQL DATA' not in current.content
+    assert current.content.split('AS BEGIN', 1)[1] == BAD_PROCEDURE_SQL.split('AS BEGIN', 1)[1]
+    assert old.content == BAD_PROCEDURE_SQL
+    with pytest.raises(ValueError, match='not approved'):
+        medallion.deploy_medallion_dev(db, project.id)
+    medallion.review_medallion_artifact(db, project.id, current.id, status='APPROVED', reviewer='architect')
+    medallion.generate_medallion_artifacts(db, project.id)
+    effective = next(x for x in medallion.list_medallion_artifacts(db, project.id) if x['target_fqn'] == PROC_FQN)
+    assert effective['artifact_version_id'] == current.id
+    monkeypatch.setattr(deployment, 'databricks_workspace_identity', lambda: 'qa-workspace')
+    result = medallion.deploy_medallion_dev(db, project.id)
+    assert result['status'] == 'PASSED', result.get('error')
+    assert statements == [current.content]
+    records = [json.loads(row.payload_json) for row in db.query(MigrationDeployment).filter_by(project_id=project.id)]
+    evidence = next(x for x in records if x.get('artifact_version_id') == current.id)
+    assert evidence['artifact_content_hash'] == current.content_hash
+
 
 def _seed(db):
     project = ensure_project(db, 'Runtime function repair')
