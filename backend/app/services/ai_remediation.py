@@ -912,6 +912,7 @@ Non-negotiable controls:
 - For Databricks SQL CTEs: self-referencing (recursive) common table expressions must use WITH RECURSIVE (e.g. `WITH RECURSIVE OrgChart AS ...`).
 - For Databricks SQL functions: use CREATE OR REPLACE FUNCTION and LANGUAGE SQL. If the function queries tables or views (via FROM or JOIN), specify READS SQL DATA after LANGUAGE SQL; never use CONTAINS SQL when querying tables or views.
 - SQL function bodies must use RETURN expression/query, never AS RETURN. When a parameter shares a column name, qualify the column with its table alias and the parameter with the function name; never emit OrderID = OrderID.
+- SQL function parameter scope is function_name.parameter_name (for example, `fn_CalculateOrderAmount`.`OrderID`), never catalog.schema.function_name.parameter_name. Catalog/schema qualification belongs on the CREATE name, table references, and function calls, not parameter references.
 - For Databricks procedures: use CREATE OR REPLACE PROCEDURE, LANGUAGE SQL, and SQL SECURITY INVOKER.
 - Never emit DROP, TRUNCATE, DELETE, catalog/schema changes, secrets, approval, or production actions.
 - If semantics cannot be preserved safely, return generated_candidate as an empty string and explain the blocker in risks.
@@ -935,7 +936,7 @@ def _remediation_idempotency_key(
     """Fingerprint only inputs that can change the governed remediation result."""
     cfg = get_settings()
     payload = {
-        "routine_validation_revision": "sql-return-and-parameter-scope-v2",
+        "routine_validation_revision": "sql-return-and-parameter-scope-v3",
         "object_id": o.id,
         "source_hash": o.source_hash,
         "target_fqn": m.target_fqn,

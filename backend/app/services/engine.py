@@ -18,6 +18,43 @@ def _sql_code(content: str) -> str:
     return re.sub(pattern, lambda m: re.sub(r"[^\n]", " ", m.group()), content, flags=re.S)
 
 
+def _overqualified_function_parameters(content: str) -> list[tuple[int, int, str]]:
+    """Find declared parameters prefixed by this routine's catalog/schema.
+
+    Parameter scope is routine.parameter, even when the CREATE name is an FQN.
+    Match the complete CREATE name and a declared parameter so unrelated table
+    columns and struct fields are never shortened. Offsets exclude literals and
+    comments and replacements apply only within the RETURN body.
+    """
+    code = _sql_code(content)
+    ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+    qualified = rf"{ident}(?:\s*\.\s*{ident})*"
+    signature = re.search(
+        rf"(?is)\bFUNCTION\s+({qualified})\s*\((.*?)\)\s*RETURNS\b", code
+    )
+    if not signature:
+        return []
+    routine = re.findall(ident, signature.group(1))
+    if len(routine) < 2:
+        return []
+    parameters = {name.strip('`').replace('``', '`').lower() for name in re.findall(
+        rf"(?:^|,)\s*({ident})\s+[A-Za-z_]\w*", signature.group(2)
+    )}
+    body = re.search(r"(?is)\bRETURN\b", code[signature.end():])
+    if not body:
+        return []
+    body_start = signature.end() + body.end()
+    routine_key = [name.strip('`').replace('``', '`').lower() for name in routine]
+    replacements = []
+    for match in re.finditer(rf"(?<![\w`\.]){qualified}(?![\w`])", code[body_start:]):
+        parts = re.findall(ident, match.group())
+        keys = [part.strip('`').replace('``', '`').lower() for part in parts]
+        if len(parts) == len(routine) + 1 and keys[:-1] == routine_key and keys[-1] in parameters:
+            replacements.append((body_start + match.start(), body_start + match.end(),
+                                 parts[-2] + '.' + parts[-1]))
+    return replacements
+
+
 def normalize_databricks_routine_contract(content: str, object_type: str) -> str:
     """Apply safe, deterministic Databricks clauses without changing routine logic."""
     kind = object_type.upper()
@@ -36,6 +73,9 @@ def normalize_databricks_routine_contract(content: str, object_type: str) -> str
     if kind == "FUNCTION":
         if not re.search(r"(?is)\bCREATE\s+(?:OR\s+(?:ALTER|REPLACE)\s+)?FUNCTION\b", code):
             return content
+        for start, end, replacement in reversed(_overqualified_function_parameters(content)):
+            content = content[:start] + replacement + content[end:]
+        code = _sql_code(content)
         # SQL functions use RETURN expression/query; AS is for other body forms.
         # Limit this rewrite to the first body RETURN, never literals/comments.
         body = re.search(r"(?is)\bRETURN\b", code)
@@ -81,6 +121,8 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
         elif language and security.start() < language.end():
             issues.append("Databricks procedure SQL SECURITY clause must follow LANGUAGE SQL")
     elif kind == "FUNCTION":
+        if _overqualified_function_parameters(content):
+            issues.append("Invalid function parameter qualification; use routine.parameter without catalog/schema")
         body = re.search(r"(?is)\bRETURN\b", code)
         if not body:
             issues.append("Databricks SQL function is missing RETURN expression/query")

@@ -22,6 +22,16 @@ READS SQL DATA
 AS RETURN COALESCE((SELECT SUM(Quantity * UnitPrice * (1 - DiscountPercent / 100))
 FROM `migration_dev`.`silver`.`OrderItems` WHERE OrderID = OrderID), 0);'''
 
+# The AI-repaired, approved v3 that failed on the user's live warehouse.
+OVERQUALIFIED_SQL = f'''CREATE OR REPLACE FUNCTION {FQN}(OrderID INT)
+RETURNS DECIMAL(18,2)
+LANGUAGE SQL
+READS SQL DATA
+RETURN COALESCE(
+    (SELECT SUM(oi.Quantity * oi.UnitPrice * (1 - (oi.DiscountPercent / 100)))
+     FROM `migration_dev`.`silver`.`OrderItems` AS oi
+     WHERE oi.OrderID = {FQN}.`OrderID`), 0);'''
+
 
 def _seed(db):
     project = ensure_project(db, 'Runtime function repair')
@@ -76,6 +86,88 @@ def test_ai_candidate_repairs_as_return_but_rejects_ambiguous_filter():
     ))
     assert good['valid'], good['errors']
     assert good['normalized_candidate'].count('READS SQL DATA') == 1
+
+
+def test_ai_v3_parameter_scope_is_rejected_and_safely_normalized():
+    assert any('parameter qualification' in issue for issue in
+               databricks_routine_contract_issues(OVERQUALIFIED_SQL, 'FUNCTION'))
+    result = validate_candidate_content(SimpleNamespace(object_type='FUNCTION'),
+                                        SimpleNamespace(target_fqn=FQN), OVERQUALIFIED_SQL)
+    assert result['valid'], result['errors']
+    sql = result['normalized_candidate']
+    assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in sql
+    assert sql == OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
+    assert normalize_databricks_routine_contract(sql, 'FUNCTION') == sql
+
+
+@pytest.mark.parametrize('scope', [
+    'migration_dev.silver.fn_CalculateOrderAmount.OrderID',
+    '`MIGRATION_DEV` . silver . `fn_CalculateOrderAmount` . OrderID',
+])
+def test_parameter_scope_accepts_mixed_quoting_spacing_and_case(scope):
+    sql = OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', scope)
+    assert databricks_routine_contract_issues(sql, 'FUNCTION')
+    fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
+    assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
+    assert 'WHERE oi.OrderID = ' in fixed
+    assert 'silver' not in fixed.split('WHERE')[1]
+
+
+def test_parameter_normalization_preserves_literals_comments_and_unrelated_fields():
+    extra = f"\n-- {FQN}.`OrderID`\n/* {FQN}.`OrderID` */\n"
+    sql = OVERQUALIFIED_SQL.replace('), 0);', f"), CAST('{FQN}.`OrderID`' AS INT));") + extra
+    fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
+    assert f"'{FQN}.`OrderID`'" in fixed and fixed.endswith(extra)
+    for reference in ['other.silver.fn_CalculateOrderAmount.OrderID',
+                      '`migration_dev`.`silver`.`OrderItems`.`OrderID`',
+                      FQN + '.`UnknownParameter`',
+                      FQN + '.`OrderID`.`nested_field`']:
+        sql = OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', reference)
+        assert normalize_databricks_routine_contract(sql, 'FUNCTION') == sql
+
+
+def test_approved_ai_v3_is_blocked_until_new_version_repaired_and_approved(db, monkeypatch):
+    project, old = _seed(db)
+    old.content = OVERQUALIFIED_SQL
+    old.content_hash = hashlib.sha256(OVERQUALIFIED_SQL.encode()).hexdigest()
+    db.commit()
+    statements = []
+    monkeypatch.setattr(databricks_client, 'execute_sql', lambda sql, **kw: statements.append(sql))
+    with pytest.raises(ValueError, match='parameter qualification'):
+        medallion.deploy_medallion_dev(db, project.id)
+    assert not statements and old.validation_status == 'FAILED'
+    assert old.content == OVERQUALIFIED_SQL
+    report = medallion.medallion_validation_report(db, project.id)
+    assert any(x['artifact_version_id'] == old.id for x in report['failed_artifacts'])
+    with pytest.raises(ValueError, match='Approval blocked'):
+        medallion.review_medallion_artifact(db, project.id, old.id, status='APPROVED', reviewer='architect')
+    # Simulate the provider returning the exact faulty v3 again: candidate
+    # normalization must fix it before it becomes a new reviewable version.
+    from app.services import ai_remediation
+    monkeypatch.setattr(ai_remediation, '_deterministic_function_remediation', lambda *a, **kw: None)
+    monkeypatch.setattr(ai_remediation, '_call_llm', lambda *a, **kw: (
+        {'generated_candidate': OVERQUALIFIED_SQL, 'confidence': 0.9}, 'GEMINI', 'qa-model'
+    ))
+    repaired = medallion.remediate_medallion_artifact(db, project.id, old.id, use_ai=True, reviewer='architect')
+    current = db.get(MigrationStageArtifactVersion, repaired['artifact_version_id'])
+    assert current.id != old.id and current.version == old.version + 1
+    assert current.review_status == 'PENDING_REVIEW'
+    assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in current.content
+    assert not databricks_routine_contract_issues(current.content, 'FUNCTION')
+    medallion.review_medallion_artifact(db, project.id, current.id, status='APPROVED', reviewer='architect')
+    medallion.generate_medallion_artifacts(db, project.id)
+    item = next(x for x in medallion.list_medallion_artifacts(db, project.id) if x['target_fqn'] == FQN)
+    assert item['artifact_version_id'] == current.id
+    for item in medallion.list_medallion_artifacts(db, project.id):
+        medallion.review_medallion_artifact(db, project.id, item['artifact_version_id'], status='APPROVED', reviewer='architect')
+    monkeypatch.setattr(medallion, '_deploy_legacy_bronze', lambda *a: {'action': 'QA_BRONZE'})
+    monkeypatch.setattr(deployment, 'databricks_workspace_identity', lambda: 'qa-workspace')
+    result = medallion.deploy_medallion_dev(db, project.id, reuse_bronze=False)
+    assert result['status'] == 'PASSED', result.get('error')
+    assert current.content in statements and old.content not in statements
+    records = [json.loads(row.payload_json) for row in db.query(MigrationDeployment).filter_by(project_id=project.id)]
+    evidence = next(x for x in records if x.get('artifact_version_id') == current.id)
+    assert evidence['artifact_content_hash'] == current.content_hash
 
 
 @pytest.mark.parametrize('payload', ["'AS RETURN FROM JOIN'", "'it''s AS RETURN'", "'OrderID = OrderID'"])
