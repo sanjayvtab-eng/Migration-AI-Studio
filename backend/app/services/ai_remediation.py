@@ -210,8 +210,12 @@ def test_provider_connection() -> dict[str, Any]:
                 models = [str(x.get("id")) for x in (body.get("data") or []) if isinstance(x, dict) and x.get("id")]
                 result.update({"reachable": True, "models": sorted(set(models))})
         selected = cfg.llm_model or ""
-        if provider == "GEMINI" and selected in ("gemini-2.5-flash", "gemini-2.5"):
-            selected = "gemini-1.5-flash"
+        legacy_models = {
+            "gemini-1.5-flash", "gemini-1.5", "gemini-1.5-pro",
+            "gemini-2.5-flash", "gemini-2.5", "gemini-2.5-pro",
+        }
+        if provider == "GEMINI" and (not selected or selected in legacy_models):
+            selected = "gemini-3.5-flash"
         result["model_available"] = bool(selected and selected in result["models"])
         # Some OpenAI-compatible gateways do not expose model lists; a reachable endpoint is still useful evidence.
         if provider != "OLLAMA" and not result["models"] and selected:
@@ -1106,9 +1110,13 @@ def _call_llm(prompt: str) -> tuple[dict[str, Any], str, str]:
         base_url = _provider_base_url() or "https://generativelanguage.googleapis.com/v1beta"
         # Security: use x-goog-api-key header; never place the key in the URL/query-string
         # so it cannot appear in exception messages, proxy logs or HTTP access-log entries.
-        gemini_model = cfg.llm_model
-        if gemini_model in ("gemini-2.5-flash", "gemini-2.5"):
-            gemini_model = "gemini-1.5-flash"
+        gemini_model = cfg.llm_model or "gemini-3.5-flash"
+        legacy_models = {
+            "gemini-1.5-flash", "gemini-1.5", "gemini-1.5-pro",
+            "gemini-2.5-flash", "gemini-2.5", "gemini-2.5-pro",
+        }
+        if gemini_model in legacy_models:
+            gemini_model = "gemini-3.5-flash"
         url = f"{base_url}/models/{gemini_model}:generateContent"
         headers["x-goog-api-key"] = cfg.llm_api_key
         payload = {

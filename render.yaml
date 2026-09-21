@@ -62,7 +62,7 @@ services:
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
-        value: gemini-1.5-flash
+        value: gemini-3.5-flash
       - key: DEPLOYMENT_POLICY
         value: FAIL_ON_SCHEMA_DRIFT
       - key: DEV_SCHEMA_POLICY

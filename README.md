@@ -181,7 +181,7 @@ LLM_ENABLED=true
 LLM_PROVIDER=GEMINI
 LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 LLM_API_KEY=<your-gemini-api-key>
-LLM_MODEL=gemini-1.5-flash
+LLM_MODEL=gemini-3.5-flash
 ```
 
 Restart the backend, use **Administration → Test AI Provider**, then open **Medallion Design → Analyze consumers → Infer fact/dimension**. Successful ambiguous results appear as `AI_RECOMMENDED` and still require governed semantic approval before Gold generation. If Gemini is unavailable or a response fails validation, the deterministic `REVIEW_REQUIRED` result is preserved.
