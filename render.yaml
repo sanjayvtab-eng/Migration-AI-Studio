@@ -2,22 +2,19 @@ services:
   - type: web
     name: databricks-migration-factory
     runtime: docker
-    plan: starter
+    # Free demo: local SQLite data is lost on restart or redeploy.
+    plan: free
     region: singapore
-    branch: codex/single-artifact-repair
+    branch: codex/release-6-master-orchestrator
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
     autoDeployTrigger: commit
-    disk:
-      name: migration-factory-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: ENVIRONMENT
         value: PROD
       - key: DATABASE_URL
-        value: sqlite:////var/data/migration_factory.db
+        value: sqlite:////app/migration_factory.db
       - key: JWT_SECRET
         generateValue: true
       - key: BOOTSTRAP_ADMIN_USERNAME
