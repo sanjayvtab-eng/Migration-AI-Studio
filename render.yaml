@@ -39,6 +39,8 @@ services:
         sync: false
       - key: DATABRICKS_TOKEN
         sync: false
+      - key: DATABRICKS_ENVIRONMENT_PROVISIONING_ENABLED
+        value: "true"
       - key: DEV_CATALOG
         value: migration_dev
       - key: TEST_CATALOG
