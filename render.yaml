@@ -4,7 +4,7 @@ services:
     runtime: docker
     plan: starter
     region: singapore
-    branch: codex/single-artifact-repair
+    branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
@@ -25,7 +25,7 @@ services:
       - key: BOOTSTRAP_ADMIN_PASSWORD
         sync: false
       - key: ALLOWED_ORIGINS
-        value: https://databricks-migration-factory.onrender.com
+        value: "*"
       - key: SQLSERVER_DRIVER
         value: ODBC Driver 18 for SQL Server
       - key: SQLSERVER_HOST

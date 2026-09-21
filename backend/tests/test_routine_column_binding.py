@@ -102,6 +102,40 @@ WHERE o.OrderStatus = 'COMPLETED' GROUP BY c.CustomerID;'''
     assert 'AS TotalSales' in fixed
 
 
+def test_procedure_insert_overwrite_columns_and_joins_bind_to_each_relation():
+    for prefix in ['INSERT OVERWRITE', 'INSERT OVERWRITE TABLE']:
+        query = f'''{prefix} `migration_dev`.`silver`.`OrderSummary`
+(OrderID, CustomerID, OrderDate, OrderAmount, LoadDate)
+SELECT o.OrderID, o.CustomerID, CAST(o.OrderDate AS DATE),
+SUM(oi.Quantity * oi.UnitPrice * (1 - (oi.DiscountPercent / 100))),
+current_timestamp()
+FROM `migration_dev`.`silver`.`Orders` o
+INNER JOIN `migration_dev`.`silver`.`OrderItems` oi ON o.OrderID = oi.OrderID
+WHERE o.OrderStatus = 'COMPLETED'
+GROUP BY o.OrderID, o.CustomerID, CAST(o.OrderDate AS DATE);'''
+        schemas = {
+            ITEMS: SCHEMA,
+            ('migration_dev', 'silver', 'orders'): {
+                'orderid': 'order_id', 'order_id': 'order_id',
+                'customerid': 'customer_id', 'customer_id': 'customer_id',
+                'orderdate': 'order_date', 'order_date': 'order_date',
+                'orderstatus': 'order_status', 'order_status': 'order_status',
+            },
+            ('migration_dev', 'silver', 'ordersummary'): {
+                'orderid': 'order_id', 'order_id': 'order_id',
+                'customerid': 'customer_id', 'customer_id': 'customer_id',
+                'orderdate': 'order_date', 'order_date': 'order_date',
+                'orderamount': 'order_amount', 'order_amount': 'order_amount',
+                'loaddate': 'load_date', 'load_date': 'load_date',
+            },
+        }
+        fixed, errors = bind_columns(query, schemas)
+        assert not errors, f"Failed for {prefix}: {errors}"
+        assert '(`order_id`, `customer_id`, `order_date`, `order_amount`, `load_date`)' in fixed
+        assert 'o.`order_id` = oi.`order_id`' in fixed
+        assert 'o.`order_id`' in fixed
+
+
 def test_alias_reuse_does_not_leak_between_statements_subqueries_or_union_branches():
     sql = '''SELECT oi.UnitPrice FROM `migration_dev`.`silver`.`OrderItems` oi
 WHERE EXISTS (SELECT oi.UnitPrice FROM `other`.`bronze`.`OrderItems` oi);

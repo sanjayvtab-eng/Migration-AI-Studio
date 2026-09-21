@@ -1024,6 +1024,66 @@ def _replace_catalog(value: str, source_catalog: str, target_catalog: str) -> st
     return re.sub(rf"(?i)(?<![A-Za-z0-9_]){re.escape(source_catalog)}(?![A-Za-z0-9_])", target_catalog, value)
 
 
+def _project_catalogs(db: Session, project_id: str) -> tuple[str, str, str, str]:
+    from app.services import environment_provisioning
+    cfg = get_settings()
+    conf = environment_provisioning.get_configuration(db, project_id)
+    if conf and conf.catalog_prefix:
+        prefix = conf.catalog_prefix.strip().lower()
+        return f"{prefix}_dev", f"{prefix}_test", f"{prefix}_uat", f"{prefix}_prod"
+    return cfg.dev_catalog, cfg.test_catalog, cfg.uat_catalog, cfg.prod_catalog
+
+
+def _promoted_manifest_order(
+    db: Session,
+    project_id: str,
+    manifest_items: list[tuple[MigrationDeployment, dict[str, Any]]],
+) -> list[tuple[MigrationDeployment, dict[str, Any]]]:
+    """Order manifest items by Medallion dependencies (topological sort) with source deployment order tie-breaking.
+
+    Prevents downstream objects (such as functions, procedures, and dependent views) from
+    being executed in promoted environments before the views and tables they reference are created.
+    """
+    from app.services.medallion import _deployment_artifact_order
+
+    node_by_id: dict[str, MigrationMedallionNode] = {}
+    artifacts: list[dict[str, Any]] = []
+    has_all_nodes = True
+    for evidence, payload in manifest_items:
+        node_id = payload.get("medallion_node_id")
+        version_id = payload.get("artifact_version_id")
+        node = db.get(MigrationMedallionNode, node_id) if node_id else None
+        version = db.get(MigrationStageArtifactVersion, version_id) if version_id else None
+        if not node or not version:
+            has_all_nodes = False
+            break
+        node_by_id[node.id] = node
+        artifacts.append({
+            "node_id": node.id,
+            "artifact_version_id": version.id,
+            "version": version.version,
+            "content": version.content,
+            "target_fqn": node.target_fqn,
+            "layer": node.layer,
+            "item_tuple": (evidence, payload),
+        })
+    if has_all_nodes and artifacts:
+        try:
+            ordered = _deployment_artifact_order(db, project_id, "DEV", artifacts, node_by_id)
+            return [item["item_tuple"] for item in ordered]
+        except Exception:
+            pass
+    return sorted(
+        manifest_items,
+        key=lambda item: (
+            {"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(str(item[1].get("layer")), 9),
+            item[0].created_at if item[0] and item[0].created_at else datetime.min,
+            item[0].id if item[0] else "",
+            str(item[1].get("target_fqn") or "").lower(),
+        ),
+    )
+
+
 @with_project_databricks
 def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
     """Promote the immutable, gate-approved DEV Medallion manifest into TEST."""
@@ -1043,15 +1103,16 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
     deployed: list[dict[str, Any]] = []
     failed_target = None
     try:
-        for evidence, payload in sorted(
-            manifest[1],
-            key=lambda item: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(str(item[1].get("layer")), 9),
-                              str(item[1].get("target_fqn") or "").lower()),
-        ):
+        dev_catalog, test_catalog, uat_catalog, prod_catalog = _project_catalogs(db, project_id)
+        ensured_catalogs: set[str] = set()
+        for evidence, payload in _promoted_manifest_order(db, project_id, manifest[1]):
             source_fqn = str(payload.get("target_fqn") or "")
-            target_fqn = _replace_catalog(source_fqn, cfg.dev_catalog, cfg.test_catalog)
+            target_fqn = _replace_catalog(source_fqn, dev_catalog, test_catalog)
             failed_target = target_fqn
             catalog, schema, _ = _parse_target_fqn(target_fqn)
+            if catalog not in ensured_catalogs:
+                execute_sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`", safe_retry=False)
+                ensured_catalogs.add(catalog)
             execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
             owner = _target_owner_collision(db, project_id, target_fqn)
             if owner:
@@ -1067,7 +1128,7 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
                 execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
                 action = "DEEP_CLONE_DEV"
             else:
-                execute_sql(_replace_catalog(version.content, cfg.dev_catalog, cfg.test_catalog), safe_retry=False)
+                execute_sql(_replace_catalog(version.content, dev_catalog, test_catalog), safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="TEST", object_id=evidence.object_id,
@@ -1205,15 +1266,16 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
     deployed: list[dict[str, Any]] = []
     failed_target = None
     try:
-        for evidence, payload in sorted(
-            manifest[1],
-            key=lambda item: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(str(item[1].get("layer")), 9),
-                              str(item[1].get("target_fqn") or "").lower()),
-        ):
+        dev_catalog, test_catalog, uat_catalog, prod_catalog = _project_catalogs(db, project_id)
+        ensured_catalogs: set[str] = set()
+        for evidence, payload in _promoted_manifest_order(db, project_id, manifest[1]):
             source_fqn = str(payload.get("target_fqn") or "")
-            target_fqn = _replace_catalog(source_fqn, cfg.test_catalog, cfg.uat_catalog)
+            target_fqn = _replace_catalog(source_fqn, test_catalog, uat_catalog)
             failed_target = target_fqn
             catalog, schema, _ = _parse_target_fqn(target_fqn)
+            if catalog not in ensured_catalogs:
+                execute_sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`", safe_retry=False)
+                ensured_catalogs.add(catalog)
             execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
             owner = _target_owner_collision(db, project_id, target_fqn)
             if owner:
@@ -1229,8 +1291,8 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
                 execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
                 action = "DEEP_CLONE_TEST"
             else:
-                promoted_sql = _replace_catalog(version.content, cfg.dev_catalog, cfg.uat_catalog)
-                promoted_sql = _replace_catalog(promoted_sql, cfg.test_catalog, cfg.uat_catalog)
+                promoted_sql = _replace_catalog(version.content, dev_catalog, uat_catalog)
+                promoted_sql = _replace_catalog(promoted_sql, test_catalog, uat_catalog)
                 execute_sql(promoted_sql, safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
@@ -1369,15 +1431,16 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
     deployed: list[dict[str, Any]] = []
     failed_target = None
     try:
-        for evidence, payload in sorted(
-            manifest[1],
-            key=lambda item: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(str(item[1].get("layer")), 9),
-                              str(item[1].get("target_fqn") or "").lower()),
-        ):
+        dev_catalog, test_catalog, uat_catalog, prod_catalog = _project_catalogs(db, project_id)
+        ensured_catalogs: set[str] = set()
+        for evidence, payload in _promoted_manifest_order(db, project_id, manifest[1]):
             source_fqn = str(payload.get("target_fqn") or "")
-            target_fqn = _replace_catalog(source_fqn, cfg.uat_catalog, cfg.prod_catalog)
+            target_fqn = _replace_catalog(source_fqn, uat_catalog, prod_catalog)
             failed_target = target_fqn
             catalog, schema, _ = _parse_target_fqn(target_fqn)
+            if catalog not in ensured_catalogs:
+                execute_sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`", safe_retry=False)
+                ensured_catalogs.add(catalog)
             execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
             owner = _target_owner_collision(db, project_id, target_fqn)
             if owner:
@@ -1394,8 +1457,8 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
                 action = "DEEP_CLONE_UAT"
             else:
                 promoted_sql = version.content
-                for catalog_name in (cfg.dev_catalog, cfg.test_catalog, cfg.uat_catalog):
-                    promoted_sql = _replace_catalog(promoted_sql, catalog_name, cfg.prod_catalog)
+                for catalog_name in (dev_catalog, test_catalog, uat_catalog):
+                    promoted_sql = _replace_catalog(promoted_sql, catalog_name, prod_catalog)
                 execute_sql(promoted_sql, safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(

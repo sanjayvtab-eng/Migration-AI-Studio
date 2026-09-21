@@ -1451,6 +1451,8 @@ def _stage_content(db: Session, project_id: str, node: MigrationMedallionNode, e
         repaired = _approved_repaired_artifact(db, project_id, obj.id, environment)
         if repaired:
             content = _retarget_repaired_routine(repaired.content, obj.object_type, node.target_fqn)
+            bound, column_errors = _bind_routine_columns(db, project_id, environment, content)
+            content = bound if not column_errors else content
             return content, True, []
         # Use the deterministic routine converters but target the Medallion node rather than
         # the legacy one-object/one-layer mapping.
@@ -1528,6 +1530,9 @@ def _retarget_repaired_routine(content: str, object_type: str, target_fqn: str) 
     pattern = rf"(?is)^\s*CREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?{kind}\s+[^\s(]+"
     replacement = f"CREATE OR REPLACE {kind} {target_fqn}"
     retargeted = re.sub(pattern, lambda _: replacement, content, count=1)
+    if "." in target_fqn:
+        node_catalog = target_fqn.split(".")[0].strip("`")
+        retargeted = re.sub(r"(?i)`?[A-Za-z0-9_]+`?\.(`?(?:silver|bronze|gold|default)`?\.`?[A-Za-z0-9_]+`?)", rf"`{node_catalog}`.\1", retargeted)
     return normalize_databricks_routine_contract(retargeted, object_type)
 
 

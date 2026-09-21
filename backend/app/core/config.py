@@ -77,8 +77,28 @@ class Settings(BaseSettings):
             if len(self.jwt_secret) < 32 or self.jwt_secret.lower() in weak:
                 raise RuntimeError("Production requires a strong JWT_SECRET of at least 32 characters")
 
-@lru_cache
+_settings_cache: tuple[float, Settings] | None = None
+
+
 def get_settings() -> Settings:
-    s = Settings()
-    s.validate_production_security()
-    return s
+    global _settings_cache
+    mtime = ENV_FILE.stat().st_mtime if ENV_FILE.exists() else 0.0
+    if _settings_cache is None or _settings_cache[0] != mtime:
+        if ENV_FILE.exists():
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(ENV_FILE, override=True)
+            except Exception:
+                pass
+        s = Settings()
+        s.validate_production_security()
+        _settings_cache = (mtime, s)
+    return _settings_cache[1]
+
+
+def _cache_clear() -> None:
+    global _settings_cache
+    _settings_cache = None
+
+
+get_settings.cache_clear = _cache_clear

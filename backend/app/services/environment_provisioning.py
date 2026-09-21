@@ -120,10 +120,9 @@ def configuration_view(row: MigrationDatabricksConfiguration | None) -> dict:
 
 
 def _token(row: MigrationDatabricksConfiguration) -> str | None:
-    token=os.getenv(row.token_env_key)
-    if not token and row.token_env_key=="DATABRICKS_TOKEN":
-        token=get_settings().databricks_token
-    return token
+    if row.token_env_key == "DATABRICKS_TOKEN":
+        return get_settings().databricks_token or os.getenv("DATABRICKS_TOKEN")
+    return os.getenv(row.token_env_key)
 
 
 def _execute(row: MigrationDatabricksConfiguration, statement: str, *, safe_retry: bool=True):

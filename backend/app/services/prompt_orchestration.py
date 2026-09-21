@@ -683,17 +683,19 @@ def execute_prompt_plan(
 
 def latest_prompt_execution(db: Session, project_id: str) -> dict[str, Any] | None:
     """Return latest prompt execution run details and metrics."""
-    query = (
+    records = db.scalars(
         select(CanonicalRecord)
         .where(
             CanonicalRecord.project_id == project_id,
             CanonicalRecord.record_type == "PROMPT_MIGRATION_RUN",
         )
         .order_by(CanonicalRecord.created_at.desc())
-    )
-    record = db.scalar(query)
-    if not record:
+    ).all()
+    if not records:
         return None
-
-    p = _payload(record.payload_json)
-    return p.get("results") or p
+    for record in records:
+        payload = _payload(record.payload_json)
+        if "results" in payload:
+            return payload.get("results") or payload
+    payload = _payload(records[0].payload_json)
+    return payload.get("results") or payload

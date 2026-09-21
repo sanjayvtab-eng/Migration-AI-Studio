@@ -417,15 +417,19 @@ def execute_promotion_plan(
 
 
 def latest_promotion_execution(db: Session, project_id: str) -> dict[str, Any] | None:
-    record = db.scalar(
+    records = db.scalars(
         select(CanonicalRecord)
         .where(
             CanonicalRecord.project_id == project_id,
             CanonicalRecord.record_type == "PROMPT_PROMOTION_RUN",
         )
         .order_by(CanonicalRecord.created_at.desc())
-    )
-    if not record:
+    ).all()
+    if not records:
         return None
-    payload = _payload(record.payload_json)
+    for record in records:
+        payload = _payload(record.payload_json)
+        if "results" in payload:
+            return payload.get("results") or payload
+    payload = _payload(records[0].payload_json)
     return payload.get("results") or payload

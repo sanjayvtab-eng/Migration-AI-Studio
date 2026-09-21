@@ -226,3 +226,63 @@ def test_prompt_promotion_api_workflow(client, auth_headers, db, monkeypatch):
     )
     assert latest.status_code == 200
     assert latest.json()["execution"]["target_environment"] == "TEST"
+
+
+def test_promotion_manifest_orders_prerequisites_before_dependent_routines(db):
+    from app.models.entities import MigrationMedallionNode, MigrationStageArtifact, MigrationStageArtifactVersion
+    from app.models.canonical import MigrationDeployment
+    from app.services.deployment import _promoted_manifest_order
+    from app.services.engine import uid, sha
+
+    project = ensure_project(db, "Topological promotion ordering")
+
+    table_node = MigrationMedallionNode(
+        id=uid("MDN"), project_id=project.id, layer="SILVER",
+        target_name="OrderItems", target_fqn="`migration_dev`.`silver`.`OrderItems`",
+        node_type="VIEW", environment="DEV", generation_strategy="STANDARD",
+    )
+    func_node = MigrationMedallionNode(
+        id=uid("MDN"), project_id=project.id, layer="SILVER",
+        target_name="fn_CalculateOrderAmount", target_fqn="`migration_dev`.`silver`.`fn_CalculateOrderAmount`",
+        node_type="FUNCTION", environment="DEV", generation_strategy="STANDARD",
+    )
+    db.add_all([table_node, func_node]); db.flush()
+
+    art_table = MigrationStageArtifact(id=uid("MSA"), project_id=project.id, node_id=table_node.id, artifact_type="VIEW", current_version=1)
+    art_func = MigrationStageArtifact(id=uid("MSA"), project_id=project.id, node_id=func_node.id, artifact_type="FUNCTION", current_version=1)
+    db.add_all([art_table, art_func]); db.flush()
+
+    table_sql = "CREATE OR REPLACE VIEW `migration_dev`.`silver`.`OrderItems` AS SELECT 1 AS `order_id`;"
+    func_sql = ("CREATE OR REPLACE FUNCTION `migration_dev`.`silver`.`fn_CalculateOrderAmount`(OrderID INT) "
+                "RETURNS DECIMAL(18,2) LANGUAGE SQL READS SQL DATA RETURN "
+                "(SELECT 1 FROM `migration_dev`.`silver`.`OrderItems` WHERE `order_id` = `fn_CalculateOrderAmount`.`OrderID`);")
+
+    ver_table = MigrationStageArtifactVersion(
+        id=uid("MSV"), project_id=project.id, artifact_id=art_table.id, node_id=table_node.id,
+        version=1, content=table_sql, content_hash=sha(table_sql), validation_status="PASSED",
+        executable=True, review_status="APPROVED",
+    )
+    ver_func = MigrationStageArtifactVersion(
+        id=uid("MSV"), project_id=project.id, artifact_id=art_func.id, node_id=func_node.id,
+        version=1, content=func_sql, content_hash=sha(func_sql), validation_status="PASSED",
+        executable=True, review_status="APPROVED",
+    )
+    db.add_all([ver_table, ver_func]); db.flush()
+
+    dep_table = MigrationDeployment(id=uid("DPL"), project_id=project.id, environment="DEV", status="PASSED")
+    dep_func = MigrationDeployment(id=uid("DPL"), project_id=project.id, environment="DEV", status="PASSED")
+    db.add_all([dep_table, dep_func]); db.commit()
+
+    manifest_items = [
+        (dep_func, {"medallion_node_id": func_node.id, "artifact_version_id": ver_func.id,
+                    "target_fqn": func_node.target_fqn, "layer": "SILVER"}),
+        (dep_table, {"medallion_node_id": table_node.id, "artifact_version_id": ver_table.id,
+                     "target_fqn": table_node.target_fqn, "layer": "SILVER"}),
+    ]
+
+    # Alphabetical order would put fn_CalculateOrderAmount ('f') before OrderItems ('O').
+    # _promoted_manifest_order must put OrderItems first because fn_CalculateOrderAmount references it.
+    ordered = _promoted_manifest_order(db, project.id, manifest_items)
+    assert len(ordered) == 2
+    assert ordered[0][1]["target_fqn"] == table_node.target_fqn
+    assert ordered[1][1]["target_fqn"] == func_node.target_fqn

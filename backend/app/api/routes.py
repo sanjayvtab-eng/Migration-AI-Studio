@@ -1,5 +1,6 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
+import re
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -148,6 +149,25 @@ def _decode_payload_json(value: str | None) -> dict:
     except Exception: return {}
 
 
+def _iso_utc(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        else:
+            value = value.astimezone(timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")
+    s = str(value).strip()
+    if not s:
+        return None
+    if " " in s and "T" not in s:
+        s = s.replace(" ", "T")
+    if not s.endswith("Z") and not re.search(r"[+-]\d{2}:?\d{2}$", s):
+        s = s + "Z"
+    return s
+
+
 def _environment_log_rows(db: Session, project_id: str, environment: str) -> list[dict]:
     env=environment.upper()
     rows=[]
@@ -165,7 +185,7 @@ def _environment_log_rows(db: Session, project_id: str, environment: str) -> lis
         for row in db.scalars(q).all():
             payload=_decode_payload_json(getattr(row,"payload_json",None))
             rows.append({
-                "timestamp": getattr(row,"created_at",None),
+                "timestamp": _iso_utc(getattr(row,"created_at",None)),
                 "category": category,
                 "status": getattr(row,"status",None),
                 "environment": getattr(row,"environment",None),
@@ -185,7 +205,7 @@ def _environment_log_rows(db: Session, project_id: str, environment: str) -> lis
         if env != "DEV":
             continue
         rows.append({
-            "timestamp": record.created_at, "category": record.record_type,
+            "timestamp": _iso_utc(record.created_at), "category": record.record_type,
             "status": payload.get("status"), "environment": record.environment or env,
             "object_id": record.object_id, "run_id": payload.get("run_id"),
             "step": results.get("failed_stage") or payload.get("action"),
@@ -1223,7 +1243,7 @@ MODULE_TYPES={
 def _record_to_dict(r:CanonicalRecord):
     try: payload=json.loads(r.payload_json or "{}")
     except Exception: payload={}
-    return {"id":r.id,"record_type":r.record_type,"object_id":r.object_id,"environment":r.environment,"created_at":r.created_at,"payload":payload}
+    return {"id":r.id,"record_type":r.record_type,"object_id":r.object_id,"environment":r.environment,"created_at":_iso_utc(r.created_at),"payload":payload}
 
 @router.get("/projects/{project_id}/module/{module_name}")
 def module_records(project_id:str,module_name:str,db:Session=Depends(get_db),_=Depends(auth)):

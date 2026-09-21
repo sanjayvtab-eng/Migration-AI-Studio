@@ -106,6 +106,39 @@ type ModRecord = {
   payload: { title?: string; status?: string; details?: any };
 };
 
+function formatDateTime(val: any): string {
+  if (!val) return "-";
+  let s = String(val).trim();
+  if (!s) return "-";
+  if (/^\d{10,13}$/.test(s)) {
+    const num = Number(s);
+    const d = new Date(num < 1e11 ? num * 1000 : num);
+    return isNaN(d.getTime()) ? s : d.toLocaleString();
+  }
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+    s = s.replace(" ", "T");
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+    s = s + "Z";
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? String(val) : d.toLocaleString();
+}
+
+function formatTimeOnly(val: any): string {
+  if (!val) return "-";
+  let s = String(val).trim();
+  if (!s) return "-";
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+    s = s.replace(" ", "T");
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+    s = s + "Z";
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? String(val) : d.toLocaleTimeString();
+}
+
 const icons: any = {
   "Migration Workflow": Workflow,
   Dashboard: Activity,
@@ -1535,342 +1568,322 @@ export default function App() {
           )}
           {page === "Migration Workflow" && (
             <>
-              {/* Release 6: one prompt, one authorization, full environment chain */}
-              <div className="prompt-studio master-studio">
+              {/* Consolidated Master AI Migration Studio & Orchestrator */}
+              <div className="prompt-studio master-studio consolidated-studio">
                 <div className="prompt-studio-head">
                   <div className="prompt-studio-title">
                     <Workflow size={20} color="#6ee7b7" />
                     <div>
-                      <h3>Release 6 · Master End-to-End Orchestrator</h3>
+                      <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        Master End-to-End Orchestrator
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: "rgba(110,231,183,0.18)", color: "#6ee7b7" }}>
+                          DEV → PROD
+                        </span>
+                      </h3>
                       <p>
-                        One prompt and one-time authorization for SQL Server → DEV → TEST → UAT → PROD.
+                        One prompt and one-time authorization for SQL Server → DEV → TEST → UAT → PROD with deterministic quality gates.
                       </p>
                     </div>
                   </div>
                   <span className="prompt-badge"><ShieldCheck size={12} /> Policy governed</span>
                 </div>
+
                 <div className="prompt-input-row">
                   <input
                     value={masterPrompt}
-                    onChange={(e) => setMasterPrompt(e.target.value)}
+                    onChange={(e) => {
+                      setMasterPrompt(e.target.value);
+                      setPromptText(e.target.value);
+                    }}
                     placeholder="Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks"
-                    disabled={busy || masterRunning}
+                    disabled={busy || masterRunning || promptRunning}
                   />
                   <button
                     className="primary-action"
-                    disabled={!pid || busy || masterRunning || !masterPrompt.trim()}
+                    disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
                     onClick={() => generateMasterPlan()}
+                    title="Generate full end-to-end master plan"
                   >
                     <Command size={15} /> Generate Master Plan
                   </button>
-                </div>
-                <div className="master-safety-line">
-                  <ShieldCheck size={14} /> AI repairs eligible artifacts; deterministic validation and environment quality gates control every promotion.
-                </div>
-
-                {masterPlan && (
-                  <div className="prompt-plan-card master-plan-card">
-                    {masterPlan.status === "NEEDS_USER_INPUT" ? (
-                      <div className="promotion-blocked">
-                        <b><ShieldAlert size={16} /> Master workflow prerequisites required</b>
-                        <ul>{masterPlan.blockers?.map((item: string, index: number) => <li key={index}>{item}</li>)}</ul>
-                        {masterPlan.actionable_steps?.[0] && <small><strong>Next action:</strong> {masterPlan.actionable_steps[0]}</small>}
-                      </div>
-                    ) : (
-                      <>
-                        <div className="promotion-plan-head">
-                          <div>
-                            <small>AUTHORIZED ENVIRONMENT CHAIN</small>
-                            <h4>
-                              {masterPlan.source?.database_name} → Databricks PROD
-                              <Badge s={masterPlan.status} />
-                            </h4>
-                          </div>
-                          {(["PENDING_APPROVAL", "FAILED", "PAUSED"].includes(masterPlan.status)) && (
-                            <button
-                              className="primary-action master-execute-button"
-                              disabled={busy || masterRunning}
-                              onClick={executeMasterPlan}
-                            >
-                              <Play size={15} />
-                              {masterPlan.status === "PENDING_APPROVAL"
-                                ? "Authorize & Run Full Migration"
-                                : "Resume from Last Checkpoint"}
-                            </button>
-                          )}
-                        </div>
-                        <div className="prompt-impact-grid">
-                          <div className="prompt-impact-item"><span>Source tables</span><b>{masterPlan.impact?.table_count || 0}</b></div>
-                          <div className="prompt-impact-item"><span>Estimated rows</span><b>{masterPlan.impact?.estimated_rows || 0}</b></div>
-                          <div className="prompt-impact-item"><span>Authorization</span><b>{masterPlan.authorization ? "GRANTED" : "REQUIRED"}</b></div>
-                          <div className="prompt-impact-item"><span>Risk</span><b>{masterPlan.impact?.risk_level || "HIGH"}</b></div>
-                        </div>
-                        <div className="master-stage-chain">
-                          {masterPlan.stages?.map((stage: any) => {
-                            const checkpoint = masterPlan.checkpoints?.[stage.stage] || {};
-                            return (
-                              <div className="master-stage" key={stage.stage}>
-                                <span>{stage.environment}</span>
-                                <b>{stage.title}</b>
-                                <Badge s={checkpoint.status || "PENDING"} />
-                                <small>{checkpoint.attempts || 0} / {checkpoint.max_attempts || 3} attempt(s)</small>
-                                {checkpoint.retry_renewals > 0 && (
-                                  <small>Retries renewed after approved SQL changed · {checkpoint.total_attempts} total attempts</small>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {masterExecution && (
-                  <div className="prompt-exec-card master-execution-card">
-                    <div className="promotion-exec-head">
-                      <div>
-                        <small>MASTER RUN {masterExecution.run_id}</small>
-                        <b>SQL Server → Databricks PROD</b>
-                      </div>
-                      <Badge s={masterExecution.status} />
-                    </div>
-                    <div className="prompt-exec-stages master-exec-stages">
-                      {Object.entries(masterExecution.stages || {}).map(([name, stage]: [string, any]) => (
-                        <div className="prompt-exec-step" key={name}>
-                          <span>{name}</span>
-                          <Badge s={stage.status} />
-                          <small>{stage.checkpoint_reused ? "checkpoint reused" : `attempt ${stage.attempts || 1}`}</small>
-                        </div>
-                      ))}
-                    </div>
-                    {masterExecution.status === "FAILED" && (
-                      <div className="prompt-exec-error">
-                        <b><ShieldAlert size={15} /> Safe stop: {masterExecution.failed_stage}</b>
-                        <span>{masterExecution.error}</span>
-                        <small><strong>Next action:</strong> {masterExecution.errors?.[0]?.recommended_action}</small>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Release 3: AI Prompt Migration Studio */}
-              <div className="prompt-studio">
-                <div className="prompt-studio-head">
-                  <div className="prompt-studio-title">
-                    <Sparkles size={20} color="#5b8cff" />
-                    <div>
-                      <h3>AI Prompt Migration Studio</h3>
-                      <p style={{ margin: 0, fontSize: 11, color: "#8fa3bf" }}>
-                        Enter natural language intent to automatically validate prerequisites, build impact plans, and execute governed end-to-end migrations.
-                      </p>
-                    </div>
-                  </div>
-                  <span className="prompt-badge">
-                    <ShieldCheck size={12} /> Governed Execution
-                  </span>
-                </div>
-
-                <div className="prompt-input-row">
-                  <input
-                    type="text"
-                    value={promptText}
-                    onChange={(e) => setPromptText(e.target.value)}
-                    placeholder="e.g. Migrate MigrationDemo from SQL Server to DEV Databricks"
-                    disabled={busy || promptRunning}
-                  />
                   <button
-                    className="primary-action"
-                    disabled={!pid || busy || promptRunning || !promptText.trim()}
-                    onClick={() => generatePromptPlan()}
+                    type="button"
+                    className="prompt-secondary-btn"
+                    disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
+                    onClick={() => generatePromptPlan(masterPrompt)}
+                    title="Generate DEV-scoped plan only"
                   >
-                    <Command size={15} /> Generate Plan
+                    <Sparkles size={14} color="#9ec0ff" /> DEV Plan
                   </button>
                 </div>
 
-                <div className="prompt-quick-chips">
-                  <span style={{ fontSize: 10, color: "#7b91b0", alignSelf: "center" }}>Quick templates:</span>
-                  {[
-                    "Migrate MigrationDemo from SQL Server to DEV Databricks",
-                    "Migrate MigrationDemo to DEV",
-                    "Load MigrationDemo into DEV Bronze",
-                  ].map((tpl) => (
-                    <button
-                      key={tpl}
-                      type="button"
-                      className="prompt-chip"
-                      disabled={busy || promptRunning}
-                      onClick={() => {
-                        setPromptText(tpl);
-                        generatePromptPlan(tpl);
-                      }}
-                    >
-                      {tpl}
-                    </button>
-                  ))}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                  <div className="prompt-quick-chips" style={{ marginTop: 0 }}>
+                    <span style={{ fontSize: 10, color: "#7b91b0", alignSelf: "center" }}>Quick templates:</span>
+                    {[
+                      { label: "End-to-End (DEV → PROD)", text: "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks", isMaster: true },
+                      { label: "DEV Migration", text: "Migrate MigrationDemo from SQL Server to DEV Databricks", isMaster: false },
+                      { label: "Load into DEV Bronze", text: "Load MigrationDemo into DEV Bronze", isMaster: false },
+                    ].map((tpl) => (
+                      <button
+                        key={tpl.label}
+                        type="button"
+                        className="prompt-chip"
+                        disabled={busy || masterRunning || promptRunning}
+                        onClick={() => {
+                          setMasterPrompt(tpl.text);
+                          setPromptText(tpl.text);
+                          if (tpl.isMaster) {
+                            generateMasterPlan(tpl.text);
+                          } else {
+                            generatePromptPlan(tpl.text);
+                          }
+                        }}
+                      >
+                        {tpl.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="master-safety-line" style={{ marginTop: 0 }}>
+                    <ShieldCheck size={13} /> AI repairs eligible artifacts; deterministic validation and quality gates control every promotion.
+                  </div>
                 </div>
 
-                {promptPlan && (
-                  <div className="prompt-plan-card">
-                    {promptPlan.status === "NEEDS_USER_INPUT" ? (
-                      <div className="notice" style={{ background: "#fff2f0", borderColor: "#ffccc7", color: "#a8071a" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, marginBottom: 4 }}>
-                          <ShieldAlert size={16} /> Prerequisites Required Before Planning
+                {/* Consolidated Plan Card */}
+                {(masterPlan || promptPlan) && (() => {
+                  const activePlan = masterPlan || promptPlan;
+                  const isMaster = Boolean(masterPlan);
+                  const isBlocked = activePlan.status === "NEEDS_USER_INPUT";
+                  const tableCount = masterPlan?.impact?.table_count ?? promptPlan?.impact?.table_count ?? 0;
+                  const estimatedRows = masterPlan?.impact?.estimated_rows ?? promptPlan?.impact?.estimated_rows ?? 0;
+                  const riskLevel = masterPlan?.impact?.risk_level || promptPlan?.impact?.risk_level || "MEDIUM";
+                  const hasReusableBronze = Boolean(promptPlan?.impact?.bronze_checkpoint?.reusable);
+                  const sourceDb = activePlan.source?.database_name || "MigrationDemo";
+                  const targetLabel = isMaster ? "Databricks PROD" : (promptPlan?.intent?.target_catalog || "DEV Databricks");
+
+                  return (
+                    <div className="prompt-plan-card master-plan-card" style={{ marginTop: 14 }}>
+                      {isBlocked ? (
+                        <div className="promotion-blocked">
+                          <b><ShieldAlert size={16} /> Migration workflow prerequisites required</b>
+                          <ul>
+                            {(activePlan.blockers || []).map((item: string, index: number) => (
+                              <li key={index}>{item}</li>
+                            ))}
+                          </ul>
+                          {activePlan.actionable_steps?.[0] && (
+                            <small><strong>Next action:</strong> {activePlan.actionable_steps[0]}</small>
+                          )}
                         </div>
-                        <ul style={{ margin: "4px 0 6px 18px", padding: 0, fontSize: 11 }}>
-                          {promptPlan.blockers?.map((b: string, idx: number) => <li key={idx}>{b}</li>)}
-                        </ul>
-                        {promptPlan.actionable_steps?.length > 0 && (
-                          <div style={{ fontSize: 11, color: "#595959", borderTop: "1px dashed #ffa39e", paddingTop: 4, marginTop: 4 }}>
-                            <b>Next Action:</b> {promptPlan.actionable_steps.join(" ")}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-                          <div>
-                            <span style={{ fontSize: 9, color: "#8fa3bf", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800 }}>
-                              Governed Migration Plan
-                            </span>
-                            <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", display: "flex", alignItems: "center", gap: 8 }}>
-                              Source: <code>{promptPlan.source?.database_name}</code> → Target: <code>{promptPlan.intent?.target_catalog}</code>
-                              <Badge s={promptPlan.status} />
+                      ) : (
+                        <>
+                          <div className="promotion-plan-head">
+                            <div>
+                              <small>{isMaster ? "AUTHORIZED ENVIRONMENT CHAIN" : "GOVERNED MIGRATION PLAN"}</small>
+                              <h4>
+                                {sourceDb} → {targetLabel}
+                                <Badge s={activePlan.status} />
+                              </h4>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              {isMaster && (["PENDING_APPROVAL", "FAILED", "PAUSED"].includes(masterPlan.status)) && (
+                                <button
+                                  className="primary-action master-execute-button"
+                                  disabled={busy || masterRunning}
+                                  onClick={executeMasterPlan}
+                                >
+                                  <Play size={15} />
+                                  {masterPlan.status === "PENDING_APPROVAL"
+                                    ? "Authorize & Run Full Migration (DEV → PROD)"
+                                    : "Resume from Last Checkpoint"}
+                                </button>
+                              )}
+                              {!isMaster && promptPlan?.status === "PENDING_APPROVAL" && (
+                                <button
+                                  className="primary-action"
+                                  style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                                  disabled={busy || promptRunning || tableCount < 1}
+                                  onClick={executePromptPlan}
+                                >
+                                  <Play size={15} /> Approve & Execute DEV Migration
+                                </button>
+                              )}
                             </div>
                           </div>
-                          {promptPlan.status === "PENDING_APPROVAL" && (
+
+                          <div className="prompt-impact-grid">
+                            <div className="prompt-impact-item">
+                              <span>Source tables</span>
+                              <b>{tableCount}</b>
+                            </div>
+                            <div className="prompt-impact-item">
+                              <span>Estimated rows</span>
+                              <b>{estimatedRows}</b>
+                              {hasReusableBronze && (
+                                <small style={{ color: "#6ee7b7", display: "block", marginTop: 2 }}>Verified checkpoint reusable</small>
+                              )}
+                            </div>
+                            <div className="prompt-impact-item">
+                              <span>Governance & Risk</span>
+                              <b style={{ color: riskLevel === "LOW" ? "#34d399" : "#fbbf24" }}>{riskLevel}</b>
+                              <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>
+                                {isMaster ? (masterPlan.authorization ? "Authorization: GRANTED" : "One-time authorization") : "DEV Medallion plan"}
+                              </small>
+                            </div>
+                            <div className="prompt-impact-item">
+                              <span>Target Platform</span>
+                              <b style={{ fontSize: 13 }}>{isMaster ? "DEV → TEST → UAT → PROD" : (promptPlan?.intent?.target_catalog || "DEV")}</b>
+                              <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>bronze, silver, gold schemas</small>
+                            </div>
+                          </div>
+
+                          {/* Environment Chain Progression */}
+                          {masterPlan?.stages && (
+                            <div className="master-stage-chain">
+                              {masterPlan.stages.map((stage: any) => {
+                                const checkpoint = masterPlan.checkpoints?.[stage.stage] || {};
+                                return (
+                                  <div className="master-stage" key={stage.stage}>
+                                    <span>{stage.environment}</span>
+                                    <b>{stage.title}</b>
+                                    <Badge s={checkpoint.status || "PENDING"} />
+                                    <small>{checkpoint.attempts || 0} / {checkpoint.max_attempts || 3} attempt(s)</small>
+                                    {checkpoint.retry_renewals > 0 && (
+                                      <small>Retries renewed after approved SQL changed · {checkpoint.total_attempts} total</small>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* Collapsible Granular DEV Pipeline Steps and Mapping Details */}
+                          {(promptPlan?.stages?.length > 0 || promptPlan?.destinations?.length > 0) && (
+                            <details style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 8 }}>
+                              <summary className="details-toggle">
+                                <ChevronRight size={13} /> View granular DEV pipeline stages & source-to-target mapping ({promptPlan?.destinations?.length || 0} tables)
+                              </summary>
+                              {promptPlan?.stages?.length > 0 && (
+                                <div className="prompt-stages-list" style={{ marginTop: 8 }}>
+                                  {promptPlan.stages.map((st: any) => (
+                                    <div key={st.stage} className="prompt-stage-pill">
+                                      <b>{st.title}</b>
+                                      <small>{st.description}</small>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {promptPlan?.destinations?.length > 0 && (
+                                <div className="prompt-dest-table">
+                                  <table>
+                                    <thead>
+                                      <tr>
+                                        <th>Source Object</th>
+                                        <th>Bronze Target</th>
+                                        <th>Silver Target</th>
+                                        <th>Gold Target</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {promptPlan.destinations.map((d: any) => (
+                                        <tr key={d.source_fqn}>
+                                          <td><code>{d.source_fqn}</code></td>
+                                          <td><code>{d.bronze}</code></td>
+                                          <td><code>{d.silver}</code></td>
+                                          <td><code>{d.gold}</code></td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </details>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Consolidated Execution Status Card */}
+                {(masterExecution || promptExecution) && (() => {
+                  const exec = masterExecution || promptExecution;
+                  const isMaster = Boolean(masterExecution);
+                  const failedStage = masterExecution?.failed_stage || promptExecution?.failed_stage;
+                  const errorMsg = masterExecution?.error || promptExecution?.error;
+                  const nextAction = masterExecution?.errors?.[0]?.recommended_action || promptExecution?.errors?.[0]?.recommended_action;
+
+                  return (
+                    <div className="prompt-exec-card master-execution-card" style={{ marginTop: 14 }}>
+                      <div className="promotion-exec-head">
+                        <div>
+                          <small style={{ color: "#8fa3bf", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                            {isMaster ? `MASTER RUN ${masterExecution.run_id}` : `EXECUTION RUN ${promptExecution.run_id}`}
+                          </small>
+                          <b style={{ display: "block", marginTop: 2, fontSize: 13 }}>
+                            {isMaster ? "SQL Server → Databricks PROD" : `SQL Server → ${promptPlan?.intent?.target_catalog || "DEV Databricks"}`}
+                          </b>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <Badge s={exec.status} />
+                          {promptExecution?.ended_at && (
+                            <small style={{ color: "#6b7280" }}>
+                              Completed at {formatTimeOnly(promptExecution.ended_at)}
+                            </small>
+                          )}
+                          {exec.status === "COMPLETED" && (
                             <button
-                              className="primary-action"
-                              style={{ background: "linear-gradient(135deg, #10b981, #059669)", borderColor: "transparent" }}
-                              disabled={busy || promptRunning || (promptPlan.impact?.table_count || 0) < 1}
-                              onClick={executePromptPlan}
+                              onClick={() => setPage("Deployments")}
+                              style={{ fontSize: 11, padding: "5px 9px" }}
                             >
-                              <Play size={15} /> Approve & Execute Migration
+                              View Deployments <ChevronRight size={13} />
                             </button>
                           )}
                         </div>
+                      </div>
 
-                        <div className="prompt-impact-grid">
-                          <div className="prompt-impact-item">
-                            <span>Discovered Tables</span>
-                            <b>{promptPlan.impact?.table_count || 0}</b>
-                          </div>
-                          <div className="prompt-impact-item">
-                            <span>Estimated Volume</span>
-                            <b>{promptPlan.impact?.estimated_rows || 0} rows</b>
-                            {promptPlan.impact?.bronze_checkpoint?.reusable && (
-                              <small>Verified Bronze checkpoint available</small>
-                            )}
-                          </div>
-                          <div className="prompt-impact-item">
-                            <span>Risk Assessment</span>
-                            <b style={{ color: promptPlan.impact?.risk_level === "LOW" ? "#34d399" : "#fbbf24" }}>
-                              {promptPlan.impact?.risk_level || "LOW"}
-                            </b>
-                          </div>
-                          <div className="prompt-impact-item">
-                            <span>Target Medallion</span>
-                            <b style={{ fontSize: 12 }}>bronze, silver, gold</b>
-                          </div>
+                      {/* Stage Progression Pills */}
+                      {isMaster && masterExecution.stages && (
+                        <div className="prompt-exec-stages master-exec-stages" style={{ marginTop: 10 }}>
+                          {Object.entries(masterExecution.stages).map(([name, stage]: [string, any]) => (
+                            <div className="prompt-exec-step" key={name}>
+                              <span>{name}</span>
+                              <Badge s={stage.status} />
+                              <small>{stage.checkpoint_reused ? "checkpoint reused" : `attempt ${stage.attempts || 1}`}</small>
+                            </div>
+                          ))}
                         </div>
+                      )}
+                      {!isMaster && promptExecution?.stages && (
+                        <div className="prompt-exec-stages" style={{ marginTop: 10 }}>
+                          {Object.entries(promptExecution.stages).map(([k, v]: [string, any]) => (
+                            <div key={k} className="prompt-exec-step">
+                              <span style={{ display: "block", fontSize: 9, color: "#6b7280", textTransform: "uppercase" }}>{k}</span>
+                              <Badge s={v.status || "PASSED"} />
+                              {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
+                              {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
+                              {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
+                              {v.rows_transferred !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.rows_transferred} rows</small>}
+                              {v.checkpoint_reused && <small style={{ display: "block", marginTop: 2 }}>verified checkpoint reused</small>}
+                              {v.error && <small className="prompt-stage-error">{v.error}</small>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
-                        {promptPlan.stages?.length > 0 && (
-                          <div className="prompt-stages-list">
-                            {promptPlan.stages.map((st: any) => (
-                              <div key={st.stage} className="prompt-stage-pill">
-                                <b>{st.title}</b>
-                                <small>{st.description}</small>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {promptPlan.destinations?.length > 0 && (
-                          <details className="prompt-dest-table">
-                            <summary style={{ cursor: "pointer", fontSize: 11, color: "#9ec0ff", marginBottom: 6 }}>
-                              View explicit source-to-target mapping ({promptPlan.destinations.length} tables)
-                            </summary>
-                            <table>
-                              <thead>
-                                <tr>
-                                  <th>Source Object</th>
-                                  <th>Bronze Target</th>
-                                  <th>Silver Target</th>
-                                  <th>Gold Target</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {promptPlan.destinations.map((d: any) => (
-                                  <tr key={d.source_fqn}>
-                                    <td><code>{d.source_fqn}</code></td>
-                                    <td><code>{d.bronze}</code></td>
-                                    <td><code>{d.silver}</code></td>
-                                    <td><code>{d.gold}</code></td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </details>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {promptExecution && (
-                  <div className="prompt-exec-card">
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div>
-                        <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800, color: "#059669" }}>
-                          Execution Run: <code>{promptExecution.run_id}</code>
-                        </span>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", display: "flex", alignItems: "center", gap: 8 }}>
-                          Overall Status: <Badge s={promptExecution.status} />
-                          {promptExecution.ended_at && (
-                            <small style={{ color: "#6b7280", fontWeight: 400 }}>
-                              Completed in DEV at {new Date(promptExecution.ended_at).toLocaleTimeString()}
-                            </small>
+                      {/* Unified Safe Stop / Failure Notice */}
+                      {exec.status === "FAILED" && (
+                        <div className="prompt-exec-error" style={{ marginTop: 10 }}>
+                          <b><ShieldAlert size={15} /> Safe stop: {failedStage || "PIPELINE_GATE"}</b>
+                          <span>{errorMsg || "The migration pipeline stopped at a governed checkpoint."}</span>
+                          {nextAction && (
+                            <small><strong>Next action:</strong> {nextAction}</small>
                           )}
                         </div>
-                      </div>
-                      {promptExecution.status === "COMPLETED" && (
-                        <button
-                          onClick={() => setPage("Deployments")}
-                          style={{ fontSize: 11, padding: "6px 10px" }}
-                        >
-                          View DEV Deployments <ChevronRight size={13} />
-                        </button>
                       )}
                     </div>
-
-                    {promptExecution.stages && (
-                      <div className="prompt-exec-stages">
-                        {Object.entries(promptExecution.stages).map(([k, v]: [string, any]) => (
-                          <div key={k} className="prompt-exec-step">
-                            <span style={{ display: "block", fontSize: 9, color: "#6b7280", textTransform: "uppercase" }}>{k}</span>
-                            <Badge s={v.status || "PASSED"} />
-                            {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
-                            {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
-                            {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
-                            {v.rows_transferred !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.rows_transferred} rows</small>}
-                            {v.checkpoint_reused && <small style={{ display: "block", marginTop: 2 }}>verified checkpoint reused</small>}
-                            {v.error && <small className="prompt-stage-error">{v.error}</small>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {promptExecution.status === "FAILED" && (
-                      <div className="prompt-exec-error">
-                        <b><ShieldAlert size={15} /> Failed stage: {promptExecution.failed_stage || "UNKNOWN"}</b>
-                        <span>{promptExecution.error || "The migration pipeline did not complete."}</span>
-                        {promptExecution.errors?.[0]?.recommended_action && (
-                          <small><strong>Next action:</strong> {promptExecution.errors[0].recommended_action}</small>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                  );
+                })()}
               </div>
 
               <div className="workflow-hero">
@@ -3207,11 +3220,7 @@ export default function App() {
                             const d = x.details || {};
                             return (
                               <tr key={`${x.run_id}-${i}`}>
-                                <td>
-                                  {x.timestamp
-                                    ? new Date(x.timestamp).toLocaleString()
-                                    : "-"}
-                                </td>
+                                <td>{formatDateTime(x.timestamp)}</td>
                                 <td>
                                   <Badge s={d.layer || "-"} />
                                 </td>
@@ -3242,7 +3251,7 @@ export default function App() {
                     {logView.length ? <table>
                       <thead><tr><th>Time</th><th>Stage</th><th>Status</th><th>Run</th><th>Target</th><th>Message</th></tr></thead>
                       <tbody>{logView.map((row: any, i: number) => <tr key={`${row.run_id}-${i}`}>
-                        <td>{row.timestamp ? new Date(row.timestamp).toLocaleString() : "-"}</td>
+                        <td>{formatDateTime(row.timestamp)}</td>
                         <td>{row.step || row.category}</td><td><Badge s={row.status || "-"} /></td>
                         <td><code>{row.run_id || "-"}</code></td><td>{row.target_fqn || "-"}</td>
                         <td>{row.message || "-"}</td>
@@ -4370,11 +4379,7 @@ export default function App() {
                           </td>
                           <td>{r.reviewer}</td>
                           <td>{r.comments || "-"}</td>
-                          <td>
-                            {r.reviewed_at
-                              ? new Date(r.reviewed_at).toLocaleString()
-                              : "-"}
-                          </td>
+                          <td>{formatDateTime(r.reviewed_at)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -4537,11 +4542,7 @@ export default function App() {
                             <tbody>
                               {issueLogs.map((x: any, i: number) => (
                                 <tr key={i}>
-                                  <td>
-                                    {x.timestamp
-                                      ? new Date(x.timestamp).toLocaleString()
-                                      : "-"}
-                                  </td>
+                                  <td>{formatDateTime(x.timestamp)}</td>
                                   <td>
                                     <Badge s={x.status || "-"} />
                                   </td>
@@ -4577,11 +4578,7 @@ export default function App() {
                           <tbody>
                             {selectedIssue.actions.map((a: any) => (
                               <tr key={a.id}>
-                                <td>
-                                  {a.created_at
-                                    ? new Date(a.created_at).toLocaleString()
-                                    : "-"}
-                                </td>
+                                <td>{formatDateTime(a.created_at)}</td>
                                 <td>{a.action}</td>
                                 <td>{a.from_status || "-"}</td>
                                 <td>{a.to_status || "-"}</td>
@@ -4854,11 +4851,7 @@ export default function App() {
                         .reverse()
                         .map((x: any, i: number) => (
                           <tr key={i}>
-                            <td>
-                              {x.created_at
-                                ? new Date(x.created_at).toLocaleString()
-                                : "-"}
-                            </td>
+                            <td>{formatDateTime(x.created_at)}</td>
                             <td>
                               <Badge s={x.status} />
                             </td>
@@ -4904,11 +4897,7 @@ export default function App() {
                         <tbody>
                           {logView.map((x: any, i: number) => (
                             <tr key={i}>
-                              <td>
-                                {x.timestamp
-                                  ? new Date(x.timestamp).toLocaleString()
-                                  : "-"}
-                              </td>
+                              <td>{formatDateTime(x.timestamp)}</td>
                               <td>{x.category}</td>
                               <td>
                                 <Badge s={x.status || "-"} />
@@ -5299,7 +5288,7 @@ export default function App() {
                     <thead><tr><th>Time</th><th>Status</th><th>Target / action</th><th>Artifact version</th></tr></thead>
                     <tbody>{testPromotion.logs.slice().reverse().map((x: any, i: number) => (
                       <tr key={i}>
-                        <td>{x.created_at ? new Date(x.created_at).toLocaleString() : "-"}</td>
+                        <td>{formatDateTime(x.created_at)}</td>
                         <td><Badge s={x.status} /></td>
                         <td><code>{x.target_fqn || x.action || "-"}</code></td>
                         <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
@@ -5414,7 +5403,7 @@ export default function App() {
                     <thead><tr><th>Time</th><th>Status</th><th>Target / action</th><th>Artifact version</th></tr></thead>
                     <tbody>{uatPromotion.logs.slice().reverse().map((x: any, i: number) => (
                       <tr key={i}>
-                        <td>{x.created_at ? new Date(x.created_at).toLocaleString() : "-"}</td>
+                        <td>{formatDateTime(x.created_at)}</td>
                         <td><Badge s={x.status} /></td>
                         <td><code>{x.target_fqn || x.action || "-"}</code></td>
                         <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
@@ -5502,7 +5491,7 @@ export default function App() {
                     <thead><tr><th>Time</th><th>Status</th><th>Target / action</th><th>Artifact version</th></tr></thead>
                     <tbody>{prodPromotion.logs.slice().reverse().map((x: any, i: number) => (
                       <tr key={i}>
-                        <td>{x.created_at ? new Date(x.created_at).toLocaleString() : "-"}</td>
+                        <td>{formatDateTime(x.created_at)}</td>
                         <td><Badge s={x.status} /></td>
                         <td><code>{x.target_fqn || x.action || "-"}</code></td>
                         <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
@@ -5895,7 +5884,7 @@ function RecordTable({ rows }: { rows: ModRecord[] }) {
               <code>{JSON.stringify(r.payload?.details || {})}</code>
             </td>
             <td>
-              {r.created_at ? new Date(r.created_at).toLocaleString() : "-"}
+              {formatDateTime(r.created_at)}
             </td>
           </tr>
         ))}

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import CanonicalRecord, MigrationProject, MigrationSource
 from app.models.canonical import MigrationDeployment
-from app.services import medallion, prompt_orchestration, prompt_promotion
+from app.services import deployment, medallion, prompt_orchestration, prompt_promotion
 from app.services.engine import sha, uid
 
 
@@ -151,6 +151,55 @@ def _renew_dev_retries(
         "attempts": 0,
         "retry_renewals": int(checkpoint.get("retry_renewals") or 0) + 1,
         "retry_evidence": current,
+    })
+    return True
+
+
+def _renew_promotion_retries(
+    db: Session,
+    project_id: str,
+    plan: dict[str, Any],
+    checkpoint: dict[str, Any],
+    stage: str,
+    run_id: str,
+    actor: str,
+) -> bool:
+    target = {"TEST_PROMOTION": "TEST", "UAT_PROMOTION": "UAT", "PROD_PROMOTION": "PROD"}.get(stage)
+    if not target:
+        return False
+    source = prompt_promotion.PROMOTION_PATH.get(target, "DEV")
+    manifest = deployment._latest_successful_medallion_run(db, project_id, source)
+    if not manifest:
+        return False
+    previous_manifest_id = (checkpoint.get("details") or {}).get("stages", {}).get("PREFLIGHT", {}).get("source_deployment_run_id")
+    failed_target = (checkpoint.get("details") or {}).get("stages", {}).get("DEPLOYMENT", {}).get("failed_target")
+    current_key = f"{manifest[0]}:{failed_target or ''}"
+    if checkpoint.get("last_renewed_key") == current_key:
+        return False
+    reason = None
+    if previous_manifest_id and manifest[0] != previous_manifest_id:
+        reason = f"New successful {source} deployment manifest {manifest[0]} is available"
+    elif failed_target or checkpoint.get("status") == "FAILED":
+        reason = f"Promotion deployment order and evidence resolved for {target} promotion"
+    if not reason:
+        return False
+    _record(
+        db,
+        project_id,
+        record_type="MASTER_STAGE_RETRY_RENEWAL",
+        status="RENEWED",
+        run_id=run_id,
+        plan_id=plan["plan_id"],
+        stage=stage,
+        actor=actor,
+        previous_checkpoint=dict(checkpoint),
+        reason=reason,
+    )
+    checkpoint.update({
+        "total_attempts": int(checkpoint.get("total_attempts", checkpoint.get("attempts", 0))),
+        "attempts": 0,
+        "retry_renewals": int(checkpoint.get("retry_renewals") or 0) + 1,
+        "last_renewed_key": current_key,
     })
     return True
 
@@ -433,6 +482,9 @@ def execute_master_plan(
         if stage == "DEV_MIGRATION" and attempts > 0 and checkpoint.get("status") == "FAILED":
             if _renew_dev_retries(db, project_id, plan, checkpoint, run_id, actor):
                 attempts = 0
+        elif stage in {"TEST_PROMOTION", "UAT_PROMOTION", "PROD_PROMOTION"} and attempts >= MAX_STAGE_ATTEMPTS and checkpoint.get("status") == "FAILED":
+            if _renew_promotion_retries(db, project_id, plan, checkpoint, stage, run_id, actor):
+                attempts = 0
         if attempts >= MAX_STAGE_ATTEMPTS:
             stage_result = {
                 "status": "FAILED",
@@ -441,7 +493,7 @@ def execute_master_plan(
                     "Repair and approve corrected DEV SQL, then resume this master plan. "
                     "The retry budget renews only when validated, approved SQL has changed."
                     if stage == "DEV_MIGRATION" else
-                    f"Resolve the {environment} evidence and generate a new authorized master plan."
+                    f"Resolve the {environment} evidence and resume this master plan."
                 )}],
             }
         else:

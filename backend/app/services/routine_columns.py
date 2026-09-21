@@ -24,7 +24,8 @@ KEYWORDS = set("""SELECT FROM JOIN INNER LEFT RIGHT FULL OUTER CROSS ON WHERE GR
 ORDER HAVING QUALIFY LIMIT OFFSET UNION ALL DISTINCT AS INTO INSERT UPDATE SET
 DELETE MERGE USING WHEN MATCHED THEN VALUES RETURN BEGIN END LANGUAGE SQL RETURNS
 READS DATA SECURITY INVOKER AND OR NOT NULL IS IN EXISTS CASE ELSE ASC DESC WITH
-OVER PARTITION CAST INT DECIMAL STRING TIMESTAMP COUNT SUM COALESCE TRUE FALSE""".lower().split())
+OVER PARTITION CAST INT DECIMAL STRING TIMESTAMP COUNT SUM COALESCE TRUE FALSE
+OVERWRITE TABLE""".lower().split())
 
 
 def _name(value: str) -> str:
@@ -97,13 +98,17 @@ def bind_columns(sql: str, relations: dict[tuple[str, ...], dict[str, str]]) -> 
             from_list[token.scope] = True
         elif token.value.upper() in {'WHERE', 'ON', 'GROUP', 'ORDER', 'HAVING', 'QUALIFY', 'LIMIT', 'UNION'}:
             from_list[token.scope] = False
-        relation_start = token.value.upper() in {'FROM', 'JOIN', 'INTO', 'UPDATE', 'USING'}
+        relation_start = token.value.upper() in {'FROM', 'JOIN', 'INTO', 'UPDATE', 'USING', 'OVERWRITE'}
         relation_start |= token.value == ',' and from_list.get(token.scope, False)
         if not relation_start:
             continue
-        if index + 1 < len(tokens) and tokens[index + 1].value == '(':
+        start_index = index + 1
+        if token.value.upper() in {'INTO', 'OVERWRITE'} and start_index < len(tokens) and tokens[start_index].value.upper() == 'TABLE':
+            protected.add(start_index)
+            start_index += 1
+        if start_index < len(tokens) and tokens[start_index].value == '(':
             depth = 1
-            end = index + 2
+            end = start_index + 1
             while end < len(tokens) and depth:
                 depth += (tokens[end].value == '(') - (tokens[end].value == ')')
                 end += 1
@@ -112,9 +117,9 @@ def bind_columns(sql: str, relations: dict[tuple[str, ...], dict[str, str]]) -> 
                 aliases.setdefault(token.scope, {})[_name(tokens[alias_index].value)] = None
                 protected.add(alias_index)
             continue
-        if not identifier(index + 1):
+        if not identifier(start_index):
             continue
-        parts, end = chain(index + 1)
+        parts, end = chain(start_index)
         key = tuple(_name(tokens[p].value) for p in parts)
         schema = relations.get(key)
         protected.update(parts)
@@ -125,7 +130,7 @@ def bind_columns(sql: str, relations: dict[tuple[str, ...], dict[str, str]]) -> 
             protected.add(alias_index)
         else:
             scope_aliases[key[-1]] = schema
-        if token.value.upper() == 'INTO' and schema is not None and end < len(tokens) and tokens[end].value == '(':
+        if token.value.upper() in {'INTO', 'OVERWRITE'} and schema is not None and end < len(tokens) and tokens[end].value == '(':
             if end + 1 < len(tokens):
                 inserts[tokens[end + 1].scope] = schema
 

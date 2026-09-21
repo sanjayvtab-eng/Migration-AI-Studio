@@ -344,3 +344,51 @@ def test_master_migration_api_workflow(client, auth_headers, db, monkeypatch):
     assert latest.status_code == 200
     assert latest.json()["plan"]["status"] == "COMPLETED"
     assert latest.json()["execution"]["status"] == "COMPLETED"
+
+
+def test_promotion_exhausted_retries_can_renew_when_resumed(db, monkeypatch):
+    project = _project(db)
+    _mock_dev_plan(monkeypatch)
+    calls = []
+    _mock_successful_chain(monkeypatch, calls)
+
+    plan = master_orchestration.generate_master_plan(db, project.id, MASTER_PROMPT)
+
+    # Simulate 3 failures in TEST_PROMOTION
+    attempt_count = 0
+    def failing_promotion(db, pid, plan_id, **kw):
+        nonlocal attempt_count
+        attempt_count += 1
+        calls.append("TEST_FAIL")
+        return {
+            "status": "FAILED",
+            "failed_stage": "DEPLOYMENT",
+            "error": "Table dependency failure",
+            "stages": {
+                "PREFLIGHT": {"status": "PASSED", "source_deployment_run_id": "MDR_DEV_1"},
+                "DEPLOYMENT": {"status": "FAILED", "failed_target": "`migration_test`.`silver`.`fn_CalculateOrderAmount`"},
+            },
+        }
+
+    monkeypatch.setattr(master_orchestration.prompt_promotion, "execute_promotion_plan", failing_promotion)
+    monkeypatch.setattr(master_orchestration.deployment, "_latest_successful_medallion_run", lambda *a: ("MDR_DEV_1", []))
+
+    for i in range(3):
+        res = master_orchestration.execute_master_plan(
+            db, project.id, plan["plan_id"],
+            workflow_authorized=i == 0, production_authorized=i == 0,
+        )
+        assert res["status"] == "FAILED"
+
+    # Now simulate fix (subsequent promotion attempt succeeds)
+    def successful_promotion(db, pid, plan_id, **kw):
+        calls.append("TEST_SUCCESS")
+        return {"status": "COMPLETED", "stages": {}}
+
+    monkeypatch.setattr(master_orchestration.prompt_promotion, "execute_promotion_plan", successful_promotion)
+
+    resumed = master_orchestration.execute_master_plan(db, project.id, plan["plan_id"])
+    assert resumed["status"] == "COMPLETED"
+    test_cp = resumed["stages"]["TEST_PROMOTION"]
+    assert test_cp["retry_renewals"] == 1
+    assert test_cp["total_attempts"] == 4
