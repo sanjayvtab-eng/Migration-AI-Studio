@@ -130,7 +130,9 @@ def parse_and_validate_prompt(
 
     # 2. Identify target environment
     env = "DEV"
-    if "prod" in lower or "production" in lower:
+    if "dev" in lower or "development" in lower:
+        env = "DEV"
+    elif "prod" in lower or "production" in lower:
         env = "PROD"
     elif "uat" in lower:
         env = "UAT"
