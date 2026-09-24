@@ -354,6 +354,7 @@ export default function App() {
   const [promptNativeText, setPromptNativeText] = useState(
     "Migrate MigrationDemo from SQL Server to Databricks DEV. Bronze: ingest Customers, CustomerSales, OrderItems, Orders, OrderSummary and Products. Silver: create cleaned views for Customers, Orders, OrderItems and Products; create vw_CustomerSales for completed orders; create fn_CalculateOrderAmount(p_order_id INT); create idempotent MERGE loaders usp_LoadCustomerSales and usp_LoadOrderSummary. Gold: create dim_customer, dim_product, fact_sales, vw_customer_sales_summary and vw_product_sales_summary. Validate every identifier and wait for plan approval before generation.",
   );
+  const [promptSourceId, setPromptSourceId] = useState<string>("");
   const [promptSpec, setPromptSpec] = useState<any>(null);
   const [promptSpecPlan, setPromptSpecPlan] = useState<any>(null);
   const [promptSpecTrace, setPromptSpecTrace] = useState<any>(null);
@@ -765,7 +766,7 @@ export default function App() {
     try {
       const result: any = await api(`/projects/${pid}/prompt-specifications`, {
         method: "POST",
-        body: JSON.stringify({ prompt: promptNativeText }),
+        body: JSON.stringify({ prompt: promptNativeText, source_id: promptSourceId || undefined }),
       });
       setPromptAnswers({});
       await loadPromptSpecification(result.id);
@@ -2378,6 +2379,24 @@ export default function App() {
                           style={{ width: "100%", resize: "vertical", marginTop: 8 }}
                           placeholder="Describe the exact Bronze, Silver, and Gold artifacts required."
                         />
+                        {sources.length > 1 && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: "#9bb8c1" }}>Target Source:</span>
+                            <select
+                              value={promptSourceId}
+                              onChange={(e) => setPromptSourceId(e.target.value)}
+                              disabled={busy}
+                              style={{ padding: "4px 8px", borderRadius: 4, background: "#1c2536", color: "#fff", border: "1px solid #374151", fontSize: 12 }}
+                            >
+                              <option value="">Auto-detect from prompt</option>
+                              {sources.map((s: any) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.profile_name} ({s.database_name})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                           <button className="primary-action" disabled={!pid || busy || !promptNativeText.trim()} onClick={submitPromptSpecification}>
                             <Command size={15} /> Parse and Ground Prompt

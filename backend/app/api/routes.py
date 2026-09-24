@@ -152,8 +152,9 @@ class AutomatedPromotionActionIn(BaseModel):
 
 
 class PromptSpecificationIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
     prompt: str
+    source_id: str | None = None
 
 class PromptClarificationsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -391,7 +392,7 @@ def prompt_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
 @router.post("/projects/{project_id}/prompt-specifications")
 def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Session=Depends(get_db),user=Depends(auth)):
     actor=_admin_actor(user)
-    try: return prompt_specification.submit(db,project_id,data.prompt,actor)
+    try: return prompt_specification.submit(db,project_id,data.prompt,actor,data.source_id)
     except Exception as e: _environment_error(e)
 
 
