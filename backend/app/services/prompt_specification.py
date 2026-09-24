@@ -1477,6 +1477,15 @@ RETURN COALESCE({calc_expr}, CAST(0 AS {returns}));"""
         calc_aliased = re.sub(rf"(?i)(?<![.\w])\b{re.escape(cname)}\b", f"{alias}.{cname}", calc_aliased)
         filt_aliased = re.sub(rf"(?i)(?<![.\w])\b{re.escape(cname)}\b", f"{alias}.{cname}", filt_aliased)
 
+    # Ensure correlated scalar subquery is aggregated as required by Databricks Spark SQL:
+    # [UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.MUST_AGGREGATE_CORRELATED_SCALAR_SUBQUERY]
+    is_aggregated = bool(re.match(r"(?is)^\s*(?:SUM|AVG|MIN|MAX|COUNT|FIRST)\s*\(", calc_aliased))
+    if not is_aggregated:
+        if any(t in returns.upper() for t in ("DECIMAL", "INT", "BIGINT", "NUMERIC", "DOUBLE", "FLOAT")):
+            calc_aliased = f"CAST(SUM({calc_aliased}) AS {returns})"
+        else:
+            calc_aliased = f"FIRST({calc_aliased}, true)"
+
     joins_sql = ("\n  " + "\n  ".join(join_clauses)) if join_clauses else ""
 
     return f"""CREATE OR REPLACE FUNCTION {_fqn(catalog, 'silver', request['name'])}({", ".join(params_def)})
