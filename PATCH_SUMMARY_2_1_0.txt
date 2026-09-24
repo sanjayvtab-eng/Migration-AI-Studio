@@ -1,0 +1,30 @@
+SQL Server -> Databricks AI Migration Factory
+Release: 2.1.0 OLLAMA_AI
+
+Local AI implementation
+-----------------------
+- Ollama is now the default local-first AI provider abstraction.
+- No API key is required for Ollama.
+- Provider health, version, installed model list and selected-model availability can be tested from the UI/API.
+- Ollama calls use localhost by default and ignore ambient HTTP proxy settings.
+- AI response remains a structured remediation candidate only.
+- Deterministic rules, mappings, static validation, review/approval, DEV deployment and reconciliation remain authoritative.
+
+Windows helpers
+---------------
+- scripts\setup_ollama_windows.bat [model]
+- scripts\test_ollama_windows.bat
+- scripts\configure_ollama.py --model <model>
+
+Governance
+----------
+- No AI auto approval.
+- No AI auto deployment.
+- No AI PROD mutation.
+- No bypass of deterministic validation or reconciliation.
+- Source SQL/error text is treated as untrusted prompt data.
+- Trigger conversion remains architecture review.
+
+Compatibility
+-------------
+All 2.0.1 metadata-driven datatype/transport compatibility fixes are retained.

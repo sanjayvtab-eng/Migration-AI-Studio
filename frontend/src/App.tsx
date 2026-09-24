@@ -1,0 +1,6530 @@
+import { useEffect, useMemo, useState } from "react";
+import { api, downloadApi } from "./api";
+import {
+  Activity,
+  Boxes,
+  Database,
+  GitBranch,
+  Layers3,
+  ClipboardCheck,
+  ShieldCheck,
+  Settings,
+  FileCode2,
+  RefreshCw,
+  LogOut,
+  Play,
+  Plus,
+  Search,
+  CheckCircle2,
+  PlugZap,
+  Stethoscope,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Bell,
+  Command,
+  ChevronRight,
+  Sparkles,
+  Workflow,
+  ServerCog,
+  ShieldAlert,
+  FileCheck2,
+  Gauge,
+  ArrowUpRight,
+  Clock3,
+  Download,
+  ScrollText,
+  BookOpen,
+  UserCog,
+  Route,
+} from "lucide-react";
+
+import SourceConnectorControl from "./SourceConnectorControl";
+
+type Project = { id: string; name: string; status: string };
+type Source = {
+  id: string;
+  profile_name: string;
+  server_name: string;
+  database_name: string;
+};
+type Inv = {
+  id: string;
+  database: string;
+  schema: string;
+  name: string;
+  type: string;
+};
+type ClassRow = {
+  object_id: string;
+  name: string;
+  type: string;
+  recommended_layer: string;
+  selected_layer: string;
+  reason: string;
+  confidence: number;
+};
+type Mapping = {
+  id: string;
+  object_id: string;
+  name: string;
+  type: string;
+  source_fqn: string;
+  target_fqn: string;
+  target_layer: string;
+  environment: string;
+};
+type Artifact = {
+  artifact_id: string;
+  object_id: string;
+  schema?: string;
+  name: string;
+  type: string;
+  current_version: number;
+  artifact_version_id?: string;
+  content?: string;
+  executable?: boolean;
+  validation_status?: string;
+  review_status?: string;
+  approval_allowed?: boolean;
+  approval_blockers?: string[];
+  ai_provider?: string;
+  ai_model?: string;
+};
+type Life = {
+  environment: string;
+  status: string;
+  pass_count: number;
+  fail_count: number;
+  review_blockers: number;
+};
+type ModRecord = {
+  id: string;
+  record_type: string;
+  object_id?: string;
+  environment?: string;
+  created_at: string;
+  payload: { title?: string; status?: string; details?: any };
+};
+
+function formatDateTime(val: any): string {
+  if (!val) return "-";
+  let s = String(val).trim();
+  if (!s) return "-";
+  if (/^\d{10,13}$/.test(s)) {
+    const num = Number(s);
+    const d = new Date(num < 1e11 ? num * 1000 : num);
+    return isNaN(d.getTime()) ? s : d.toLocaleString();
+  }
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+    s = s.replace(" ", "T");
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+    s = s + "Z";
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? String(val) : d.toLocaleString();
+}
+
+function formatTimeOnly(val: any): string {
+  if (!val) return "-";
+  let s = String(val).trim();
+  if (!s) return "-";
+  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+    s = s.replace(" ", "T");
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+    s = s + "Z";
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? String(val) : d.toLocaleTimeString();
+}
+
+const icons: any = {
+  "Migration Workflow": Workflow,
+  Dashboard: Activity,
+  Runbook: BookOpen,
+  Projects: Boxes,
+  Sources: Database,
+  Dependencies: GitBranch,
+  "Medallion Design": Layers3,
+  "AI Remediation": Sparkles,
+  Reviews: ClipboardCheck,
+  Governance: ShieldCheck,
+  Administration: Settings,
+  "Environment Setup": ServerCog,
+  Discovery: PlugZap,
+};
+const moduleMap: any = {
+  Assessment: "assessment",
+  "Conversion Plans": "conversion-plans",
+  "Data Quality": "data-quality",
+  Deployments: "deployments",
+  Waves: "waves",
+  Cutover: "cutover",
+  Decommission: "decommission",
+  Governance: "governance",
+  Audit: "audit",
+  Administration: "administration",
+};
+
+const BUILD_VERSION = "2.4.1 BRONZE_TARGET_CONSISTENCY";
+
+function Login({ done }: { done: () => void }) {
+  const [u, setU] = useState("admin"),
+    [p, setP] = useState(""),
+    [err, setErr] = useState("");
+  async function go() {
+    setErr("");
+    try {
+      const r: any = await api("/login", {
+        method: "POST",
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      localStorage.setItem("mf_token", r.access_token);
+      done();
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  }
+  return (
+    <div className="login">
+      <div className="login-card">
+        <div className="brandmark">MF</div>
+        <h1>Migration Factory</h1>
+        <p>Enterprise SQL Server → Databricks Control Plane</p>
+        <input
+          value={u}
+          onChange={(e) => setU(e.target.value)}
+          placeholder="Username"
+        />
+        <input
+          value={p}
+          type="password"
+          onChange={(e) => setP(e.target.value)}
+          placeholder="Password"
+          onKeyDown={(e) => e.key === "Enter" && go()}
+        />
+        <button onClick={go}>Sign in</button>
+        {err && <div className="error">{err}</div>}
+        <small>
+          Use the administrator created by scripts/bootstrap_admin.py. · Build{" "}
+          {BUILD_VERSION}
+        </small>
+      </div>
+    </div>
+  );
+}
+function Badge({ s }: { s: string }) {
+  return (
+    <span className={`badge ${String(s || "").toLowerCase()}`}>{s || "-"}</span>
+  );
+}
+function Panel({
+  title,
+  actions,
+  children,
+}: {
+  title: string;
+  actions?: any;
+  children: any;
+}) {
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h3>{title}</h3>
+        <div>{actions}</div>
+      </div>
+      {children}
+    </div>
+  );
+}
+function Empty({ text }: { text: string }) {
+  return (
+    <div className="empty">
+      <FileCode2 size={36} />
+      <p>{text}</p>
+    </div>
+  );
+}
+
+export default function App() {
+  const [ready, setReady] = useState(!!localStorage.getItem("mf_token"));
+  const [page, setPage] = useState("Migration Workflow");
+  const [projects, setProjects] = useState<Project[]>([]),
+    [pid, setPid] = useState("");
+  const [dash, setDash] = useState<any>({}),
+    [life, setLife] = useState<Life[]>([]),
+    [classes, setClasses] = useState<ClassRow[]>([]),
+    [sources, setSources] = useState<Source[]>([]),
+    [inventory, setInventory] = useState<Inv[]>([]),
+    [mappings, setMappings] = useState<Mapping[]>([]),
+    [artifacts, setArtifacts] = useState<Artifact[]>([]),
+    [issues, setIssues] = useState<any[]>([]),
+    [deps, setDeps] = useState<any[]>([]),
+    [reviews, setReviews] = useState<any[]>([]);
+  const [records, setRecords] = useState<ModRecord[]>([]),
+    [users, setUsers] = useState<any[]>([]),
+    [diag, setDiag] = useState<any>(null),
+    [discoveryResult, setDiscoveryResult] = useState<any>(null);
+  const [environmentConfig, setEnvironmentConfig] = useState<any>(null),
+    [environmentPlan, setEnvironmentPlan] = useState<any>(null),
+    [bronzePreflight, setBronzePreflight] = useState<any>(null),
+    [bronzeRun, setBronzeRun] = useState<any>(null),
+    [environmentForm, setEnvironmentForm] = useState({
+      workspace_host: "",
+      http_path: "",
+      token_env_key: "DATABRICKS_TOKEN",
+      catalog_prefix: "migration",
+    });
+  const [bronzeLoadMode, setBronzeLoadMode] = useState("FULL_LOAD"),
+    [bronzeBatchSize, setBronzeBatchSize] = useState(1000),
+    [bronzeMaxRows, setBronzeMaxRows] = useState("");
+  const [deployment, setDeployment] = useState<any>({
+      environment: "DEV",
+      status: "NOT_STARTED",
+      logs: [],
+    }),
+    [precheck, setPrecheck] = useState<any>(null),
+    [reconResult, setReconResult] = useState<any>(null),
+    [gateResult, setGateResult] = useState<any>(null);
+  const [testPromotion, setTestPromotion] = useState<any>({ status: "NOT_STARTED", logs: [] }),
+    [testPrecheck, setTestPrecheck] = useState<any>(null),
+    [testRecon, setTestRecon] = useState<any>(null),
+    [testGate, setTestGate] = useState<any>(null);
+  const [uatPromotion, setUatPromotion] = useState<any>({ status: "NOT_STARTED", logs: [] }),
+    [uatPrecheck, setUatPrecheck] = useState<any>(null),
+    [uatRecon, setUatRecon] = useState<any>(null),
+    [uatGate, setUatGate] = useState<any>(null);
+  const [prodPromotion, setProdPromotion] = useState<any>({ status: "NOT_STARTED", logs: [] }),
+    [prodPrecheck, setProdPrecheck] = useState<any>(null),
+    [prodRecon, setProdRecon] = useState<any>(null),
+    [prodGate, setProdGate] = useState<any>(null);
+  const [workflowOps, setWorkflowOps] = useState<any>({ cutover: [], decommission: [] });
+  const [logView, setLogView] = useState<any[]>([]),
+    [showLogs, setShowLogs] = useState(false);
+  const [compat, setCompat] = useState<any>(null);
+  const [medallion, setMedallion] = useState<any>(null),
+    [semantics, setSemantics] = useState<any[]>([]),
+    [consumers, setConsumers] = useState<any[]>([]),
+    [medArts, setMedArts] = useState<any[]>([]),
+    [semanticRun, setSemanticRun] = useState<any>(null);
+  const [medDeployment, setMedDeployment] = useState<any>(null),
+    [medLogs, setMedLogs] = useState<any[]>([]),
+    [medLogFilter, setMedLogFilter] = useState("ALL");
+  const [medValidation, setMedValidation] = useState<any>(null),
+    [artifactInspector, setArtifactInspector] = useState<any>(null);
+  const [aiCandidate, setAiCandidate] = useState<any>(null),
+    [aiObject, setAiObject] = useState<Artifact | null>(null),
+    [aiPlan, setAiPlan] = useState<any>(null),
+    [aiBatch, setAiBatch] = useState<any>(null);
+  const [aiProvider, setAiProvider] = useState<any>(null),
+    [aiModels, setAiModels] = useState<string[]>([]);
+  const [selectedIssue, setSelectedIssue] = useState<any>(null),
+    [issueLogs, setIssueLogs] = useState<any[]>([]),
+    [showIssueLogs, setShowIssueLogs] = useState(false);
+  const [deployBatch, setDeployBatch] = useState(10000),
+    [deployMaxRows, setDeployMaxRows] = useState(""),
+    [deployMode, setDeployMode] = useState("FULL_LOAD");
+  const [busy, setBusy] = useState(false),
+    [msg, setMsg] = useState(""),
+    [search, setSearch] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
+  const [promptText, setPromptText] = useState(
+    "Migrate MigrationDemo from SQL Server to DEV Databricks",
+  );
+  const [promptPlan, setPromptPlan] = useState<any>(null);
+  const [promptExecution, setPromptExecution] = useState<any>(null);
+  const [promptRunning, setPromptRunning] = useState(false);
+  const [promotionPrompt, setPromotionPrompt] = useState(
+    "Promote approved DEV release to TEST",
+  );
+  const [promotionPlan, setPromotionPlan] = useState<any>(null);
+  const [promotionExecution, setPromotionExecution] = useState<any>(null);
+  const [promotionRunning, setPromotionRunning] = useState(false);
+  const [masterPrompt, setMasterPrompt] = useState(
+    "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks",
+  );
+  const [masterPlan, setMasterPlan] = useState<any>(null);
+  const [masterExecution, setMasterExecution] = useState<any>(null);
+  const [masterRunning, setMasterRunning] = useState(false);
+  const [autoPromotionStatus, setAutoPromotionStatus] = useState<any>(null);
+  const [showAutoAuthModal, setShowAutoAuthModal] = useState(false);
+  const [autoAuthText, setAutoAuthText] = useState("");
+  const [autoRunning, setAutoRunning] = useState(false);
+  const [promptNativeText, setPromptNativeText] = useState(
+    "Migrate MigrationDemo from SQL Server to Databricks DEV. Bronze: ingest Customers, CustomerSales, OrderItems, Orders, OrderSummary and Products. Silver: create cleaned views for Customers, Orders, OrderItems and Products; create vw_CustomerSales for completed orders; create fn_CalculateOrderAmount(p_order_id INT); create idempotent MERGE loaders usp_LoadCustomerSales and usp_LoadOrderSummary. Gold: create dim_customer, dim_product, fact_sales, vw_customer_sales_summary and vw_product_sales_summary. Validate every identifier and wait for plan approval before generation.",
+  );
+  const [promptSpec, setPromptSpec] = useState<any>(null);
+  const [promptSpecPlan, setPromptSpecPlan] = useState<any>(null);
+  const [promptSpecTrace, setPromptSpecTrace] = useState<any>(null);
+  const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
+  const [workflowStudioTab, setWorkflowStudioTab] = useState<"master" | "native">("master");
+  const [showStudio, setShowStudio] = useState<boolean>(true);
+  async function loadProjects() {
+    const ps = await api<Project[]>("/projects");
+    setProjects(ps);
+    if (!pid && ps[0]) setPid(ps[0].id);
+    return ps;
+  }
+  async function refresh() {
+    if (!ready) return;
+    setMsg("");
+    try {
+      const ps = await loadProjects();
+      const id = pid || ps[0]?.id;
+      if (id) {
+        const [d, l, c, s, i, m, a, is, dp, rv] = await Promise.all([
+          api(`/projects/${id}/dashboard`),
+          api(`/projects/${id}/lifecycle`),
+          api(`/projects/${id}/classification`),
+          api(`/projects/${id}/sources`),
+          api(`/projects/${id}/inventory?limit=500`),
+          api(`/projects/${id}/mappings`),
+          api(`/projects/${id}/artifacts`),
+          api(`/projects/${id}/issues`),
+          api(`/projects/${id}/dependencies`),
+          api(`/projects/${id}/reviews`),
+        ]);
+        setDash(d);
+        setLife(l as Life[]);
+        setClasses(c as ClassRow[]);
+        setSources(s as Source[]);
+        setInventory(i as Inv[]);
+        setMappings(m as Mapping[]);
+        setArtifacts(a as Artifact[]);
+        setIssues(is as any[]);
+        setDeps(dp as any[]);
+        setReviews(rv as any[]);
+      }
+      if (moduleMap[page] && id)
+        setRecords(await api(`/projects/${id}/module/${moduleMap[page]}`));
+      if (id && ["Medallion Design", "Deployments", "Migration Workflow"].includes(page)) {
+        const [status, projectLogs]: any = await Promise.all([
+          api(`/projects/${id}/medallion/deployments/dev/status`),
+          api(`/projects/${id}/deployments/dev/logs?limit=1000`),
+        ]);
+        const logs: any = status.run_id
+          ? await api(`/projects/${id}/medallion/deployments/${status.run_id}/logs`)
+          : { logs: [] };
+        setMedDeployment(status);
+        setMedLogs(logs.logs || []);
+        setLogView(projectLogs.logs || []);
+      }
+      if (page === "Compatibility" && id)
+        setCompat(await api(`/projects/${id}/compatibility/summary`));
+      if (page === "Medallion Design" && id) {
+        const [mp, sm, cs, validation]: any = await Promise.all([
+          api(`/projects/${id}/medallion/plan?environment=DEV`),
+          api(`/projects/${id}/semantics`),
+          api(`/projects/${id}/consumers`),
+          api(`/projects/${id}/medallion/validation-report?environment=DEV`),
+        ]);
+        setMedallion(mp);
+        setSemantics(sm);
+        setConsumers(cs);
+        setMedArts(await api(`/projects/${id}/medallion/artifacts?environment=DEV`));
+        setMedValidation(validation);
+      }
+      if (page === "Reviews" && id) {
+        setMedValidation(await api(`/projects/${id}/medallion/validation-report?environment=DEV`));
+        setMedArts(
+          await api(`/projects/${id}/medallion/artifacts?environment=DEV`),
+        );
+      }
+      if (page === "AI Remediation" && id) {
+        const [plan, provider]: any = await Promise.all([
+          api(`/projects/${id}/remediation/plan?environment=DEV`),
+          api("/ai/provider-status"),
+        ]);
+        setAiPlan(plan);
+        setAiProvider(provider);
+      }
+      if (page === "Deployments" && id) {
+        const [reconciliation, legacyDeployment]: any =
+          await Promise.all([
+            api(`/projects/${id}/deployments/dev/reconciliation/latest`),
+            api(`/projects/${id}/deployments/dev/status`),
+          ]);
+        setReconResult(reconciliation);
+        setDeployment(legacyDeployment);
+      }
+      if (page === "Waves" && id) {
+        const [status, recon, uatStatus, uatReconciliation, prodStatus, prodReconciliation, promptPromotion]: any = await Promise.all([
+          api(`/projects/${id}/promotions/test/status`),
+          api(`/projects/${id}/promotions/test/reconciliation/latest`),
+          api(`/projects/${id}/promotions/uat/status`),
+          api(`/projects/${id}/promotions/uat/reconciliation/latest`),
+          api(`/projects/${id}/promotions/prod/status`),
+          api(`/projects/${id}/promotions/prod/reconciliation/latest`),
+          api(`/projects/${id}/prompt-promotion/latest`).catch(() => ({ plan: null, execution: null })),
+        ]);
+        setTestPromotion(status);
+        setTestRecon(recon);
+        setUatPromotion(uatStatus);
+        setUatRecon(uatReconciliation);
+        setProdPromotion(prodStatus);
+        setProdRecon(prodReconciliation);
+        if (promptPromotion?.plan) setPromotionPlan(promptPromotion.plan);
+        if (promptPromotion?.execution) setPromotionExecution(promptPromotion.execution);
+      }
+      // Auto-promotion status fetch
+      api(`/projects/${id}/master-orchestration/current`)
+        .then((s: any) => setAutoPromotionStatus(s))
+        .catch(() => setAutoPromotionStatus(null));
+
+      if (page === "Migration Workflow" && id) {
+        const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData, masterData]: any = await Promise.all([
+          api(`/projects/${id}/compatibility/summary`),
+          api(`/projects/${id}/medallion/plan?environment=DEV`),
+          api(`/projects/${id}/semantics`),
+          api(`/projects/${id}/medallion/artifacts?environment=DEV`),
+          api(`/projects/${id}/deployments/dev/reconciliation/latest`),
+          api(`/projects/${id}/module/cutover`),
+          api(`/projects/${id}/module/decommission`),
+          api(`/projects/${id}/prompt-migration/latest`).catch(() => ({ plan: null, execution: null })),
+          api(`/projects/${id}/master-migration/latest`).catch(() => ({ plan: null, execution: null })),
+        ]);
+        setCompat(compatibility);
+        setMedallion(mp);
+        setSemantics(sm);
+        setMedArts(ma);
+        setReconResult(devRecon);
+        setWorkflowOps({ cutover, decommission });
+        if (promptData?.plan) setPromptPlan(promptData.plan);
+        if (promptData?.execution) setPromptExecution(promptData.execution);
+        setMasterPlan(masterData?.plan || null);
+        setMasterExecution(masterData?.execution || null);
+      }
+      if (page === "Users") setUsers(await api("/users"));
+      if (page === "Administration") setDiag(await api("/system/diagnostics"));
+      if (page === "Environment Setup" && id) {
+        const [configuration, plan, ingestion]: any = await Promise.all([
+          api(`/projects/${id}/databricks/configuration`),
+          api(`/projects/${id}/environments/dev/plan`),
+          api(`/projects/${id}/ingestion/dev/latest`),
+        ]);
+        setEnvironmentConfig(configuration);
+        setEnvironmentPlan(plan);
+        setBronzeRun(ingestion);
+        if (configuration.configured) {
+          setEnvironmentForm({
+            workspace_host: configuration.workspace_host || "",
+            http_path: configuration.http_path || "",
+            token_env_key: configuration.token_env_key || "DATABRICKS_TOKEN",
+            catalog_prefix: configuration.catalog_prefix || "migration",
+          });
+        }
+      }
+    } catch (e: any) {
+      if (String(e.message).includes("Invalid or expired token")) {
+        localStorage.removeItem("mf_token");
+        setReady(false);
+      } else setMsg(e.message);
+    }
+  }
+  useEffect(() => {
+    function onAuthExpired() {
+      setReady(false);
+    }
+    window.addEventListener("auth_expired", onAuthExpired);
+    return () => window.removeEventListener("auth_expired", onAuthExpired);
+  }, []);
+  useEffect(() => {
+    refresh();
+  }, [ready, pid, page]);
+  async function action(fn: () => Promise<any>) {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await fn();
+      await refresh();
+      setMsg(r?.status === "FAILED" ? r.error || "Execution failed. Review the saved logs." : "Completed successfully");
+      return r;
+    } catch (e: any) {
+      if (String(e.message).includes("Invalid or expired token") || String(e.message).includes("Authentication required")) {
+        localStorage.removeItem("mf_token");
+        setReady(false);
+      } else {
+        await refresh();
+      }
+      setMsg(e.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generatePromptPlan(pText?: string) {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const p = pText || promptText;
+      const res: any = await api(`/projects/${pid}/prompt-migration/plan`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: p }),
+      });
+      setPromptPlan(res);
+      if (res.status === "NEEDS_USER_INPUT") {
+        setMsg("Prerequisites required before migration planning can complete.");
+      } else {
+        setMsg("Prompt validated & migration plan generated.");
+      }
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generateMasterPlan(text?: string) {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const prompt = text || masterPrompt;
+      const result: any = await api(`/projects/${pid}/master-migration/plan`, {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      });
+      setMasterPlan(result);
+      setMasterExecution(null);
+      setMsg(
+        result.status === "NEEDS_USER_INPUT"
+          ? "Resolve the master workflow prerequisites before authorization."
+          : "End-to-end migration plan generated and awaiting one-time authorization.",
+      );
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function authorizeAutomatedPromotion() {
+    if (!pid) return;
+    setBusy(true);
+    setAutoRunning(true);
+    setMsg("Authorizing and starting end-to-end automated promotion to PROD...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/authorize`, {
+        method: "POST",
+        body: JSON.stringify({ confirmation_text: autoAuthText.trim() }),
+      });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result, is_active: result.status === "RUNNING" }));
+      setMsg(
+        result.status === "COMPLETED"
+          ? "End-to-end automated promotion completed through PROD with all quality gates passed!"
+          : result.status === "PAUSED"
+          ? "Automated promotion paused safely."
+          : result.status === "FAILED"
+          ? `Automated promotion stopped at ${result.current_environment}: ${result.errors?.[result.errors.length - 1]?.message || "Check blockers"}`
+          : "Automated promotion running..."
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setAutoRunning(false);
+    }
+  }
+
+  async function pauseAutomatedPromotion() {
+    if (!pid) return;
+    setMsg("Requesting pause after current environment completes...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/pause`, { method: "POST" });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result }));
+      setMsg("Pause requested: execution will stop safely after current environment.");
+    } catch (e: any) {
+      setMsg(e.message);
+    }
+  }
+
+  async function resumeAutomatedPromotion() {
+    if (!pid || !autoPromotionStatus?.run?.run_id) return;
+    setBusy(true);
+    setAutoRunning(true);
+    setMsg("Resuming automated promotion from last checkpoint...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/resume`, {
+        method: "POST",
+        body: JSON.stringify({ run_id: autoPromotionStatus.run.run_id }),
+      });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result, is_active: result.status === "RUNNING" }));
+      setMsg(
+        result.status === "COMPLETED"
+          ? "End-to-end automated promotion completed through PROD with all quality gates passed!"
+          : `Automated promotion stopped at ${result.current_environment}.`
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setAutoRunning(false);
+    }
+  }
+
+  async function cancelAutomatedPromotion() {
+    if (!pid || !autoPromotionStatus?.run?.run_id) return;
+    const ok = window.confirm("Cancel remaining promotion environments? Already passed environments will remain intact.");
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ run_id: autoPromotionStatus.run.run_id }),
+      });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result, is_active: false }));
+      setMsg("Remaining automated promotion cancelled. All evidence from passed environments is retained.");
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeMasterPlan() {
+    if (!pid || !masterPlan?.plan_id) return;
+    const isResume = masterPlan.status === "FAILED" || masterPlan.status === "PAUSED";
+    if (!isResume) {
+      const confirmed = window.confirm(
+        "Authorize this complete SQL Server migration through DEV, TEST, UAT, and PROD, including governed FULL_LOAD replacement when required? The workflow will stop automatically if any quality gate fails.",
+      );
+      if (!confirmed) return;
+    }
+    setBusy(true);
+    setMasterRunning(true);
+    setMsg(isResume ? "Resuming from the last passed checkpoint..." : "Executing the authorized end-to-end migration...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-migration/execute`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: masterPlan.plan_id,
+          workflow_authorized: !isResume,
+          production_authorized: !isResume,
+          data_replacement_authorized: !isResume,
+        }),
+      });
+      setMasterExecution(result);
+      setMsg(
+        result.status === "COMPLETED"
+          ? "SQL Server migration completed through PROD with all quality gates passed."
+          : `Master workflow stopped at ${result.failed_stage || "a governed gate"}.`,
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setMasterRunning(false);
+    }
+  }
+  async function executePromptPlan() {
+    if (!pid || !promptPlan?.plan_id) return;
+    const overwriteConfirmed = Boolean(promptPlan.impact?.requires_overwrite) && window.confirm(
+      "Authorize FULL_LOAD replacement of existing DEV Bronze data when its checkpoint cannot be reused?",
+    );
+    if (promptPlan.impact?.requires_overwrite && !overwriteConfirmed) return;
+    setBusy(true);
+    setPromptRunning(true);
+    setMsg("Executing governed migration pipeline...");
+    try {
+      const res: any = await api(`/projects/${pid}/prompt-migration/execute`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: promptPlan.plan_id,
+          overwrite_confirmed: overwriteConfirmed,
+        }),
+      });
+      setPromptExecution(res);
+      setMsg(res.status === "COMPLETED" ? "Governed migration executed successfully!" : `Migration status: ${res.status}`);
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setPromptRunning(false);
+    }
+  }
+  async function loadPromptSpecification(specificationId: string) {
+    if (!pid || !specificationId) return;
+    const [specification, plan, trace] = await Promise.all([
+      api(`/projects/${pid}/prompt-specifications/${specificationId}`),
+      api(`/projects/${pid}/prompt-specifications/${specificationId}/plan`),
+      api(`/projects/${pid}/prompt-specifications/${specificationId}/trace`).catch(() => null),
+    ]);
+    setPromptSpec(specification);
+    setPromptSpecPlan(plan);
+    setPromptSpecTrace(trace);
+  }
+  async function submitPromptSpecification() {
+    if (!pid || !promptNativeText.trim()) return;
+    setBusy(true);
+    setMsg("Parsing and grounding the business prompt against the discovery snapshot...");
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: promptNativeText }),
+      });
+      setPromptAnswers({});
+      await loadPromptSpecification(result.id);
+      setMsg(result.status === "NEEDS_USER_INPUT" ? "Prompt parsed. Answer the focused clarification questions to continue." : "Prompt specification is grounded and ready for plan review.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function answerPromptClarifications() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/clarifications`, {
+        method: "POST",
+        body: JSON.stringify({ answers: promptAnswers }),
+      });
+      await loadPromptSpecification(result.id);
+      setMsg(result.status === "PENDING_PLAN_APPROVAL" ? "Clarifications recorded in a new version. Review and approve the exact plan." : "Clarifications recorded; unresolved grounding blockers remain.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function approvePromptSpecification() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ status: "APPROVED", comment: "Approved from the prompt-native plan preview" }),
+      });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("The exact prompt plan version is approved. Artifact generation is now available.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generatePromptArtifacts() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/generate`, { method: "POST" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("Artifacts generated with deterministic checks. Run Databricks target validation before review.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function validatePromptArtifacts() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/validate`, { method: "POST" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg(result.status === "PENDING_ARTIFACT_REVIEW" ? "Target validation passed. Review each current artifact version." : "Target validation found blocking errors.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function approveAllPromptArtifacts() {
+    if (!pid || !promptSpec?.id || !promptSpecTrace?.requirements) return;
+    setBusy(true);
+    try {
+      for (const item of promptSpecTrace.requirements) {
+        if (item.review_status !== "APPROVED") {
+          await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/artifacts/${item.artifact_version_id}/review`, {
+            method: "POST",
+            body: JSON.stringify({ status: "APPROVED", comment: "Validated current version approved from Release 7 review" }),
+          });
+        }
+      }
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("All current validated artifact versions are approved for DEV deployment.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function deployPromptArtifacts() {
+    if (!pid || !promptSpec?.id) return;
+    if (!window.confirm("Deploy the approved executable prompt-native artifact set to DEV and run reconciliation?")) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/deploy-dev`, { method: "POST" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg(result.status === "DEV_GATE_PASSED" ? "Prompt-native DEV deployment and reconciliation passed." : `DEV workflow stopped with status ${result.status}.`);
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generatePromotionPlan(text?: string) {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const prompt = text || promotionPrompt;
+      const result: any = await api(`/projects/${pid}/prompt-promotion/plan`, {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      });
+      setPromotionPlan(result);
+      setPromotionExecution(null);
+      setMsg(
+        result.status === "NEEDS_USER_INPUT"
+          ? "Promotion prerequisites must be resolved before approval."
+          : `${result.intent?.target_environment} promotion plan generated and awaiting approval.`,
+      );
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function executePromotionPlan() {
+    if (!pid || !promotionPlan?.plan_id) return;
+    const target = promotionPlan.intent?.target_environment;
+    const productionConfirmed = target !== "PROD" || window.confirm(
+      "This will promote the approved UAT manifest to PROD. Continue with production deployment?",
+    );
+    if (!productionConfirmed) return;
+    setBusy(true);
+    setPromotionRunning(true);
+    setMsg(`Executing governed ${target} promotion...`);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-promotion/execute`, {
+        method: "POST",
+        body: JSON.stringify({
+          plan_id: promotionPlan.plan_id,
+          production_confirmed: target === "PROD",
+        }),
+      });
+      setPromotionExecution(result);
+      setMsg(
+        result.status === "COMPLETED"
+          ? `${target} promotion, reconciliation, and quality gate completed successfully.`
+          : `${target} promotion status: ${result.status}`,
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setPromotionRunning(false);
+    }
+  }
+  async function viewDevLogs() {
+    if (!pid) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/deployments/dev/logs?limit=1000`,
+      );
+      setLogView(r.logs || []);
+      setShowLogs(true);
+      return r;
+    });
+  }
+  async function downloadDevLogs() {
+    if (!pid) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      await downloadApi(
+        `/projects/${pid}/deployments/dev/logs/download?format=csv`,
+        "migration_dev_logs.csv",
+      );
+      setMsg("Log downloaded successfully");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function runDevReconciliation() {
+    if (!pid) return;
+    await action(async () => {
+      const result: any = await api(
+        `/projects/${pid}/deployments/dev/reconcile`,
+        { method: "POST" },
+      );
+      setReconResult(result);
+      setGateResult(null);
+      return result;
+    });
+  }
+  async function runBronzePreflight() {
+    if (!pid) return;
+    await action(async () => {
+      const result: any = await api(`/projects/${pid}/ingestion/dev/preflight`);
+      setBronzePreflight(result);
+      return result;
+    });
+  }
+  async function runBronzeIngestion() {
+    if (!pid || environmentPlan?.status !== "PROVISIONED" || bronzePreflight?.status !== "PASSED") return;
+    const hasExistingTargets = (bronzePreflight.tables || []).some(
+      (table: any) => table.target_rows !== null && table.target_rows !== undefined,
+    );
+    let replaceExistingData = false;
+    if (bronzeLoadMode === "FULL_LOAD" && hasExistingTargets) {
+      replaceExistingData = confirm(
+        "Existing DEV Bronze data was detected. Replace those tables using governed staging-table loads? Cancel leaves all existing data unchanged.",
+      );
+      if (!replaceExistingData) return;
+    }
+    await action(async () => {
+      const result: any = await api(`/projects/${pid}/ingestion/dev/run`, {
+        method: "POST",
+        body: JSON.stringify({
+          load_mode: bronzeLoadMode,
+          batch_size: bronzeBatchSize,
+          max_rows: bronzeMaxRows ? Number(bronzeMaxRows) : null,
+          replace_existing_data: replaceExistingData,
+        }),
+      });
+      setBronzeRun(result);
+      return result;
+    });
+  }
+  async function downloadReconciliation() {
+    if (!pid || !reconResult?.run_id) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      await downloadApi(
+        `/projects/${pid}/deployments/dev/reconciliation/latest/download`,
+        `medallion_reconciliation_${reconResult.run_id}.csv`,
+      );
+      setMsg("Reconciliation log downloaded");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function analyzeWithAi(a: Artifact) {
+    if (!pid) return;
+    setAiObject(a);
+    setAiCandidate(null);
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/artifacts/${a.object_id}/remediation/analyze`,
+        {
+          method: "POST",
+          body: JSON.stringify({ environment: "DEV", use_ai: true }),
+        },
+      );
+      setAiCandidate(r);
+      return r;
+    });
+  }
+  async function acceptAiCandidate() {
+    if (!pid || !aiObject || !aiCandidate?.ai_run_id) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/artifacts/${aiObject.object_id}/remediation/accept`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ai_run_id: aiCandidate.ai_run_id,
+            reviewer: "admin",
+          }),
+        },
+      );
+      setAiCandidate(null);
+      setAiObject(null);
+      setPage("Reviews");
+      return r;
+    });
+  }
+  async function scanAiRemediation() {
+    if (!pid) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/remediation/plan?environment=DEV`,
+      );
+      setAiPlan(r);
+      return r;
+    });
+  }
+  async function runAiRemediation() {
+    if (!pid) return;
+    const count = aiPlan?.eligible || 0;
+    if (!count) {
+      setMsg("No eligible remediation items were found");
+      return;
+    }
+    if (
+      !confirm(
+        `Create and statically validate new candidate versions for ${count} eligible object(s)? AI will not approve or deploy them.`,
+      )
+    )
+      return;
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/remediation/run`, {
+        method: "POST",
+        body: JSON.stringify({
+          environment: "DEV",
+          use_ai: !!aiPlan?.provider?.enabled,
+          apply_valid_candidates: true,
+          reviewer: "admin",
+          max_objects: 100,
+        }),
+      });
+      setAiBatch(r);
+      setAiPlan(await api(`/projects/${pid}/remediation/plan?environment=DEV`));
+      return r;
+    });
+  }
+  async function testAiProvider() {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r: any = await api("/ai/provider-test", { method: "POST" });
+      setAiProvider(r);
+      setAiModels(r.models || []);
+      setMsg(
+        r.ready
+          ? `${r.provider} connection test passed`
+          : r.error || `${r.provider || "AI"} connection test completed`,
+      );
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function analyzeConsumers() {
+    if (!pid) return;
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/consumers/analyze`, {
+        method: "POST",
+      });
+      setConsumers(await api(`/projects/${pid}/consumers`));
+      return r;
+    });
+  }
+  async function registerExternalConsumer() {
+    if (!pid || !inventory.length) return;
+    const producerName = prompt(
+      "Producer source object name (exact inventory name)",
+      inventory.find((x) => x.type === "TABLE")?.name ||
+        inventory[0]?.name ||
+        "",
+    );
+    if (!producerName) return;
+    const obj = inventory.find(
+      (x) => x.name.toLowerCase() === producerName.toLowerCase(),
+    );
+    if (!obj) {
+      setMsg("Producer object not found in current inventory");
+      return;
+    }
+    const name = prompt(
+      "External consumer name, e.g. Power BI - Sales Dashboard",
+      "",
+    );
+    if (!name) return;
+    const consumer_type = prompt("Consumer type", "BI_REPORT") || "BI_REPORT";
+    const usage_type =
+      prompt("Usage type", "REPORTING_READ") || "REPORTING_READ";
+    await action(async () => {
+      const r = await api(`/projects/${pid}/consumers`, {
+        method: "POST",
+        body: JSON.stringify({
+          object_id: obj.id,
+          name,
+          consumer_type,
+          usage_type,
+          evidence: { registered_from: "Medallion Design" },
+        }),
+      });
+      setConsumers(await api(`/projects/${pid}/consumers`));
+      return r;
+    });
+  }
+  async function inferBusinessSemantics() {
+    if (!pid) return;
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/semantics/infer`, {
+        method: "POST",
+      });
+      setSemanticRun(r);
+      setSemantics(await api(`/projects/${pid}/semantics`));
+      return r;
+    });
+  }
+  async function buildMedallion() {
+    if (!pid) return;
+    const defaultCatalog = (mappings[0]?.target_fqn || "migration_dev")
+      .split(".")[0]
+      .replaceAll("`", "");
+    const catalog = prompt(
+      "Databricks catalog for DEV Medallion targets",
+      defaultCatalog,
+    );
+    if (!catalog) return;
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/medallion/plan`, {
+        method: "POST",
+        body: JSON.stringify({ environment: "DEV", catalog }),
+      });
+      setMedallion(r);
+      setSemantics(await api(`/projects/${pid}/semantics`));
+      setConsumers(await api(`/projects/${pid}/consumers`));
+      return r;
+    });
+  }
+  async function approveSemantic(id: string, role?: string) {
+    if (!pid) return;
+    const confirmMsg = role
+      ? `Resolve and approve this semantic definition as ${role}?`
+      : "Approve this semantic definition for Gold generation? This explicitly accepts the inferred/business semantics.";
+    if (!confirm(confirmMsg)) return;
+    await action(async () => {
+      const r = await api(`/projects/${pid}/semantics/${id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "admin", role }),
+      });
+      setSemantics(await api(`/projects/${pid}/semantics`));
+      return r;
+    });
+  }
+  async function approveAllSemantics() {
+    if (!pid) return;
+    if (!confirm("Approve all unapproved semantic definitions? Ambiguous entities with measures will be resolved as AGGREGATE.")) return;
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/semantics/approve-all`, {
+        method: "POST",
+        body: JSON.stringify({ actor: "admin" }),
+      });
+      setSemantics(await api(`/projects/${pid}/semantics`));
+      return r;
+    });
+  }
+  async function approveAllMedallionArtifacts() {
+    if (!pid) return;
+    if (!confirm("Approve all validated and executable Medallion artifacts for DEV deployment?")) return;
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/medallion/artifacts/approve-all?environment=DEV`, {
+        method: "POST",
+        body: JSON.stringify({ reviewer: "admin" }),
+      });
+      setMedArts(await api(`/projects/${pid}/medallion/artifacts?environment=DEV`));
+      return r;
+    });
+  }
+  async function defineSemantic(objectId: string) {
+    if (!pid) return;
+    const obj = inventory.find((x) => x.id === objectId);
+    const role = (
+      prompt(
+        "Semantic role: FACT, DIMENSION, AGGREGATE, KPI or REPORTING",
+        "FACT",
+      ) || ""
+    ).toUpperCase();
+    if (!role) return;
+    const target =
+      prompt(
+        "Gold target name",
+        `${role === "FACT" ? "fact" : role === "DIMENSION" ? "dim" : "gold"}_${(obj?.name || "model").toLowerCase()}`,
+      ) || "";
+    if (!target) return;
+    const split = (v: string | null) =>
+      (v || "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    const grain = split(
+      prompt("Grain columns (comma separated). Required for FACT.", ""),
+    );
+    const business_keys = split(
+      prompt(
+        "Business key columns (comma separated). Required for DIMENSION.",
+        "",
+      ),
+    );
+    const dimension_keys = split(
+      prompt("Dimension key columns (comma separated).", ""),
+    );
+    const attributes = split(
+      prompt("Dimension attribute columns (comma separated).", ""),
+    );
+    const measureText =
+      prompt(
+        "Measures as Name:SourceColumn:Aggregation, e.g. SalesAmount:Amount:SUM. Use NONE for non-aggregated fact measures.",
+        "",
+      ) || "";
+    const measures = measureText
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .map((x) => {
+        const [name, source_column, aggregation = "NONE"] = x
+          .split(":")
+          .map((y) => y.trim());
+        return { name, source_column, aggregation: aggregation.toUpperCase() };
+      });
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/semantics`, {
+        method: "POST",
+        body: JSON.stringify({
+          object_id: objectId,
+          semantic_role: role,
+          target_name: target,
+          grain,
+          business_keys,
+          dimension_keys,
+          attributes,
+          measures,
+          scd_type: role === "DIMENSION" ? "1" : null,
+          notes: "Explicitly defined in Medallion Design",
+        }),
+      });
+      setSemantics(await api(`/projects/${pid}/semantics`));
+      return r;
+    });
+  }
+  async function generateMedallion() {
+    if (!pid) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/medallion/generate?environment=DEV`,
+        { method: "POST" },
+      );
+      setMedArts(
+        await api(`/projects/${pid}/medallion/artifacts?environment=DEV`),
+      );
+      setMedallion(
+        await api(`/projects/${pid}/medallion/plan?environment=DEV`),
+      );
+      setMedValidation(
+        await api(`/projects/${pid}/medallion/validation-report?environment=DEV`),
+      );
+      return r;
+    });
+  }
+  async function inspectMedallionArtifact(versionId: string) {
+    if (!pid) return;
+    await action(async () => {
+      const detail: any = await api(
+        `/projects/${pid}/medallion/artifacts/${versionId}`,
+      );
+      setArtifactInspector(detail);
+      return detail;
+    });
+  }
+  async function reviewMedArtifact(versionId: string, status = "APPROVED") {
+    if (!pid) return;
+    await action(async () => {
+      const r = await api(
+        `/projects/${pid}/medallion/artifacts/${versionId}/review`,
+        { method: "POST", body: JSON.stringify({ status, reviewer: "admin" }) },
+      );
+      setMedArts(
+        await api(`/projects/${pid}/medallion/artifacts?environment=DEV`),
+      );
+      return r;
+    });
+  }
+  async function remediateMedArtifact(versionId: string) {
+    if (!pid) return;
+    if (
+      !confirm(
+        "Run the governed repair loop for this failed DEV artifact? A successful repair creates a new validated version but will not approve or deploy it.",
+      )
+    )
+      return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/medallion/artifacts/${versionId}/remediate`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            environment: "DEV",
+            use_ai: true,
+            reviewer: "admin",
+          }),
+        },
+      );
+      setMedArts(
+        await api(`/projects/${pid}/medallion/artifacts?environment=DEV`),
+      );
+      return r;
+    });
+  }
+  async function deployMedallion() {
+    if (!pid) return;
+    if (
+      !confirm(
+        "Deploy APPROVED and validated Medallion artifacts to DEV in Bronze → Silver → Gold order?",
+      )
+    )
+      return;
+    const allowDestructive = confirm(
+      "Existing DEV Bronze data may need replacement. Approve destructive DEV replacement for this run only? Select Cancel to keep replacement blocked.",
+    );
+    await action(async () => {
+      const result: any = await api(`/projects/${pid}/medallion/deploy-dev`, {
+        method: "POST",
+        body: JSON.stringify({
+          allow_destructive: allowDestructive,
+          batch_size: deployBatch,
+          max_rows: deployMaxRows ? Number(deployMaxRows) : null,
+        }),
+      });
+      setMedDeployment(result);
+      if (result?.run_id) {
+        const logResult: any = await api(
+          `/projects/${pid}/medallion/deployments/${result.run_id}/logs`,
+        );
+        setMedLogs(logResult.logs || []);
+      }
+      return result;
+    });
+  }
+  async function copyMedallionLogs() {
+    const logs = medLogs.length ? medLogs : logView;
+    if (!logs.length) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(logs, null, 2));
+      setMsg("Medallion deployment logs copied");
+    } catch {
+      setMsg("Unable to copy logs. Use Download CSV instead.");
+    }
+  }
+  async function downloadMedallionLogs() {
+    if (!pid || !medDeployment?.run_id) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      await downloadApi(
+        `/projects/${pid}/medallion/deployments/${medDeployment.run_id}/logs/download`,
+        `medallion_${medDeployment.run_id}_logs.csv`,
+      );
+      setMsg("Medallion deployment log downloaded");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function refreshAiModels() {
+    await action(async () => {
+      const r: any = await api("/ai/models");
+      setAiModels(r.models || []);
+      setAiProvider((x: any) => ({ ...x, ...r }));
+      return r;
+    });
+  }
+  async function openIssue(i: any) {
+    if (!pid) return;
+    setShowIssueLogs(false);
+    setIssueLogs([]);
+    await action(async () => {
+      const r: any = await api(`/projects/${pid}/issues/${i.id}`);
+      setSelectedIssue(r);
+      return r;
+    });
+  }
+  async function issueAction(kind: "RESOLVE" | "CLOSE" | "REOPEN") {
+    if (!pid || !selectedIssue) return;
+    const comments = prompt(
+      `${kind} issue ${selectedIssue.id} - comments are mandatory`,
+    );
+    if (!comments?.trim()) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/issues/${selectedIssue.id}/action`,
+        {
+          method: "POST",
+          body: JSON.stringify({ action: kind, comments: comments.trim() }),
+        },
+      );
+      setSelectedIssue(r);
+      return r;
+    });
+  }
+  async function recheckIssue() {
+    if (!pid || !selectedIssue) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/issues/${selectedIssue.id}/recheck`,
+        { method: "POST" },
+      );
+      setSelectedIssue(r.issue);
+      setMsg(r.reason || "Re-check completed");
+      return r;
+    });
+  }
+  async function viewIssueLogs() {
+    if (!pid || !selectedIssue) return;
+    await action(async () => {
+      const r: any = await api(
+        `/projects/${pid}/deployments/dev/logs?limit=1000`,
+      );
+      const logs = (r.logs || []).filter(
+        (x: any) =>
+          !selectedIssue.run_id ||
+          x.run_id === selectedIssue.run_id ||
+          x.object_id === selectedIssue.object_id,
+      );
+      setIssueLogs(logs);
+      setShowIssueLogs(true);
+      return r;
+    });
+  }
+  if (!ready) return <Login done={() => setReady(true)} />;
+  const current = projects.find((x) => x.id === pid);
+  const layers = dash.layers || {},
+    types = dash.types || {};
+  const filtered = useMemo(
+    () =>
+      inventory.filter((x) =>
+        (x.schema + "." + x.name + " " + x.type)
+          .toLowerCase()
+          .includes(search.toLowerCase()),
+      ),
+    [inventory, search],
+  );
+  const genericModule = moduleMap[page];
+  const environmentPassed = (environment: string) =>
+    life.find((x) => x.environment === environment)?.status === "PASSED";
+  const medallionNodeCount = Array.isArray(medallion?.nodes)
+    ? medallion.nodes.length
+    : 0;
+  const approvedMedallionArtifacts = medArts.filter(
+    (x: any) =>
+      x.executable &&
+      x.validation_status === "PASSED" &&
+      x.review_status === "APPROVED",
+  ).length;
+  const operationalRecordComplete = (rows: any[]) =>
+    rows.some((row: any) =>
+      ["PASSED", "APPROVED", "COMPLETED", "CLOSED"].includes(
+        String(row?.payload?.status || "").toUpperCase(),
+      ),
+    );
+  const workflowSteps = [
+    {
+      phase: "SETUP",
+      title: "Create or select a project",
+      description: "Choose the project that will own all migration metadata and evidence.",
+      page: "Projects",
+      action: "Create or select the migration project",
+      complete: !!current,
+      evidence: current ? current.name : "No project selected",
+    },
+    {
+      phase: "SETUP",
+      title: "Configure the SQL Server source",
+      description: "Add the source profile and verify the live connection before discovery.",
+      page: "Sources",
+      action: "Configure and verify the SQL Server source",
+      complete: sources.length > 0,
+      evidence: `${sources.length} source profile${sources.length === 1 ? "" : "s"}`,
+    },
+    {
+      phase: "DISCOVER",
+      title: "Run source discovery",
+      description: "Capture tables, views, functions, procedures, columns and dependencies.",
+      page: "Discovery",
+      action: "Capture the source migration inventory",
+      complete: inventory.length > 0,
+      evidence: `${inventory.length} objects discovered`,
+    },
+    {
+      phase: "DESIGN",
+      title: "Review architecture readiness",
+      description: "Review inventory, dependencies, compatibility and selected Medallion layers.",
+      page: "Compatibility",
+      action: "Review migration architecture readiness",
+      complete: environmentPassed("DEV") || (inventory.length > 0 && classes.length > 0 && compat !== null),
+      evidence: compat
+        ? `${compat.deterministic_coverage_pct ?? 0}% deterministic compatibility`
+        : environmentPassed("DEV") ? "Readiness verified in approved release" : "Compatibility review pending",
+    },
+    {
+      phase: "DESIGN",
+      title: "Build the semantic Medallion design",
+      description: "Analyze consumers, approve semantics and build the Bronze/Silver/Gold plan.",
+      page: "Medallion Design",
+      action: "Build the governed Medallion design",
+      complete: environmentPassed("DEV") || (medallionNodeCount > 0 && semantics.some((x: any) => x.status === "APPROVED")),
+      evidence: environmentPassed("DEV")
+        ? "Medallion architecture verified & deployed"
+        : `${medallionNodeCount} planned nodes · ${semantics.filter((x: any) => x.status === "APPROVED").length} approved semantics`,
+    },
+    {
+      phase: "GOVERN",
+      title: "Generate, validate and approve artifacts",
+      description: "Approve only executable artifact versions that passed static validation.",
+      page: "Reviews",
+      action: "Validate and approve deployment artifacts",
+      complete: environmentPassed("DEV") || (medArts.length > 0 && approvedMedallionArtifacts === medArts.length),
+      evidence: environmentPassed("DEV")
+        ? "All deployment artifacts approved & validated"
+        : `${approvedMedallionArtifacts} of ${medArts.length} artifacts approved`,
+    },
+    {
+      phase: "DEV",
+      title: "Deploy and validate DEV",
+      description: "Deploy Medallion DEV, run reconciliation and evaluate the DEV quality gate.",
+      page: environmentPassed("DEV") ? "Lifecycle" : "Deployments",
+      action: "Deploy and validate the DEV release",
+      complete: environmentPassed("DEV"),
+      evidence: environmentPassed("DEV") ? "DEV quality gate passed" : "DEV deployment or validation pending",
+    },
+    {
+      phase: "TEST",
+      title: "Promote and validate TEST",
+      description: "Run TEST precheck, deployment, reconciliation and quality gate.",
+      page: "Waves",
+      action: "Promote the validated DEV release to TEST",
+      complete: environmentPassed("TEST"),
+      evidence: environmentPassed("TEST") ? "TEST quality gate passed" : "TEST promotion pending",
+    },
+    {
+      phase: "UAT",
+      title: "Promote and validate UAT",
+      description: "Run UAT precheck, deployment, reconciliation and quality gate.",
+      page: "Waves",
+      action: "Promote the validated TEST release to UAT",
+      complete: environmentPassed("UAT"),
+      evidence: environmentPassed("UAT") ? "UAT quality gate passed" : "UAT promotion pending",
+    },
+    {
+      phase: "PROD",
+      title: "Promote and validate PROD",
+      description: "Run PROD precheck, deployment, reconciliation and final quality gate.",
+      page: "Waves",
+      action: "Authorize the accepted UAT release for PROD",
+      complete: environmentPassed("PROD"),
+      evidence: environmentPassed("PROD") ? "PROD quality gate passed" : "PROD promotion pending",
+    },
+    {
+      phase: "CLOSE",
+      title: "Complete production cutover",
+      description: "Record consumer switch-over and production acceptance.",
+      page: "Cutover",
+      action: "Record production cutover and consumer acceptance",
+      complete: operationalRecordComplete(workflowOps.cutover || []),
+      evidence: operationalRecordComplete(workflowOps.cutover || []) ? "Cutover completed" : "Cutover record pending",
+    },
+    {
+      phase: "CLOSE",
+      title: "Approve source decommission",
+      description: "Retire the legacy source only after cutover approval and monitoring.",
+      page: "Decommission",
+      action: "Approve retirement of the legacy source",
+      complete: operationalRecordComplete(workflowOps.decommission || []),
+      evidence: operationalRecordComplete(workflowOps.decommission || []) ? "Migration formally closed" : "Decommission approval pending",
+    },
+  ];
+  const nextWorkflowIndex = workflowSteps.findIndex((step) => !step.complete);
+  const workflowComplete = nextWorkflowIndex === -1;
+  const workflowProgress = Math.round(
+    (workflowSteps.filter((step) => step.complete).length / workflowSteps.length) * 100,
+  );
+  const openBlockers = issues.filter(
+    (x: any) => x.status === "OPEN" && x.severity === "BLOCKER",
+  ).length;
+  function addRecord() {
+    if (!pid) return;
+    const title = prompt(`${page} title`);
+    if (!title) return;
+    const status = prompt("Status", "OPEN") || "OPEN";
+    const environment = prompt("Environment (optional)", "DEV") || undefined;
+    action(() =>
+      api(`/projects/${pid}/module/${genericModule}`, {
+        method: "POST",
+        body: JSON.stringify({
+          title,
+          status,
+          environment,
+          details: { created_from_ui: true },
+        }),
+      }),
+    );
+  }
+  const navGroups = [
+    {
+      label: "START & SETUP",
+      items: ["Migration Workflow", "Projects", "Sources", "Environment Setup"],
+    },
+    {
+      label: "DISCOVER & DESIGN",
+      items: [
+        "Discovery",
+        "Inventory",
+        "Dependencies",
+        "Compatibility",
+        "Layer Classification",
+        "Medallion Design",
+      ],
+    },
+    {
+      label: "VALIDATE & RESOLVE",
+      items: ["Reviews", "AI Remediation", "Issues"],
+    },
+    {
+      label: "PROMOTE",
+      items: ["Deployments", "Waves", "Lifecycle"],
+    },
+    {
+      label: "CLOSE",
+      items: ["Cutover", "Decommission"],
+    },
+  ];
+  const displayPage = (name: string) =>
+    name === "Deployments" ? "DEV Deployment" : name;
+  return (
+    <div className={`shell ${collapsed ? "collapsed" : ""}`}>
+      <aside>
+        <div className="brand">
+          <div className="brandmark">MF</div>
+          <div className="brandcopy">
+            <b>Migration Factory</b>
+            <small>Databricks Control Plane</small>
+          </div>
+          <button
+            className="collapse-btn"
+            title={collapsed ? "Expand navigation" : "Collapse navigation"}
+            onClick={() => setCollapsed(!collapsed)}
+          >
+            {collapsed ? (
+              <PanelLeftOpen size={17} />
+            ) : (
+              <PanelLeftClose size={17} />
+            )}
+          </button>
+        </div>
+        <div className="workspace-chip">
+          <span className="live-dot" />
+          <div>
+            <b>Enterprise workspace</b>
+            <small>{current?.name || "No project selected"}</small>
+          </div>
+        </div>
+        <div className="navscroll">
+          {navGroups.map((g) => (
+            <div className="nav-group" key={g.label}>
+              <div className="nav-label">{g.label}</div>
+              {g.items.map((n) => {
+                const I = icons[n] || FileCode2;
+                return (
+                  <button
+                    title={collapsed ? displayPage(n) : undefined}
+                    className={page === n ? "active" : ""}
+                    onClick={() => setPage(n)}
+                    key={n}
+                  >
+                    <I size={17} />
+                    <span>{displayPage(n)}</span>
+                    {page === n && (
+                      <ChevronRight className="nav-arrow" size={14} />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+        <div className="aside-footer">
+          <div className="build-chip">
+            <Sparkles size={14} />
+            <span>Build {BUILD_VERSION}</span>
+          </div>
+          <button
+            className="logout"
+            onClick={() => {
+              localStorage.removeItem("mf_token");
+              setReady(false);
+            }}
+          >
+            <LogOut size={17} />
+            <span>Sign out</span>
+          </button>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div className="header-title">
+            <div className="eyebrow">SQL SERVER → DATABRICKS</div>
+            <h2>{displayPage(page)}</h2>
+            <p>
+              Metadata-first migration orchestration with governed promotion and
+              deterministic validation
+            </p>
+          </div>
+          <div className="header-actions">
+            <div className="command-pill">
+              <Command size={15} />
+              <span>Control plane</span>
+            </div>
+            <button className="icon-btn" title="Notifications">
+              <Bell size={17} />
+            </button>
+            <select value={pid} onChange={(e) => setPid(e.target.value)}>
+              <option value="">Select project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <button className="primary-soft" onClick={refresh}>
+              <RefreshCw className={busy ? "spin" : ""} size={16} />
+              Refresh
+            </button>
+          </div>
+        </header>
+        <section className="content">
+          {msg && (
+            <div className={msg.includes("success") ? "notice ok" : "notice"}>
+              {msg}
+            </div>
+          )}
+          {page === "Migration Workflow" && (
+            <>
+              {/* Governed End-to-End Automated Promotion Card */}
+              {autoPromotionStatus?.preflight && (
+                <div className="prompt-plan-card auto-promotion-card" style={{ marginBottom: 16, border: "1px solid rgba(59, 130, 246, 0.35)", background: "rgba(15, 23, 42, 0.9)" }}>
+                  <div className="promotion-plan-head">
+                    <div>
+                      <small style={{ color: "#60a5fa", fontWeight: 700, letterSpacing: "0.08em" }}>
+                        GOVERNED END-TO-END AUTOMATION PIPELINE
+                      </small>
+                      <h4 style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+                        DEV PASSED → TEST → UAT → PROD
+                        <Badge s={autoPromotionStatus.run?.status || (autoPromotionStatus.preflight.eligible ? "READY" : "BLOCKED")} />
+                      </h4>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {autoPromotionStatus.run?.status === "COMPLETED" && (
+                        <button
+                          className="primary-action"
+                          style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                          onClick={() => setPage("Cutover")}
+                        >
+                          <CheckCircle2 size={15} /> Proceed to Cutover (Step 11) <ChevronRight size={14} />
+                        </button>
+                      )}
+                      {!autoPromotionStatus.run && autoPromotionStatus.preflight.eligible && (
+                        <button
+                          className="primary-action"
+                          style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", border: "none" }}
+                          disabled={busy || autoRunning}
+                          onClick={() => { setAutoAuthText(""); setShowAutoAuthModal(true); }}
+                        >
+                          <Play size={15} /> Authorize Automated Promotion to PROD
+                        </button>
+                      )}
+                      {autoPromotionStatus.run?.status === "RUNNING" && (
+                        <button
+                          className="secondary-action"
+                          disabled={busy || autoRunning || autoPromotionStatus.run?.pause_requested}
+                          onClick={pauseAutomatedPromotion}
+                        >
+                          <Clock3 size={15} /> {autoPromotionStatus.run?.pause_requested ? "Pausing after current environment..." : "Pause After Current Environment"}
+                        </button>
+                      )}
+                      {autoPromotionStatus.is_resumable && (
+                        <button
+                          className="primary-action"
+                          style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                          disabled={busy || autoRunning}
+                          onClick={resumeAutomatedPromotion}
+                        >
+                          <Play size={15} /> Resume from Last Checkpoint
+                        </button>
+                      )}
+                      {autoPromotionStatus.run && !["COMPLETED", "CANCELLED"].includes(autoPromotionStatus.run.status) && (
+                        <button
+                          className="secondary-action"
+                          style={{ borderColor: "rgba(239, 68, 68, 0.4)", color: "#f87171" }}
+                          disabled={busy || autoRunning}
+                          onClick={cancelAutomatedPromotion}
+                        >
+                          Cancel Remaining Promotion
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Impact and Governance Grid */}
+                  <div className="prompt-impact-grid" style={{ marginTop: 12 }}>
+                    <div className="prompt-impact-item">
+                      <span>Approved DEV Release</span>
+                      <b style={{ fontSize: 11, fontFamily: "monospace" }}>{autoPromotionStatus.preflight.release_id || "None"}</b>
+                      <small style={{ color: "#8fa3bf" }}>{autoPromotionStatus.preflight.artifact_count} artifacts verified</small>
+                    </div>
+                    <div className="prompt-impact-item">
+                      <span>Target Catalogs</span>
+                      <b style={{ fontSize: 11 }}>{autoPromotionStatus.preflight.test_catalog} → {autoPromotionStatus.preflight.uat_catalog} → {autoPromotionStatus.preflight.prod_catalog}</b>
+                      <small style={{ color: "#8fa3bf" }}>DEV: {autoPromotionStatus.preflight.dev_catalog}</small>
+                    </div>
+                    <div className="prompt-impact-item">
+                      <span>Bronze Strategy</span>
+                      <b style={{ fontSize: 12, color: "#38bdf8" }}>Native DEEP CLONE</b>
+                      <small style={{ color: "#8fa3bf" }}>DEV → TEST → UAT → PROD</small>
+                    </div>
+                    <div className="prompt-impact-item">
+                      <span>Current Operation</span>
+                      <b style={{ fontSize: 12, color: autoPromotionStatus.run?.status === "FAILED" ? "#f87171" : "#a7f3d0" }}>
+                        {autoPromotionStatus.run?.current_operation || (autoPromotionStatus.preflight.eligible ? "Ready to authorize" : "Blocked by prerequisites")}
+                      </b>
+                      <small style={{ color: "#8fa3bf" }}>
+                        {autoPromotionStatus.run?.last_successful_checkpoint ? `Last checkpoint: ${autoPromotionStatus.run.last_successful_checkpoint}` : "DEV gate PASSED"}
+                      </small>
+                    </div>
+                  </div>
+
+                  {/* Stage Chain Progression */}
+                  <div className="master-stage-chain" style={{ marginTop: 14 }}>
+                    <div className="master-stage">
+                      <span>DEV</span>
+                      <b>DEV Release</b>
+                      <Badge s="PASSED" />
+                      <small>{autoPromotionStatus.preflight.artifact_count} artifacts deployed</small>
+                    </div>
+                    {["TEST", "UAT", "PROD"].map((env) => {
+                      const envData = autoPromotionStatus.run?.environments?.[env] || {};
+                      const isCurrent = autoPromotionStatus.run?.current_environment === env && autoPromotionStatus.run?.status === "RUNNING";
+                      return (
+                        <div className="master-stage" key={env} style={{ borderColor: isCurrent ? "#3b82f6" : undefined, background: isCurrent ? "rgba(59, 130, 246, 0.1)" : undefined }}>
+                          <span>{env}</span>
+                          <b>{env === "PROD" ? "PROD & Validation" : `${env} Promotion`}</b>
+                          <Badge s={envData.status || "PENDING"} />
+                          <small>{envData.attempts ? `Attempt ${envData.attempts}` : (envData.status === "PASSED" ? "Validated ✓" : "Pending")}</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Failure notice */}
+                  {autoPromotionStatus.run?.status === "FAILED" && (
+                    <div className="prompt-exec-error" style={{ marginTop: 12 }}>
+                      <b><ShieldAlert size={15} /> Safe stop at {autoPromotionStatus.run.current_environment}</b>
+                      <span>{autoPromotionStatus.run.errors?.[autoPromotionStatus.run.errors.length - 1]?.message || "Operation failed"}</span>
+                      <small>Downstream environments safely blocked. Correct the issue and click Resume from Last Checkpoint.</small>
+                    </div>
+                  )}
+
+                  {/* Completed celebration banner */}
+                  {autoPromotionStatus.run?.status === "COMPLETED" && (
+                    <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(16, 185, 129, 0.15)", border: "1px solid rgba(16, 185, 129, 0.3)", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ color: "#6ee7b7", fontSize: 13, fontWeight: 600 }}>
+                        ✓ Master workflow completed through PROD with all quality gates passed. All 4 environments are live and reconciled.
+                      </span>
+                      <button onClick={() => setPage("Deployments")} style={{ fontSize: 11, padding: "5px 10px" }}>
+                        View Deployments <ChevronRight size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* One-Time Authorization Modal */}
+              {showAutoAuthModal && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }}>
+                  <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 24, maxWidth: 640, width: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.7)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                      <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 18, color: "#f8fafc" }}>
+                        <ShieldCheck size={22} color="#3b82f6" /> Authorize Automated Promotion to PROD
+                      </h3>
+                      <button onClick={() => setShowAutoAuthModal(false)} style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 18 }}>✕</button>
+                    </div>
+
+                    <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.5, margin: "0 0 16px 0" }}>
+                      This single explicit authorization governs the complete end-to-end promotion chain from DEV through <b>TEST</b>, <b>UAT</b>, and <b>PROD</b>.
+                      Bronze tables are cloned natively via Databricks <code>DEEP CLONE</code>. Silver and Gold views and routines will be catalog-retargeted, deployed, reconciled, and gate-verified automatically in each environment.
+                    </p>
+
+                    <div style={{ background: "#1e293b", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
+                      <div><span style={{ color: "#64748b" }}>Source Project:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.source_project?.name}</b></div>
+                      <div><span style={{ color: "#64748b" }}>Release Manifest:</span> <b style={{ color: "#38bdf8", fontFamily: "monospace" }}>{autoPromotionStatus?.preflight?.release_id}</b></div>
+                      <div><span style={{ color: "#64748b" }}>Artifact Count:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.artifact_count} artifacts</b></div>
+                      <div><span style={{ color: "#64748b" }}>Governance Risk:</span> <b style={{ color: "#fbbf24" }}>HIGH (Production promotion included)</b></div>
+                      <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog} → {autoPromotionStatus?.preflight?.test_catalog} → {autoPromotionStatus?.preflight?.uat_catalog} → {autoPromotionStatus?.preflight?.prod_catalog}</b></div>
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 }}>
+                        Confirmation Required: Type <code>PROMOTE TO PROD</code>
+                      </label>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input
+                          type="text"
+                          value={autoAuthText}
+                          onChange={(e) => setAutoAuthText(e.target.value)}
+                          placeholder="Type PROMOTE TO PROD"
+                          style={{ flex: 1, padding: "8px 12px", background: "#020617", border: "1px solid #475569", borderRadius: 6, color: "#fff", fontSize: 13 }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setAutoAuthText("PROMOTE TO PROD")}
+                          style={{ padding: "8px 12px", background: "#334155", border: "none", borderRadius: 6, color: "#93c5fd", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                        >
+                          Fill "PROMOTE TO PROD"
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowAutoAuthModal(false)}
+                        style={{ padding: "8px 16px", background: "#1e293b", border: "1px solid #475569", borderRadius: 6, color: "#cbd5e1", cursor: "pointer" }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={autoAuthText.trim() !== "PROMOTE TO PROD" || autoRunning}
+                        onClick={() => { setShowAutoAuthModal(false); authorizeAutomatedPromotion(); }}
+                        style={{
+                          padding: "8px 18px",
+                          background: autoAuthText.trim() === "PROMOTE TO PROD" ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "#334155",
+                          border: "none",
+                          borderRadius: 6,
+                          color: autoAuthText.trim() === "PROMOTE TO PROD" ? "#fff" : "#64748b",
+                          fontWeight: 600,
+                          cursor: autoAuthText.trim() === "PROMOTE TO PROD" ? "pointer" : "not-allowed",
+                        }}
+                      >
+                        {autoRunning ? "Starting Automated Promotion..." : "Authorize & Execute Full Chain"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Unified AI Migration Studio */}
+              <div className="prompt-studio master-studio consolidated-studio" style={{ marginBottom: 16 }}>
+                <div className="studio-nav-bar">
+                  <div className="prompt-studio-title">
+                    <Workflow size={20} color="#6ee7b7" />
+                    <div>
+                      <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        AI Migration Studio
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: "rgba(110,231,183,0.18)", color: "#6ee7b7" }}>
+                          Policy Governed
+                        </span>
+                      </h3>
+                      <p>
+                        {workflowStudioTab === "master"
+                          ? "Master End-to-End Orchestrator · SQL Server → DEV → TEST → UAT → PROD with quality gates."
+                          : "Prompt-Native Multi-Layer Design · Versioned Medallion requirements, metadata grounding, and DEV reconcile."}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div className="studio-tab-group">
+                      <button
+                        type="button"
+                        className={`studio-tab-btn ${workflowStudioTab === "master" ? "active" : ""}`}
+                        onClick={() => setWorkflowStudioTab("master")}
+                      >
+                        <Workflow size={13} /> Master Orchestration (DEV → PROD)
+                      </button>
+                      <button
+                        type="button"
+                        className={`studio-tab-btn ${workflowStudioTab === "native" ? "active" : ""}`}
+                        onClick={() => setWorkflowStudioTab("native")}
+                      >
+                        <Sparkles size={13} /> Prompt-Native Design (Release 7)
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="studio-toggle-btn"
+                      onClick={() => setShowStudio(!showStudio)}
+                      title={showStudio ? "Minimize studio to focus on workflow" : "Expand studio controls"}
+                    >
+                      {showStudio ? "▲ Minimize Studio" : "▼ Open Studio"}
+                    </button>
+                  </div>
+                </div>
+
+                {showStudio && (
+                  <>
+                    {workflowStudioTab === "master" ? (
+                      <>
+                        <div className="prompt-input-row">
+                          <input
+                            value={masterPrompt}
+                            onChange={(e) => {
+                              setMasterPrompt(e.target.value);
+                              setPromptText(e.target.value);
+                            }}
+                            placeholder="Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks"
+                            disabled={busy || masterRunning || promptRunning}
+                          />
+                          <button
+                            className="primary-action"
+                            disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
+                            onClick={() => generateMasterPlan()}
+                            title="Generate full end-to-end master plan"
+                          >
+                            <Command size={15} /> Generate Master Plan
+                          </button>
+                          <button
+                            type="button"
+                            className="prompt-secondary-btn"
+                            disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
+                            onClick={() => generatePromptPlan(masterPrompt)}
+                            title="Generate DEV-scoped plan only"
+                          >
+                            <Sparkles size={14} color="#9ec0ff" /> DEV Plan
+                          </button>
+                        </div>
+
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                          <div className="prompt-quick-chips" style={{ marginTop: 0 }}>
+                            <span style={{ fontSize: 10, color: "#7b91b0", alignSelf: "center" }}>Quick templates:</span>
+                            {[
+                              { label: "End-to-End (DEV → PROD)", text: "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks", isMaster: true },
+                              { label: "DEV Migration", text: "Migrate MigrationDemo from SQL Server to DEV Databricks", isMaster: false },
+                              { label: "Load into DEV Bronze", text: "Load MigrationDemo into DEV Bronze", isMaster: false },
+                            ].map((tpl) => (
+                              <button
+                                key={tpl.label}
+                                type="button"
+                                className="prompt-chip"
+                                disabled={busy || masterRunning || promptRunning}
+                                onClick={() => {
+                                  setMasterPrompt(tpl.text);
+                                  setPromptText(tpl.text);
+                                  if (tpl.isMaster) {
+                                    generateMasterPlan(tpl.text);
+                                  } else {
+                                    generatePromptPlan(tpl.text);
+                                  }
+                                }}
+                              >
+                                {tpl.label}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="master-safety-line" style={{ marginTop: 0 }}>
+                            <ShieldCheck size={13} /> AI repairs eligible artifacts; deterministic validation and quality gates control every promotion.
+                          </div>
+                        </div>
+
+                        {/* Consolidated Plan Card */}
+                        {(masterPlan || promptPlan) && (() => {
+                          const activePlan = masterPlan || promptPlan;
+                          const isMaster = Boolean(masterPlan);
+                          const isBlocked = activePlan.status === "NEEDS_USER_INPUT";
+                          const tableCount = masterPlan?.impact?.table_count ?? promptPlan?.impact?.table_count ?? 0;
+                          const estimatedRows = masterPlan?.impact?.estimated_rows ?? promptPlan?.impact?.estimated_rows ?? 0;
+                          const riskLevel = masterPlan?.impact?.risk_level || promptPlan?.impact?.risk_level || "MEDIUM";
+                          const hasReusableBronze = Boolean(promptPlan?.impact?.bronze_checkpoint?.reusable);
+                          const sourceDb = activePlan.source?.database_name || "MigrationDemo";
+                          const targetLabel = isMaster ? "Databricks PROD" : (promptPlan?.intent?.target_catalog || "DEV Databricks");
+
+                          return (
+                            <div className="prompt-plan-card master-plan-card" style={{ marginTop: 14 }}>
+                              {isBlocked ? (
+                                <div className="promotion-blocked">
+                                  <b><ShieldAlert size={16} /> Migration workflow prerequisites required</b>
+                                  <ul>
+                                    {(activePlan.blockers || []).map((item: string, index: number) => (
+                                      <li key={index}>{item}</li>
+                                    ))}
+                                  </ul>
+                                  {activePlan.actionable_steps?.[0] && (
+                                    <small><strong>Next action:</strong> {activePlan.actionable_steps[0]}</small>
+                                  )}
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="promotion-plan-head">
+                                    <div>
+                                      <small>{isMaster ? "AUTHORIZED ENVIRONMENT CHAIN" : "GOVERNED MIGRATION PLAN"}</small>
+                                      <h4>
+                                        {sourceDb} → {targetLabel}
+                                        <Badge s={activePlan.status} />
+                                      </h4>
+                                    </div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      {isMaster && (["PENDING_APPROVAL", "FAILED", "PAUSED"].includes(masterPlan.status)) && (
+                                        <button
+                                          className="primary-action master-execute-button"
+                                          disabled={busy || masterRunning}
+                                          onClick={executeMasterPlan}
+                                        >
+                                          <Play size={15} />
+                                          {masterPlan.status === "PENDING_APPROVAL"
+                                            ? "Authorize & Run Full Migration (DEV → PROD)"
+                                            : "Resume from Last Checkpoint"}
+                                        </button>
+                                      )}
+                                      {!isMaster && promptPlan?.status === "PENDING_APPROVAL" && (
+                                        <button
+                                          className="primary-action"
+                                          style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                                          disabled={busy || promptRunning || tableCount < 1}
+                                          onClick={executePromptPlan}
+                                        >
+                                          <Play size={15} /> Approve & Execute DEV Migration
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="prompt-impact-grid">
+                                    <div className="prompt-impact-item">
+                                      <span>Source tables</span>
+                                      <b>{tableCount}</b>
+                                    </div>
+                                    <div className="prompt-impact-item">
+                                      <span>Estimated rows</span>
+                                      <b>{estimatedRows}</b>
+                                      {hasReusableBronze && (
+                                        <small style={{ color: "#6ee7b7", display: "block", marginTop: 2 }}>Verified checkpoint reusable</small>
+                                      )}
+                                    </div>
+                                    <div className="prompt-impact-item">
+                                      <span>Governance & Risk</span>
+                                      <b style={{ color: riskLevel === "LOW" ? "#34d399" : "#fbbf24" }}>{riskLevel}</b>
+                                      <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>
+                                        {isMaster ? (masterPlan.authorization ? "Authorization: GRANTED" : "One-time authorization") : "DEV Medallion plan"}
+                                      </small>
+                                    </div>
+                                    <div className="prompt-impact-item">
+                                      <span>Target Platform</span>
+                                      <b style={{ fontSize: 13 }}>{isMaster ? "DEV → TEST → UAT → PROD" : (promptPlan?.intent?.target_catalog || "DEV")}</b>
+                                      <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>bronze, silver, gold schemas</small>
+                                    </div>
+                                  </div>
+
+                                  {/* Environment Chain Progression */}
+                                  {masterPlan?.stages && (
+                                    <div className="master-stage-chain">
+                                      {masterPlan.stages.map((stage: any) => {
+                                        const checkpoint = masterPlan.checkpoints?.[stage.stage] || {};
+                                        return (
+                                          <div className="master-stage" key={stage.stage}>
+                                            <span>{stage.environment}</span>
+                                            <b>{stage.title}</b>
+                                            <Badge s={checkpoint.status || "PENDING"} />
+                                            <small>{checkpoint.attempts || 0} / {checkpoint.max_attempts || 3} attempt(s)</small>
+                                            {checkpoint.retry_renewals > 0 && (
+                                              <small>Retries renewed after approved SQL changed · {checkpoint.total_attempts} total</small>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+
+                                  {/* Collapsible Granular DEV Pipeline Steps and Mapping Details */}
+                                  {(promptPlan?.stages?.length > 0 || promptPlan?.destinations?.length > 0) && (
+                                    <details style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 8 }}>
+                                      <summary className="details-toggle">
+                                        <ChevronRight size={13} /> View granular DEV pipeline stages & source-to-target mapping ({promptPlan?.destinations?.length || 0} tables)
+                                      </summary>
+                                      {promptPlan?.stages?.length > 0 && (
+                                        <div className="prompt-stages-list" style={{ marginTop: 8 }}>
+                                          {promptPlan.stages.map((st: any) => (
+                                            <div key={st.stage} className="prompt-stage-pill">
+                                              <b>{st.title}</b>
+                                              <small>{st.description}</small>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {promptPlan?.destinations?.length > 0 && (
+                                        <div className="prompt-dest-table">
+                                          <table>
+                                            <thead>
+                                              <tr>
+                                                <th>Source Object</th>
+                                                <th>Bronze Target</th>
+                                                <th>Silver Target</th>
+                                                <th>Gold Target</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {promptPlan.destinations.map((d: any) => (
+                                                <tr key={d.source_fqn}>
+                                                  <td><code>{d.source_fqn}</code></td>
+                                                  <td><code>{d.bronze}</code></td>
+                                                  <td><code>{d.silver}</code></td>
+                                                  <td><code>{d.gold}</code></td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </details>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Consolidated Execution Status Card */}
+                        {(masterExecution || promptExecution) && (() => {
+                          const exec = masterExecution || promptExecution;
+                          const isMaster = Boolean(masterExecution);
+                          const failedStage = masterExecution?.failed_stage || promptExecution?.failed_stage;
+                          const errorMsg = masterExecution?.error || promptExecution?.error;
+                          const nextAction = masterExecution?.errors?.[0]?.recommended_action || promptExecution?.errors?.[0]?.recommended_action;
+
+                          return (
+                            <div className="prompt-exec-card master-execution-card" style={{ marginTop: 14 }}>
+                              <div className="promotion-exec-head">
+                                <div>
+                                  <small style={{ color: "#8fa3bf", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                                    {isMaster ? `MASTER RUN ${masterExecution.run_id}` : `EXECUTION RUN ${promptExecution.run_id}`}
+                                  </small>
+                                  <b style={{ display: "block", marginTop: 2, fontSize: 13 }}>
+                                    {isMaster ? "SQL Server → Databricks PROD" : `SQL Server → ${promptPlan?.intent?.target_catalog || "DEV Databricks"}`}
+                                  </b>
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <Badge s={exec.status} />
+                                  {promptExecution?.ended_at && (
+                                    <small style={{ color: "#6b7280" }}>
+                                      Completed at {formatTimeOnly(promptExecution.ended_at)}
+                                    </small>
+                                  )}
+                                  {exec.status === "COMPLETED" && (
+                                    <button
+                                      onClick={() => setPage("Deployments")}
+                                      style={{ fontSize: 11, padding: "5px 9px" }}
+                                    >
+                                      View Deployments <ChevronRight size={13} />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Stage Progression Pills */}
+                              {isMaster && masterExecution.stages && (
+                                <div className="prompt-exec-stages master-exec-stages" style={{ marginTop: 10 }}>
+                                  {Object.entries(masterExecution.stages).map(([name, stage]: [string, any]) => (
+                                    <div className="prompt-exec-step" key={name}>
+                                      <span>{name}</span>
+                                      <Badge s={stage.status} />
+                                      <small>{stage.checkpoint_reused ? "checkpoint reused" : `attempt ${stage.attempts || 1}`}</small>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {!isMaster && promptExecution?.stages && (
+                                <div className="prompt-exec-stages" style={{ marginTop: 10 }}>
+                                  {Object.entries(promptExecution.stages).map(([k, v]: [string, any]) => (
+                                    <div key={k} className="prompt-exec-step">
+                                      <span style={{ display: "block", fontSize: 9, color: "#6b7280", textTransform: "uppercase" }}>{k}</span>
+                                      <Badge s={v.status || "PASSED"} />
+                                      {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
+                                      {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
+                                      {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
+                                      {v.rows_transferred !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.rows_transferred} rows</small>}
+                                      {v.checkpoint_reused && <small style={{ display: "block", marginTop: 2 }}>verified checkpoint reused</small>}
+                                      {v.error && <small className="prompt-stage-error">{v.error}</small>}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Unified Safe Stop / Failure Notice */}
+                              {exec.status === "FAILED" && (
+                                <div className="prompt-exec-error" style={{ marginTop: 10 }}>
+                                  <b><ShieldAlert size={15} /> Safe stop: {failedStage || "PIPELINE_GATE"}</b>
+                                  <span>{errorMsg || "The migration pipeline stopped at a governed checkpoint."}</span>
+                                  {nextAction && (
+                                    <small><strong>Next action:</strong> {nextAction}</small>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </>
+                    ) : (
+                      <>
+                        <div className="prompt-studio-head" style={{ marginTop: 6 }}>
+                          <div>
+                            <p style={{ margin: 0, color: "#9bb8c1", fontSize: 11 }}>
+                              Release 7 · Versioned requirements, metadata grounding, clarification loop, plan approval, target validation, and DEV reconcile.
+                            </p>
+                          </div>
+                          <span className="prompt-badge"><ShieldCheck size={12} /> No invented metadata</span>
+                        </div>
+                        <textarea
+                          value={promptNativeText}
+                          onChange={(event) => setPromptNativeText(event.target.value)}
+                          rows={6}
+                          disabled={busy}
+                          style={{ width: "100%", resize: "vertical", marginTop: 8 }}
+                          placeholder="Describe the exact Bronze, Silver, and Gold artifacts required."
+                        />
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                          <button className="primary-action" disabled={!pid || busy || !promptNativeText.trim()} onClick={submitPromptSpecification}>
+                            <Command size={15} /> Parse and Ground Prompt
+                          </button>
+                          {promptSpec?.status === "PENDING_PLAN_APPROVAL" && (
+                            <button className="primary-action" disabled={busy} onClick={approvePromptSpecification}><ShieldCheck size={14} /> Approve Exact Plan</button>
+                          )}
+                          {promptSpec?.status === "PLAN_APPROVED" && (
+                            <button className="primary-action" disabled={busy} onClick={generatePromptArtifacts}><Sparkles size={14} /> Generate Artifacts</button>
+                          )}
+                          {["VALIDATING", "TARGET_VALIDATION_FAILED"].includes(promptSpec?.status) && (
+                            <button className="primary-action" disabled={busy} onClick={validatePromptArtifacts}><ShieldCheck size={14} /> Validate in Databricks</button>
+                          )}
+                          {promptSpec?.status === "PENDING_ARTIFACT_REVIEW" && (
+                            <button className="primary-action" disabled={busy} onClick={approveAllPromptArtifacts}><ShieldCheck size={14} /> Approve Current Artifacts</button>
+                          )}
+                          {["ARTIFACTS_APPROVED", "DEV_DEPLOYMENT_FAILED"].includes(promptSpec?.status) && (
+                            <button className="primary-action" disabled={busy} onClick={deployPromptArtifacts}><Play size={14} /> Deploy and Reconcile DEV</button>
+                          )}
+                        </div>
+
+                        {promptSpec && (
+                          <div className="prompt-plan-card" style={{ marginTop: 14 }}>
+                            <div className="promotion-plan-head">
+                              <div>
+                                <small>SPECIFICATION {promptSpec.version} · SNAPSHOT {String(promptSpec.metadata_snapshot_id || "").slice(-10)}</small>
+                                <h4>Prompt-native plan <Badge s={promptSpec.status} /></h4>
+                              </div>
+                              <small>{promptSpec.artifacts?.length || 0} requested artifacts</small>
+                            </div>
+
+                            {promptSpec.clarifications?.some((question: any) => question.status === "OPEN") && (
+                              <div className="promotion-blocked" style={{ marginTop: 10 }}>
+                                <b><ShieldAlert size={16} /> Focused clarification required</b>
+                                {(promptSpec.clarifications || []).filter((question: any) => question.status === "OPEN").map((question: any) => (
+                                  <label key={question.key} style={{ display: "grid", gap: 5, marginTop: 10 }}>
+                                    <span>{question.question}</span>
+                                    <select
+                                      value={promptAnswers[question.key] || ""}
+                                      onChange={(event) => setPromptAnswers({ ...promptAnswers, [question.key]: event.target.value })}
+                                    >
+                                      <option value="">Select an approved answer</option>
+                                      {(question.choices || []).map((choice: string) => <option key={choice} value={choice}>{choice}</option>)}
+                                    </select>
+                                  </label>
+                                ))}
+                                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                                  <button
+                                    className="prompt-secondary-btn"
+                                    type="button"
+                                    onClick={() => {
+                                      const defaults: Record<string, string> = {
+                                        completed_order_value: "COMPLETED",
+                                        customer_sales_target: "customer_sales_derived",
+                                        order_summary_target: "order_summary_derived",
+                                        dimension_scd_type: "TYPE_1",
+                                        fact_sales_grain: "ORDER_ITEM",
+                                      };
+                                      setPromptAnswers(Object.fromEntries(promptSpec.clarifications.filter((question: any) => question.status === "OPEN").map((question: any) => [question.key, defaults[question.key] || question.choices?.[0] || ""])));
+                                    }}
+                                  >Use recommended defaults</button>
+                                  <button
+                                    className="primary-action"
+                                    disabled={busy || promptSpec.clarifications.filter((question: any) => question.status === "OPEN").some((question: any) => !promptAnswers[question.key])}
+                                    onClick={answerPromptClarifications}
+                                  >Save Answers and Re-ground</button>
+                                </div>
+                              </div>
+                            )}
+
+                            {promptSpecPlan?.layers && (
+                              <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                                {(["BRONZE", "SILVER", "GOLD"] as const).map((layer) => (
+                                  <details key={layer} open={layer !== "BRONZE"}>
+                                    <summary className="details-toggle">{layer} · {promptSpecPlan.layers[layer]?.length || 0} artifact(s)</summary>
+                                    <div className="prompt-dest-table">
+                                      <table>
+                                        <thead><tr><th>Artifact</th><th>Type</th><th>Grounding</th><th>Dependencies</th><th>Assumptions</th></tr></thead>
+                                        <tbody>
+                                          {(promptSpecPlan.layers[layer] || []).map((item: any) => (
+                                            <tr key={item.request_id}>
+                                              <td><code>{item.name}</code><small style={{ display: "block" }}>{item.purpose}</small></td>
+                                              <td>{item.type}</td>
+                                              <td><Badge s={item.grounding_status} /></td>
+                                              <td>{item.dependencies?.join(", ") || "—"}</td>
+                                              <td>{item.assumptions?.join("; ") || "—"}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </details>
+                                ))}
+                              </div>
+                            )}
+
+                            {promptSpecTrace?.requirements?.length > 0 && (
+                              <details style={{ marginTop: 12 }} open>
+                                <summary className="details-toggle">Requirement-to-artifact evidence</summary>
+                                <div className="prompt-dest-table">
+                                  <table>
+                                    <thead><tr><th>Requirement</th><th>Target</th><th>Version</th><th>Validation</th><th>Executable</th><th>Review</th></tr></thead>
+                                    <tbody>
+                                      {promptSpecTrace.requirements.map((item: any) => (
+                                        <tr key={item.request_id}>
+                                          <td>{item.request_id}</td><td><code>{item.target_fqn}</code></td><td>{item.artifact_version}</td>
+                                          <td><Badge s={item.validation_status || "NOT_RUN"} /></td>
+                                          <td><Badge s={item.executable ? "YES" : "NO"} /></td>
+                                          <td><Badge s={item.review_status || "PENDING"} /></td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="workflow-hero">
+                <div>
+                  <div className="hero-kicker"><Workflow size={15} /> Guided migration journey</div>
+                  <h1>{current?.name || "Start your SQL Server migration"}</h1>
+                  <p>
+                    Follow one governed path from project setup through PROD validation, cutover and source retirement.
+                    Existing migration functions remain on their original pages.
+                  </p>
+                  <div className="workflow-next">
+                    <span>{workflowComplete ? "WORKFLOW COMPLETE" : "CURRENT REQUIRED OPERATION"}</span>
+                    <b>{workflowComplete ? "Migration formally closed" : workflowSteps[nextWorkflowIndex]?.title}</b>
+                    {!workflowComplete && (
+                      <button onClick={() => setPage(workflowSteps[nextWorkflowIndex].page)}>
+                        {workflowSteps[nextWorkflowIndex].action} <ChevronRight size={15} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="workflow-progress">
+                  <strong>{workflowProgress}%</strong>
+                  <span>overall progress</span>
+                  <div><i style={{ width: `${workflowProgress}%` }} /></div>
+                  <small>{workflowSteps.filter((step) => step.complete).length} of {workflowSteps.length} stages completed</small>
+                </div>
+              </div>
+              {openBlockers > 0 && (
+                <div className="workflow-blocker">
+                  <ShieldAlert size={18} />
+                  <div><b>{openBlockers} open blocker issue{openBlockers === 1 ? "" : "s"}</b><span>Resolve these before the next governed deployment gate.</span></div>
+                  <button onClick={() => setPage("Issues")}>Open Issues</button>
+                </div>
+              )}
+              <div className="workflow-layout">
+                <Panel title="Start-to-finish workflow">
+                  <div className="workflow-list">
+                    {workflowSteps.map((step, index) => {
+                      const state = step.complete ? "complete" : index === nextWorkflowIndex ? "current" : "locked";
+                      return (
+                        <div className={`workflow-step ${state}`} key={step.title}>
+                          <div className="workflow-step-marker">
+                            {step.complete ? <CheckCircle2 size={18} /> : <span>{index + 1}</span>}
+                          </div>
+                          <div className="workflow-step-copy">
+                            <small>{step.phase}</small>
+                            <b>{step.title}</b>
+                            <p>{step.description}</p>
+                            <em>{step.evidence}</em>
+                          </div>
+                          <div className="workflow-step-action">
+                            <Badge s={step.complete ? "PASSED" : state === "current" ? "IN_PROGRESS" : "LOCKED"} />
+                            <button disabled={state === "locked"} onClick={() => setPage(step.page)}>
+                              {step.complete ? "Review completion evidence" : step.action} <ChevronRight size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Panel>
+                <div className="workflow-side">
+                  <Panel title="Environment gates">
+                    <div className="workflow-gates">
+                      {life.map((x) => (
+                        <div key={x.environment}>
+                          <span>{x.environment}</span><Badge s={x.status} />
+                          <small>{x.pass_count} passed · {x.fail_count} failed · {x.review_blockers} blockers</small>
+                        </div>
+                      ))}
+                    </div>
+                  </Panel>
+                  <Panel title="How to use this page">
+                    <div className="workflow-help">
+                      <p><b>1.</b> Complete the highlighted current step.</p>
+                      <p><b>2.</b> Return here after the action finishes.</p>
+                      <p><b>3.</b> Click Refresh to load the latest evidence.</p>
+                      <p><b>4.</b> Future steps unlock in sequence.</p>
+                    </div>
+                    <div className="notice">
+                      This project uses the Semantic Medallion path. Legacy Mappings, Conversion Plans, Artifacts and Deploy Approved to DEV are not part of this guided journey.
+                    </div>
+                  </Panel>
+                </div>
+              </div>
+            </>
+          )}
+          {page === "Dashboard" && (
+            <>
+              <div className="dashboard-hero">
+                <div>
+                  <div className="hero-kicker">
+                    <Sparkles size={15} /> Enterprise migration command center
+                  </div>
+                  <h1>{current?.name || "Select a migration project"}</h1>
+                  <p>
+                    Discover, assess, transform, validate and promote SQL Server
+                    workloads into governed Databricks medallion architecture.
+                  </p>
+                  <div className="hero-actions">
+                    <button
+                      className="hero-primary"
+                      onClick={() => setPage("Discovery")}
+                    >
+                      <Play size={15} />
+                      Open discovery
+                    </button>
+                    <button onClick={() => setPage("Lifecycle")}>
+                      <Workflow size={15} />
+                      View lifecycle
+                    </button>
+                  </div>
+                </div>
+                <div className="readiness-orb">
+                  <div className="orb-ring">
+                    <span>
+                      {life.filter((x) => x.status === "PASSED").length}
+                    </span>
+                    <small>/ {life.length || 4}</small>
+                  </div>
+                  <b>Environments ready</b>
+                  <small>Project-scoped gate evidence</small>
+                </div>
+              </div>
+              <div className="cards">
+                <Card
+                  n={dash.objects_discovered || 0}
+                  t="Objects discovered"
+                  icon="objects"
+                />
+                <Card n={types.TABLE || 0} t="Tables" icon="tables" />
+                <Card n={types.VIEW || 0} t="Views" icon="views" />
+                <Card
+                  n={types.PROCEDURE || 0}
+                  t="Procedures"
+                  icon="procedures"
+                />
+                <Card
+                  n={dash.blocked_objects || 0}
+                  t="Blocked"
+                  icon="blocked"
+                />
+              </div>
+              <div className="grid2">
+                <Panel title="Medallion architecture">
+                  <div className="section-caption">
+                    Recommended and selected target-layer distribution
+                  </div>
+                  <div className="layerflow">
+                    <Layer t="SOURCE" n={dash.objects_discovered || 0} />
+                    <ChevronRight />
+                    <Layer t="BRONZE" n={layers.BRONZE || 0} />
+                    <ChevronRight />
+                    <Layer t="SILVER" n={layers.SILVER || 0} />
+                    <ChevronRight />
+                    <Layer t="GOLD" n={layers.GOLD || 0} />
+                  </div>
+                </Panel>
+                <Panel title="Environment readiness">
+                  <div className="section-caption">
+                    Independent quality-gate status by environment
+                  </div>
+                  <div className="life">
+                    {life.map((x) => (
+                      <div key={x.environment}>
+                        <div className="env-name">
+                          <span
+                            className={`env-dot ${String(x.status).toLowerCase()}`}
+                          />
+                          <b>{x.environment}</b>
+                        </div>
+                        <Badge s={x.status} />
+                        <span>
+                          {x.pass_count} pass / {x.fail_count} fail
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </Panel>
+              </div>
+              <div className="grid3 dashboard-bottom">
+                <div className="insight-card">
+                  <ServerCog />
+                  <div>
+                    <span>Source estate</span>
+                    <b>
+                      {sources.length} connection profile
+                      {sources.length === 1 ? "" : "s"}
+                    </b>
+                    <small>{inventory.length} inventory objects captured</small>
+                  </div>
+                  <ArrowUpRight size={17} />
+                </div>
+                <div className="insight-card">
+                  <FileCheck2 />
+                  <div>
+                    <span>Generated estate</span>
+                    <b>{artifacts.length} versioned artifacts</b>
+                    <small>{reviews.length} review records</small>
+                  </div>
+                  <ArrowUpRight size={17} />
+                </div>
+                <div className="insight-card">
+                  <Gauge />
+                  <div>
+                    <span>Quality posture</span>
+                    <b>
+                      {issues.length
+                        ? `${issues.length} open issue${issues.length === 1 ? "" : "s"}`
+                        : "No recorded issues"}
+                    </b>
+                    <small>{dash.blocked_objects || 0} blocking objects</small>
+                  </div>
+                  <ArrowUpRight size={17} />
+                </div>
+              </div>
+            </>
+          )}
+          {page === "Runbook" && (
+            <>
+              <Panel title="User runbook · end-to-end operating model">
+                <div className="runbook-grid">
+                  <div className="runbook-role">
+                    <UserCog size={18} />
+                    <b>1. Administrator</b>
+                    <span>
+                      Configure .env, create admin, start backend/frontend, and
+                      verify SQL Server plus Databricks connectivity.
+                    </span>
+                  </div>
+                  <div className="runbook-arrow">→</div>
+                  <div className="runbook-role">
+                    <Database size={18} />
+                    <b>2. Migration Engineer</b>
+                    <span>
+                      Create project/source, run Discovery, then inspect
+                      Inventory and Dependencies.
+                    </span>
+                  </div>
+                  <div className="runbook-arrow">→</div>
+                  <div className="runbook-role">
+                    <Route size={18} />
+                    <b>3. Architect / Data Engineer</b>
+                    <span>
+                      Run Assessment, Layer Classification, Mappings, Conversion
+                      Plans, and executable artifact generation.
+                    </span>
+                  </div>
+                  <div className="runbook-arrow">→</div>
+                  <div className="runbook-role">
+                    <ClipboardCheck size={18} />
+                    <b>4. Reviewer / Approver</b>
+                    <span>
+                      Static validate the latest version and approve only the
+                      version intended for deployment.
+                    </span>
+                  </div>
+                  <div className="runbook-arrow">→</div>
+                  <div className="runbook-role">
+                    <ServerCog size={18} />
+                    <b>5. DEV Operator</b>
+                    <span>
+                      Test Databricks → DEV Precheck → Deploy Approved to DEV →
+                      Resume Failed Run when required.
+                    </span>
+                  </div>
+                  <div className="runbook-arrow">→</div>
+                  <div className="runbook-role">
+                    <Gauge size={18} />
+                    <b>6. Validator</b>
+                    <span>
+                      Run Reconciliation and Data Quality checks. Resolve
+                      blocking issues with evidence.
+                    </span>
+                  </div>
+                  <div className="runbook-arrow">→</div>
+                  <div className="runbook-role">
+                    <ShieldCheck size={18} />
+                    <b>7. Release Approver</b>
+                    <span>
+                      Evaluate DEV Gate, confirm Lifecycle evidence, then
+                      independently promote to TEST/UAT/PROD.
+                    </span>
+                  </div>
+                </div>
+              </Panel>
+              <Panel title="Quick-start block diagram">
+                <pre className="runbook-block">{`[VS Code]
+    │
+    ├─ Terminal 1 → backend/.venv → Uvicorn :8010
+    └─ Terminal 2 → frontend → npm run dev :5173/5174
+                  │
+                  ▼
+[Login / Select Project]
+                  │
+                  ▼
+[SQL Server Source] → [Test Connection] → [Discovery]
+                  │                         │
+                  │                         ▼
+                  └──────────────────→ [Inventory + Dependencies]
+                                            │
+                                            ▼
+[Assessment] → [Layer Classification] → [Mappings]
+                                            │
+                                            ▼
+[Conversion Plans] → [Artifacts] → [Static Validation]
+                                            │
+                                            ▼
+                                  [Review / Approval]
+                                            │
+                                            ▼
+[Test Databricks] → [DEV Precheck] → [Deploy Approved]
+                                            │
+                                  ┌─────────┴─────────┐
+                                  ▼                   ▼
+                           [Execution Logs]      [Resume Failed]
+                                  │
+                                  ▼
+                         [Reconciliation / DQ]
+                                  │
+                                  ▼
+                          [Evaluate DEV Gate]
+                                  │
+                                  ▼
+                    [Lifecycle → TEST → UAT → PROD]`}</pre>
+              </Panel>
+            </>
+          )}
+          {page === "Projects" && (
+            <Panel
+              title="Migration projects"
+              actions={
+                <button
+                  onClick={() => {
+                    const name = prompt("Project name");
+                    if (name)
+                      action(() =>
+                        api("/projects", {
+                          method: "POST",
+                          body: JSON.stringify({ name }),
+                        }),
+                      );
+                  }}
+                >
+                  <Plus size={15} />
+                  New project
+                </button>
+              }
+            >
+              {projects.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Status</th>
+                      <th>ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {projects.map((p) => (
+                      <tr
+                        key={p.id}
+                        className={p.id === pid ? "selected-row" : ""}
+                        onClick={() => setPid(p.id)}
+                      >
+                        <td>{p.name}</td>
+                        <td>
+                          <Badge s={p.status} />
+                        </td>
+                        <td>{p.id}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="No migration project exists yet. Click New project." />
+              )}
+            </Panel>
+          )}
+          {page === "Sources" && (
+            <Panel
+              title={`Sources${current ? " · " + current.name : ""}`}
+              actions={
+                <button
+                  disabled={!pid}
+                  onClick={() => {
+                    const profile = prompt("Profile name", "SQLServer1");
+                    const server =
+                      profile && prompt("SQL Server / instance", "localhost");
+                    const db = server && prompt("Database name");
+                    if (profile && server && db)
+                      action(() =>
+                        api(`/projects/${pid}/sources`, {
+                          method: "POST",
+                          body: JSON.stringify({
+                            profile_name: profile,
+                            server_name: server,
+                            database_name: db,
+                          }),
+                        }),
+                      );
+                  }}
+                >
+                  <Plus size={15} />
+                  Add source
+                </button>
+              }
+            >
+              {sources.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Profile</th>
+                      <th>Server</th>
+                      <th>Database</th>
+                      <th>Connection</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sources.map((s) => (
+                      <tr key={s.id}>
+                        <td>{s.profile_name}</td>
+                        <td>{s.server_name}</td>
+                        <td>{s.database_name}</td>
+                        <td>
+                          <SourceConnectorControl projectId={pid} source={s} />
+                          <button
+                            onClick={() =>
+                              action(async () => {
+                                const r: any = await api(
+                                  `/projects/${pid}/sources/${s.id}/test`,
+                                  { method: "POST" },
+                                );
+                                setDiscoveryResult(r);
+                                return r;
+                              })
+                            }
+                          >
+                            <PlugZap size={14} />
+                            Test
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="Add a SQL Server source connection profile to this project." />
+              )}
+              {discoveryResult && (
+                <pre>{JSON.stringify(discoveryResult, null, 2)}</pre>
+              )}
+            </Panel>
+          )}
+          {page === "Discovery" && (
+            <Panel title="SQL Server discovery">
+              {sources.length ? (
+                <div className="action-list">
+                  {sources.map((s) => (
+                    <div className="action-card" key={s.id}>
+                      <div>
+                        <b>{s.profile_name}</b>
+                        <span>
+                          {s.server_name} / {s.database_name}
+                        </span>
+                      </div>
+                      <div>
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            action(async () => {
+                              const r: any = await api(
+                                `/projects/${pid}/sources/${s.id}/test`,
+                                { method: "POST" },
+                              );
+                              setDiscoveryResult(r);
+                              return r;
+                            })
+                          }
+                        >
+                          <PlugZap size={15} />
+                          Test connection
+                        </button>
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            action(async () => {
+                              const r: any = await api(
+                                `/projects/${pid}/discovery/live/${s.id}`,
+                                { method: "POST" },
+                              );
+                              setDiscoveryResult(r);
+                              return r;
+                            })
+                          }
+                        >
+                          <Play size={15} />
+                          Run discovery
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Empty text="Create a source first. SQL authentication values come from the root .env; if username is blank, Windows Trusted Connection is used." />
+              )}
+              {discoveryResult && (
+                <div className="subsection">
+                  <h4>Last result</h4>
+                  <pre>{JSON.stringify(discoveryResult, null, 2)}</pre>
+                </div>
+              )}
+            </Panel>
+          )}
+          {page === "Inventory" && (
+            <Panel
+              title={`Inventory · ${inventory.length} objects`}
+              actions={
+                <div className="search">
+                  <Search size={15} />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search schema/object/type"
+                  />
+                </div>
+              }
+            >
+              {filtered.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Database</th>
+                      <th>Schema</th>
+                      <th>Object</th>
+                      <th>Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((x) => (
+                      <tr key={x.id}>
+                        <td>{x.database}</td>
+                        <td>{x.schema}</td>
+                        <td>{x.name}</td>
+                        <td>
+                          <Badge s={x.type} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="No discovered objects. Run Discovery first." />
+              )}
+            </Panel>
+          )}
+          {page === "Dependencies" && (
+            <Panel title="Dependencies">
+              {deps.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Object</th>
+                      <th>Referenced object</th>
+                      <th>Column</th>
+                      <th>Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deps.map((d) => (
+                      <tr key={d.id}>
+                        <td>{d.object_name}</td>
+                        <td>
+                          {[
+                            d.referenced_database,
+                            d.referenced_schema,
+                            d.referenced_object,
+                          ]
+                            .filter(Boolean)
+                            .join(".")}
+                        </td>
+                        <td>{d.referenced_column || "-"}</td>
+                        <td>{d.dependency_type}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="No dependency records captured yet." />
+              )}
+            </Panel>
+          )}
+          {page === "Assessment" && (
+            <Panel
+              title="Deterministic assessment"
+              actions={
+                <button
+                  disabled={!pid || busy}
+                  onClick={() =>
+                    action(() =>
+                      api(`/projects/${pid}/assessment/run`, {
+                        method: "POST",
+                      }),
+                    )
+                  }
+                >
+                  <Play size={15} />
+                  Run assessment
+                </button>
+              }
+            >
+              <RecordTable rows={records} />
+            </Panel>
+          )}
+          {page === "Layer Classification" && (
+            <Panel
+              title="Metadata-driven layer classification"
+              actions={
+                <button
+                  disabled={!pid || busy}
+                  onClick={() =>
+                    action(() =>
+                      api(`/projects/${pid}/classification`, {
+                        method: "POST",
+                      }),
+                    )
+                  }
+                >
+                  <Play size={15} />
+                  Classify objects
+                </button>
+              }
+            >
+              {classes.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Object</th>
+                      <th>Type</th>
+                      <th>Recommended</th>
+                      <th>Selected</th>
+                      <th>Confidence</th>
+                      <th>Override</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {classes.map((x) => (
+                      <tr key={x.object_id}>
+                        <td>{x.name}</td>
+                        <td>{x.type}</td>
+                        <td>
+                          <Badge s={x.recommended_layer} />
+                        </td>
+                        <td>
+                          <Badge s={x.selected_layer} />
+                        </td>
+                        <td>{Math.round(x.confidence * 100)}%</td>
+                        <td>
+                          <button
+                            onClick={() => {
+                              const layer = prompt(
+                                "Layer: BRONZE, SILVER or GOLD",
+                                x.selected_layer,
+                              );
+                              const reason = layer && prompt("Override reason");
+                              if (layer && reason)
+                                action(() =>
+                                  api(
+                                    `/projects/${pid}/classification/${x.object_id}`,
+                                    {
+                                      method: "PUT",
+                                      body: JSON.stringify({
+                                        selected_layer: layer,
+                                        user: "admin",
+                                        reason,
+                                      }),
+                                    },
+                                  ),
+                                );
+                            }}
+                          >
+                            Override
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="Run classification after discovery." />
+              )}
+            </Panel>
+          )}
+          {page === "Medallion Design" && (
+            <>
+              <Panel
+                title="Semantic Medallion Factory"
+                actions={
+                  <div className="deploy-actions">
+                    <button disabled={!pid || busy} onClick={analyzeConsumers}>
+                      <GitBranch size={15} />
+                      Analyze consumers
+                    </button>
+                    <button
+                      disabled={!pid || busy}
+                      onClick={inferBusinessSemantics}
+                    >
+                      <Sparkles size={15} />
+                      Infer fact/dimension
+                    </button>
+                    <button disabled={!pid || busy} onClick={buildMedallion}>
+                      <Route size={15} />
+                      Build multi-stage plan
+                    </button>
+                    <button disabled={!pid || busy} onClick={generateMedallion}>
+                      <FileCode2 size={15} />
+                      Generate stage artifacts
+                    </button>
+                    <button
+                      className="primary-action"
+                      disabled={!pid || busy}
+                      onClick={deployMedallion}
+                    >
+                      <Play size={15} />
+                      Deploy Medallion DEV
+                    </button>
+                  </div>
+                }
+              >
+                <div className="medallion-summary">
+                  <div>
+                    <span>SOURCE</span>
+                    <b>{medallion?.counts?.SOURCE || 0}</b>
+                  </div>
+                  <ChevronRight />
+                  <div>
+                    <span>BRONZE</span>
+                    <b>{medallion?.counts?.BRONZE || 0}</b>
+                  </div>
+                  <ChevronRight />
+                  <div>
+                    <span>SILVER</span>
+                    <b>{medallion?.counts?.SILVER || 0}</b>
+                  </div>
+                  <ChevronRight />
+                  <div>
+                    <span>GOLD</span>
+                    <b>{medallion?.counts?.GOLD || 0}</b>
+                  </div>
+                </div>
+                <div className="notice">
+                  Every source table receives explicit Source → Bronze → Silver
+                  lineage. Gold nodes are created only from approved business
+                  semantics; inferred semantics never fabricate KPIs
+                  automatically.
+                </div>
+              </Panel>
+              <Panel title="Release 4 automation & validation">
+                <div className="deployment-summary">
+                  <div className="summary-stat">
+                    <span>Static validation</span>
+                    <Badge s={medValidation?.status || "NOT_RUN"} />
+                  </div>
+                  <div className="summary-stat">
+                    <span>Validated artifacts</span>
+                    <b>{medValidation?.passed_count ?? 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Failed artifacts</span>
+                    <b>{medValidation?.failed_count ?? 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Dependency cycles</span>
+                    <b>{medValidation?.cycle_nodes?.length ?? 0}</b>
+                  </div>
+                </div>
+                <div className="notice">
+                  Silver generation standardizes column names, trims strings,
+                  normalizes timestamps to UTC, and deduplicates by discovered
+                  primary keys. Gold dimensions receive deterministic surrogate
+                  keys. AI repairs always create an unapproved immutable version.
+                </div>
+              </Panel>
+              <Panel title="Multi-stage lineage plan">
+                {medallion?.nodes?.length ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Layer</th>
+                        <th>Target / Source</th>
+                        <th>Node type</th>
+                        <th>Role</th>
+                        <th>Strategy</th>
+                        <th>Status</th>
+                        <th>Review</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {medallion.nodes.map((n: any) => (
+                        <tr key={n.id}>
+                          <td>
+                            <Badge s={n.layer} />
+                          </td>
+                          <td>
+                            <code>{n.target_fqn}</code>
+                          </td>
+                          <td>{n.node_type}</td>
+                          <td>{n.model_role}</td>
+                          <td>{n.generation_strategy}</td>
+                          <td>
+                            <Badge s={n.status} />
+                          </td>
+                          <td>{n.review_required ? "Required" : "No"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <Empty text="Build the Medallion plan after discovery and mappings." />
+                )}
+              </Panel>
+              {semanticRun && (
+                <Panel title="Latest semantic inference run">
+                  <div className="deployment-summary">
+                    <div className="summary-stat">
+                      <span>Engine</span>
+                      <b>{semanticRun.engine || "DETERMINISTIC_V1"}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Provider</span>
+                      <b>{semanticRun.ai_provider || "-"}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>AI attempted</span>
+                      <b>{semanticRun.ai_attempted ?? 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Cached results reused</span>
+                      <b>{semanticRun.ai_cache_hits ?? 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Auto-corrected</span>
+                      <b>{semanticRun.ai_corrected ?? 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Correction calls</span>
+                      <b>{semanticRun.ai_retry_attempts ?? 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>AI recommended</span>
+                      <b>{semanticRun.ai_recommended ?? 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Review required</span>
+                      <b>{semanticRun.review_required ?? 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>AI errors</span>
+                      <b>{semanticRun.ai_errors?.length || 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Gemini tokens used</span>
+                      <b>{semanticRun.ai_usage?.total_tokens ?? 0}</b>
+                    </div>
+                  </div>
+                  {semanticRun.ai_attempted === 0 &&
+                    (semanticRun.ai_cache_hits ?? 0) === 0 && (
+                    <div className="notice">
+                      No AI call was attempted. Verify that AI is enabled and
+                      that at least one semantic row is REVIEW_REQUIRED.
+                    </div>
+                    )}
+                  {semanticRun.ai_errors?.length > 0 && (
+                    <details>
+                      <summary>View sanitized AI errors</summary>
+                      <pre>
+                        {JSON.stringify(semanticRun.ai_errors, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </Panel>
+              )}
+              <Panel
+                title="Fact / dimension semantics"
+                actions={
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <button
+                      disabled={
+                        !pid ||
+                        busy ||
+                        !semantics.some((x: any) => x.status !== "APPROVED")
+                      }
+                      onClick={approveAllSemantics}
+                      title="Approve all valid and recommended semantics for Gold generation"
+                    >
+                      <CheckCircle2 size={15} />
+                      Approve all semantics
+                    </button>
+                    <button
+                      disabled={!pid || busy}
+                      onClick={inferBusinessSemantics}
+                    >
+                      <RefreshCw size={15} />
+                      Re-infer
+                    </button>
+                  </div>
+                }
+              >
+                {semantics.length ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Object</th>
+                        <th>Inference source</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                        <th>Confidence</th>
+                        <th>Keys / Grain</th>
+                        <th>Measures</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {semantics.map((x: any) => {
+                        const ev = x.evidence || {};
+                        const src = x.definition_source || "INFERRED";
+                        const srcLabel =
+                          src === "AI_ASSISTED_HYBRID_V2_2"
+                            ? "AI Hybrid V2.2"
+                            : src === "AI_ASSISTED_HYBRID_V2_1"
+                              ? "AI Hybrid V2.1"
+                              : src === "AI_ASSISTED_HYBRID_V2"
+                                ? "AI Hybrid V2"
+                                : src === "EXPLICIT"
+                                  ? "Explicit"
+                                  : src === "INFERRED"
+                                    ? "Deterministic V1"
+                                    : src;
+                        const aiProvider =
+                          ev.provider && ev.model
+                            ? `${ev.provider} · ${ev.model}`
+                            : null;
+                        const canApprove =
+                          x.status !== "APPROVED" &&
+                          [
+                            "FACT",
+                            "DIMENSION",
+                            "AGGREGATE",
+                            "KPI",
+                            "REPORTING",
+                          ].includes(x.semantic_role);
+                        const structurallyValid =
+                          !(
+                            x.semantic_role === "FACT" &&
+                            (!x.grain?.length || !x.measures?.length)
+                          ) &&
+                          !(
+                            x.semantic_role === "DIMENSION" &&
+                            !x.business_keys?.length
+                          ) &&
+                          !(
+                            ["AGGREGATE", "KPI"].includes(x.semantic_role) &&
+                            !x.measures?.length
+                          );
+                        return (
+                          <tr key={x.id}>
+                            <td>{x.object_name || "-"}</td>
+                            <td>
+                              <small title={aiProvider || undefined}>
+                                {srcLabel}
+                              </small>
+                            </td>
+                            <td>
+                              <Badge s={x.semantic_role} />
+                            </td>
+                            <td>
+                              <Badge s={x.status} />
+                            </td>
+                            <td>{Math.round((x.confidence || 0) * 100)}%</td>
+                            <td>
+                              <small>
+                                BK: {(x.business_keys || []).join(", ") || "-"}
+                                <br />
+                                Grain: {(x.grain || []).join(", ") || "-"}
+                              </small>
+                            </td>
+                            <td>
+                              {(x.measures || [])
+                                .map((m: any) => m.name || m.source_column)
+                                .join(", ") || "-"}
+                            </td>
+                            <td>
+                              <div className="table-actions">
+                                {canApprove && (
+                                  <button
+                                    title={
+                                      !structurallyValid
+                                        ? "Structural validation failed; define explicit semantics before approving"
+                                        : undefined
+                                    }
+                                    disabled={!structurallyValid}
+                                    onClick={() => approveSemantic(x.id)}
+                                  >
+                                    Approve
+                                  </button>
+                                )}
+                                {x.status !== "APPROVED" && (!canApprove || x.status === "REVIEW_REQUIRED") && (
+                                  <div style={{ display: "inline-flex", gap: "4px" }}>
+                                    <button
+                                      className="primary-action"
+                                      title="Resolve and approve this entity as an AGGREGATE model"
+                                      onClick={() => approveSemantic(x.id, "AGGREGATE")}
+                                    >
+                                      Resolve AGGREGATE
+                                    </button>
+                                    <button
+                                      title="Resolve and approve this entity as a FACT table"
+                                      onClick={() => approveSemantic(x.id, "FACT")}
+                                    >
+                                      Resolve FACT
+                                    </button>
+                                    <button
+                                      title="Resolve and approve this entity as a DIMENSION table"
+                                      onClick={() => approveSemantic(x.id, "DIMENSION")}
+                                    >
+                                      Resolve DIMENSION
+                                    </button>
+                                  </div>
+                                )}
+                                {x.object_id && (
+                                  <button
+                                    onClick={() => defineSemantic(x.object_id)}
+                                  >
+                                    Define explicit
+                                  </button>
+                                )}
+                                {(ev.reasoning_summary ||
+                                  evidenceList(ev.conflicts).length ||
+                                  evidenceList(ev.missing_evidence).length ||
+                                  repairList(ev.safe_repairs).length ||
+                                  ev.correction_history?.length) && (
+                                  <details>
+                                    <summary>View evidence</summary>
+                                    <div className="subsection">
+                                      <b>Source:</b> {srcLabel}
+                                      {aiProvider && (
+                                        <span> · {aiProvider}</span>
+                                      )}
+                                      <br />
+                                      {ev.reasoning_summary && (
+                                        <>
+                                          <b>Reasoning:</b>{" "}
+                                          {ev.reasoning_summary}
+                                          <br />
+                                        </>
+                                      )}
+                                      {evidenceList(ev.conflicts).length ? (
+                                        <>
+                                          <b>Conflicts:</b>{" "}
+                                          {evidenceList(ev.conflicts).join(
+                                            "; ",
+                                          )}
+                                          <br />
+                                        </>
+                                      ) : null}
+                                      {evidenceList(ev.missing_evidence)
+                                        .length ? (
+                                        <>
+                                          <b>Missing evidence:</b>{" "}
+                                          {evidenceList(
+                                            ev.missing_evidence,
+                                          ).join("; ")}
+                                          <br />
+                                        </>
+                                      ) : null}
+                                      {repairList(ev.safe_repairs).length ? (
+                                        <>
+                                          <b>Automatic repairs:</b>{" "}
+                                          {repairList(ev.safe_repairs).join(
+                                            "; ",
+                                          )}
+                                          <br />
+                                        </>
+                                      ) : null}
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : (
+                  <Empty text="Run Fact/Dimension inference. Explicit semantics can then be approved or overridden." />
+                )}
+              </Panel>
+              <Panel
+                title="Downstream consumer analysis"
+                actions={
+                  <button
+                    disabled={!pid || busy}
+                    onClick={registerExternalConsumer}
+                  >
+                    <Plus size={15} />
+                    Register external consumer
+                  </button>
+                }
+              >
+                {consumers.length ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Producer</th>
+                        <th>Consumer</th>
+                        <th>Type</th>
+                        <th>Usage</th>
+                        <th>Depth</th>
+                        <th>Evidence</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {consumers.slice(0, 250).map((x: any) => (
+                        <tr key={x.id}>
+                          <td>
+                            <code>{x.producer_object_id}</code>
+                          </td>
+                          <td>{x.consumer_name}</td>
+                          <td>{x.consumer_type}</td>
+                          <td>{x.usage_type}</td>
+                          <td>{x.dependency_depth}</td>
+                          <td>{x.evidence_type}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <Empty text="Analyze consumers to build direct and transitive downstream usage evidence." />
+                )}
+              </Panel>
+              <Panel
+                title="Generated Medallion artifacts"
+                actions={
+                  medArts.length ? (
+                    <button onClick={() => setPage("Reviews")}>
+                      <ClipboardCheck size={15} />
+                      Review and resolve artifacts
+                    </button>
+                  ) : null
+                }
+              >
+                {medArts.length ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Layer</th>
+                        <th>Target</th>
+                        <th>Role</th>
+                        <th>Validation</th>
+                        <th>Review</th>
+                        <th>Version</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {medArts.map((x: any) => (
+                        <tr key={x.artifact_version_id}>
+                          <td>
+                            <Badge s={x.layer} />
+                          </td>
+                          <td>
+                            <code>{x.target_fqn}</code>
+                          </td>
+                          <td>{x.model_role}</td>
+                          <td>
+                            <Badge s={x.validation_status} />
+                          </td>
+                          <td>
+                            <Badge s={x.review_status} />
+                          </td>
+                          <td>v{x.version}</td>
+                          <td>
+                            <div className="table-actions">
+                              <button onClick={() => setPage("Reviews")}>
+                                Open governed review
+                              </button>
+                              <button
+                                onClick={() =>
+                                  inspectMedallionArtifact(
+                                    x.artifact_version_id,
+                                  )
+                                }
+                              >
+                                Lineage & diff
+                              </button>
+                              <details>
+                                <summary>SQL</summary>
+                                <pre>{x.content}</pre>
+                              </details>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <Empty text="Generate stage artifacts after the plan is built. All artifacts require review before DEV deployment." />
+                )}
+              </Panel>
+              {artifactInspector && (
+                <Panel
+                  title={`Artifact lineage & version diff · ${artifactInspector.target_fqn}`}
+                  actions={
+                    <button onClick={() => setArtifactInspector(null)}>
+                      Close
+                    </button>
+                  }
+                >
+                  <div className="deployment-summary">
+                    <div className="summary-stat">
+                      <span>Current version</span>
+                      <b>v{artifactInspector.version}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Previous version</span>
+                      <b>
+                        {artifactInspector.previous_version
+                          ? `v${artifactInspector.previous_version}`
+                          : "Initial"}
+                      </b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Validation</span>
+                      <Badge s={artifactInspector.validation_status} />
+                    </div>
+                    <div className="summary-stat">
+                      <span>Human review</span>
+                      <Badge s={artifactInspector.review_status} />
+                    </div>
+                  </div>
+                  <details open>
+                    <summary>Lineage</summary>
+                    <pre>
+                      {JSON.stringify(artifactInspector.lineage || [], null, 2)}
+                    </pre>
+                  </details>
+                  <details open>
+                    <summary>SQL diff</summary>
+                    <pre>
+                      {artifactInspector.diff ||
+                        "Initial immutable artifact version — no prior diff."}
+                    </pre>
+                  </details>
+                </Panel>
+              )}
+
+            </>
+          )}
+
+              {(page === "Medallion Design" || page === "Deployments") && medDeployment && (
+                <Panel
+                  title={`Deployment attempts and logs · ${medDeployment.run_id || "latest run"}`}
+                  actions={
+                    <div className="deploy-actions">
+                      <select
+                        value={medLogFilter}
+                        onChange={(e) => setMedLogFilter(e.target.value)}
+                      >
+                        <option value="ALL">All statuses</option>
+                        <option value="PASSED">Passed</option>
+                        <option value="FAILED">Failed</option>
+                      </select>
+                      <button
+                        disabled={!medLogs.length && !logView.length}
+                        onClick={copyMedallionLogs}
+                      >
+                        <ScrollText size={14} />
+                        Copy Logs
+                      </button>
+                      <button
+                        disabled={!pid || busy}
+                        onClick={medDeployment.run_id ? downloadMedallionLogs : downloadDevLogs}
+                      >
+                        <Download size={14} />
+                        Download CSV
+                      </button>
+                    </div>
+                  }
+                >
+                  <div className="deployment-summary">
+                    <div className="summary-stat">
+                      <span>Status</span>
+                      <Badge s={medDeployment.status || "UNKNOWN"} />
+                    </div>
+                    <div className="summary-stat">
+                      <span>Run ID</span>
+                      <b>{medDeployment.run_id || "-"}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Deployed</span>
+                      <b>
+                        {medDeployment.deployed ?? medLogs.filter((x) => x.status === "PASSED" && x.details?.medallion_node_id).length}
+                      </b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Failed</span>
+                      <b>
+                        {medDeployment.failed ?? medLogs.filter((x) => x.status === "FAILED" && x.details?.medallion_node_id).length}
+                      </b>
+                    </div>
+                  </div>
+                  {medLogs.length ? (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Time</th>
+                          <th>Layer</th>
+                          <th>Target</th>
+                          <th>Artifact version / ID</th>
+                          <th>Status</th>
+                          <th>Rows / action</th>
+                          <th>Error</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {medLogs
+                          .filter(
+                            (x) =>
+                              medLogFilter === "ALL" ||
+                              x.status === medLogFilter,
+                          )
+                          .map((x: any, i: number) => {
+                            const d = x.details || {};
+                            return (
+                              <tr key={`${x.run_id}-${i}`}>
+                                <td>{formatDateTime(x.timestamp)}</td>
+                                <td>
+                                  <Badge s={d.layer || "-"} />
+                                </td>
+                                <td>
+                                  <code>{x.target_fqn || "-"}</code>
+                                </td>
+                                <td>
+                                  {d.artifact_version != null && <b>v{d.artifact_version} </b>}
+                                  <code title={d.artifact_content_hash || ""}>{d.artifact_version_id || "-"}</code>
+                                </td>
+                                <td>
+                                  <Badge s={x.status || "-"} />
+                                </td>
+                                <td>{d.load?.rows_loaded ?? d.load?.rows ?? d.action ?? (d.medallion_run_started ? "Run started" : d.medallion_run_complete ? "Run completed" : d.medallion_run_finished ? "Run failed" : "-")}</td>
+                                <td>{d.error || x.message || "-"}</td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <Empty text="No object-level evidence was recorded for this deployment run." />
+                  )}
+                  {medDeployment.error && <div className="notice">{medDeployment.failed_target && <b>{medDeployment.failed_target}: </b>}{medDeployment.error}</div>}
+                  <details>
+                    <summary>Workflow and Bronze ingestion logs</summary>
+                    <button disabled={!pid || busy} onClick={downloadDevLogs}>Download full DEV log</button>
+                    {logView.length ? <table>
+                      <thead><tr><th>Time</th><th>Stage</th><th>Status</th><th>Run</th><th>Target</th><th>Message</th></tr></thead>
+                      <tbody>{logView.map((row: any, i: number) => <tr key={`${row.run_id}-${i}`}>
+                        <td>{formatDateTime(row.timestamp)}</td>
+                        <td>{row.step || row.category}</td><td><Badge s={row.status || "-"} /></td>
+                        <td><code>{row.run_id || "-"}</code></td><td>{row.target_fqn || "-"}</td>
+                        <td>{row.message || "-"}</td>
+                      </tr>)}</tbody>
+                    </table> : <Empty text="No workflow or ingestion attempts have been recorded for this project." />}
+                  </details>
+                </Panel>
+              )}
+
+          {page === "Mappings" && (
+            <Panel
+              title="Target mappings"
+              actions={
+                <button
+                  disabled={!pid || !classes.length}
+                  onClick={() => {
+                    const catalog = prompt(
+                      "DEV target catalog",
+                      "migration_dev",
+                    );
+                    if (catalog)
+                      action(() =>
+                        api(`/projects/${pid}/mappings`, {
+                          method: "POST",
+                          body: JSON.stringify({ environment: "DEV", catalog }),
+                        }),
+                      );
+                  }}
+                >
+                  <Play size={15} />
+                  Generate DEV mappings
+                </button>
+              }
+            >
+              {mappings.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Object</th>
+                      <th>Source</th>
+                      <th>Target</th>
+                      <th>Layer</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mappings.map((m) => (
+                      <tr key={m.id}>
+                        <td>{m.name}</td>
+                        <td>{m.source_fqn}</td>
+                        <td>{m.target_fqn}</td>
+                        <td>
+                          <Badge s={m.target_layer} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="Run classification, then generate mappings." />
+              )}
+            </Panel>
+          )}
+          {page === "Compatibility" && (
+            <>
+              <Panel
+                title="Dynamic runtime compatibility framework"
+                actions={
+                  <button
+                    disabled={!pid || busy}
+                    onClick={() =>
+                      action(async () => {
+                        const r: any = await api(
+                          `/projects/${pid}/compatibility/summary`,
+                        );
+                        setCompat(r);
+                        return r;
+                      })
+                    }
+                  >
+                    <RefreshCw size={15} />
+                    Analyze compatibility
+                  </button>
+                }
+              >
+                <div className="ai-guardrail">
+                  <ShieldCheck size={22} />
+                  <div>
+                    <b>Metadata-driven adapters before AI</b>
+                    <span>
+                      Every discovered column is assigned a reusable source
+                      projection, canonical transport strategy, target bind
+                      expression and validation policy. Unknown or ambiguous
+                      types are preserved safely and flagged for review instead
+                      of being guessed.
+                    </span>
+                  </div>
+                </div>
+                {compat ? (
+                  <>
+                    <div className="deployment-summary">
+                      <div className="summary-stat">
+                        <span>Framework</span>
+                        <b>{compat.framework_version || "2.2.0"}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Total columns</span>
+                        <b>{compat.total_columns || 0}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Deterministic</span>
+                        <b>{compat.deterministic_columns || 0}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Coverage</span>
+                        <b>{compat.deterministic_coverage_pct ?? 100}%</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Review required</span>
+                        <b>{compat.review_required_count || 0}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Unknown types</span>
+                        <b>{compat.unknown_type_count || 0}</b>
+                      </div>
+                    </div>
+                    <div className="subsection">
+                      <h4>Adapter families</h4>
+                      <pre>
+                        {JSON.stringify(
+                          {
+                            families: compat.family_counts,
+                            strategies: compat.strategy_counts,
+                            policy: compat.policy,
+                          },
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </div>
+                    {compat.objects?.length ? (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Object</th>
+                            <th>Columns</th>
+                            <th>Deterministic coverage</th>
+                            <th>Binary-safe</th>
+                            <th>Review required</th>
+                            <th>Unknown</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {compat.objects.map((x: any) => (
+                            <tr key={x.object_id}>
+                              <td>{x.name}</td>
+                              <td>{x.summary?.total_columns || 0}</td>
+                              <td>
+                                {x.summary?.deterministic_coverage_pct ?? 100}%
+                              </td>
+                              <td>
+                                {(x.summary?.binary_safe_columns || []).join(
+                                  ", ",
+                                ) || "-"}
+                              </td>
+                              <td>
+                                {(
+                                  x.summary?.review_required_columns || []
+                                ).join(", ") || "-"}
+                              </td>
+                              <td>
+                                {(x.summary?.unknown_type_columns || []).join(
+                                  ", ",
+                                ) || "-"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <Empty text="Run Discovery first. Compatibility analysis is generated from discovered column metadata." />
+                    )}
+                  </>
+                ) : (
+                  <Empty text="Select a project and analyze its discovered runtime compatibility contracts." />
+                )}
+              </Panel>
+            </>
+          )}
+          {page === "Conversion Plans" && (
+            <Panel
+              title="Conversion plans"
+              actions={
+                <button
+                  disabled={!pid || busy}
+                  onClick={() =>
+                    action(() =>
+                      api(`/projects/${pid}/conversion-plans/generate`, {
+                        method: "POST",
+                      }),
+                    )
+                  }
+                >
+                  <Play size={15} />
+                  Generate plans
+                </button>
+              }
+            >
+              <RecordTable rows={records} />
+            </Panel>
+          )}
+          {page === "Artifacts" && (
+            <>
+              <Panel
+                title="Generated artifacts"
+                actions={
+                  <button
+                    disabled={!pid || !mappings.length}
+                    onClick={async () => {
+                      setBusy(true);
+                      setMsg("");
+                      let ok = 0,
+                        fail = 0;
+                      for (const m of Array.from(
+                        new Map(mappings.map((x) => [x.object_id, x])).values(),
+                      )) {
+                        try {
+                          await api(`/projects/${pid}/artifacts`, {
+                            method: "POST",
+                            body: JSON.stringify({
+                              object_id: m.object_id,
+                              environment: "DEV",
+                            }),
+                          });
+                          ok++;
+                        } catch {
+                          fail++;
+                        }
+                      }
+                      setBusy(false);
+                      setMsg(`Generated ${ok}; failed ${fail}`);
+                      await refresh();
+                    }}
+                  >
+                    <Play size={15} />
+                    Generate all DEV artifacts
+                  </button>
+                }
+              >
+                {artifacts.length ? (
+                  <div className="artifact-list">
+                    {artifacts.map((a) => (
+                      <details key={a.artifact_id}>
+                        <summary>
+                          <b>
+                            {a.schema ? `${a.schema}.` : ""}
+                            {a.name}
+                          </b>{" "}
+                          · {a.type} · v{a.current_version} ·{" "}
+                          <Badge
+                            s={
+                              a.executable
+                                ? "EXECUTABLE"
+                                : "REMEDIATION_REQUIRED"
+                            }
+                          />
+                        </summary>
+                        <pre>{a.content}</pre>
+                        <div className="artifact-actions">
+                          <button
+                            disabled={!pid || busy}
+                            onClick={() =>
+                              action(() =>
+                                api(`/projects/${pid}/artifacts`, {
+                                  method: "POST",
+                                  body: JSON.stringify({
+                                    object_id: a.object_id,
+                                    environment: "DEV",
+                                  }),
+                                }),
+                              )
+                            }
+                          >
+                            <RefreshCw size={14} />
+                            Regenerate this artifact
+                          </button>
+                          <button
+                            onClick={() =>
+                              action(() =>
+                                api(
+                                  `/projects/${pid}/validate/${a.object_id}?environment=DEV`,
+                                  { method: "POST" },
+                                ),
+                              )
+                            }
+                          >
+                            Static validate
+                          </button>
+                          {!a.executable && (
+                            <button
+                              className="primary-action"
+                              onClick={() => analyzeWithAi(a)}
+                            >
+                              <Sparkles size={14} />
+                              AI-assisted remediation
+                            </button>
+                          )}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty text="Generate mappings first, then generate artifacts." />
+                )}
+              </Panel>
+              {aiCandidate && aiObject && (
+                <Panel
+                  title={`AI-assisted remediation · ${aiObject.schema ? aiObject.schema + "." : ""}${aiObject.name}`}
+                  actions={
+                    <>
+                      <button
+                        onClick={() => {
+                          setAiCandidate(null);
+                          setAiObject(null);
+                        }}
+                      >
+                        Reject candidate
+                      </button>
+                      <button
+                        className="primary-action"
+                        disabled={!aiCandidate?.deterministic_validation?.valid}
+                        onClick={acceptAiCandidate}
+                      >
+                        <CheckCircle2 size={14} />
+                        Accept as new version
+                      </button>
+                    </>
+                  }
+                >
+                  <div className="ai-remediation-grid">
+                    <div>
+                      <b>Strategy</b>
+                      <p>{aiCandidate.conversion_strategy}</p>
+                    </div>
+                    <div>
+                      <b>Confidence</b>
+                      <p>{Math.round((aiCandidate.confidence || 0) * 100)}%</p>
+                    </div>
+                    <div>
+                      <b>Provider</b>
+                      <p>
+                        {aiCandidate.provider}
+                        {aiCandidate.model ? ` · ${aiCandidate.model}` : ""}
+                      </p>
+                    </div>
+                    <div>
+                      <b>Validation</b>
+                      <p>
+                        <Badge
+                          s={
+                            aiCandidate.deterministic_validation?.valid
+                              ? "PASSED"
+                              : "FAILED"
+                          }
+                        />
+                      </p>
+                    </div>
+                  </div>
+                  <div className="subsection">
+                    <h4>Proposed executable candidate</h4>
+                    <pre>{aiCandidate.generated_candidate}</pre>
+                  </div>
+                  <div className="ai-columns">
+                    <div>
+                      <h4>Assumptions</h4>
+                      <ul>
+                        {(aiCandidate.assumptions || []).map(
+                          (x: string, i: number) => (
+                            <li key={i}>{x}</li>
+                          ),
+                        )}
+                      </ul>
+                    </div>
+                    <div>
+                      <h4>Risks</h4>
+                      <ul>
+                        {(aiCandidate.risks || []).map(
+                          (x: string, i: number) => (
+                            <li key={i}>{x}</li>
+                          ),
+                        )}
+                      </ul>
+                    </div>
+                    <div>
+                      <h4>Validation plan</h4>
+                      <ul>
+                        {(aiCandidate.validation_plan || []).map(
+                          (x: string, i: number) => (
+                            <li key={i}>{x}</li>
+                          ),
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+                  <div className="notice">
+                    AI output is a candidate only. Accepting it creates a new
+                    artifact version that still requires human review/approval
+                    before DEV deployment.
+                  </div>
+                </Panel>
+              )}
+            </>
+          )}
+          {page === "AI Remediation" && (
+            <>
+              <Panel
+                title="Local AI provider · Ollama first"
+                actions={
+                  <div className="deploy-actions">
+                    <button disabled={busy} onClick={testAiProvider}>
+                      <PlugZap size={15} />
+                      Test Ollama
+                    </button>
+                    <button disabled={busy} onClick={refreshAiModels}>
+                      <RefreshCw size={15} />
+                      Refresh models
+                    </button>
+                  </div>
+                }
+              >
+                <div className="ai-guardrail">
+                  <ServerCog size={22} />
+                  <div>
+                    <b>Local-first AI with governed execution</b>
+                    <span>
+                      Ollama runs on your machine and requires no API key. SQL
+                      and metadata stay local to the configured provider.
+                      Deterministic conversion runs first; AI only proposes
+                      candidates when semantic remediation is needed.
+                    </span>
+                  </div>
+                </div>
+                <div className="deployment-summary">
+                  <div className="summary-stat">
+                    <span>Provider</span>
+                    <b>
+                      {aiProvider?.provider ||
+                        aiPlan?.provider?.provider ||
+                        "-"}
+                    </b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Endpoint</span>
+                    <b>
+                      {aiProvider?.base_url ||
+                        aiPlan?.provider?.base_url ||
+                        "-"}
+                    </b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Model</span>
+                    <b>{aiProvider?.model || aiPlan?.provider?.model || "-"}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Configured</span>
+                    <Badge
+                      s={
+                        (aiProvider?.configured ?? aiPlan?.provider?.configured)
+                          ? "YES"
+                          : "NO"
+                      }
+                    />
+                  </div>
+                  <div className="summary-stat">
+                    <span>Reachable</span>
+                    <Badge
+                      s={
+                        aiProvider?.reachable === true
+                          ? "READY"
+                          : aiProvider?.reachable === false
+                            ? "UNAVAILABLE"
+                            : "NOT_TESTED"
+                      }
+                    />
+                  </div>
+                  <div className="summary-stat">
+                    <span>Model installed</span>
+                    <Badge
+                      s={
+                        aiProvider?.model_available === true
+                          ? "YES"
+                          : aiProvider?.model_available === false
+                            ? "NO"
+                            : "NOT_TESTED"
+                      }
+                    />
+                  </div>
+                </div>
+                {aiProvider?.version && (
+                  <div className="notice ok">
+                    Ollama version {aiProvider.version} responded in{" "}
+                    {aiProvider.latency_ms} ms.
+                  </div>
+                )}
+                {aiProvider?.error && (
+                  <div className="notice">{aiProvider.error}</div>
+                )}
+                {aiModels.length > 0 && (
+                  <div className="subsection">
+                    <h4>Installed local models</h4>
+                    <div className="chip-row">
+                      {aiModels.map((m) => (
+                        <span className="chip" key={m}>
+                          {m}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="subsection">
+                  <h4>Windows quick setup</h4>
+                  <pre>{`scripts\\setup_ollama_windows.bat qwen2.5-coder:3b\n\n# Or configure an already-installed model without pulling:\npython scripts\\configure_ollama.py --model qwen2.5-coder:3b`}</pre>
+                  <small>
+                    Restart the backend after changing .env. The application
+                    never stores an Ollama API key because local Ollama does not
+                    require one.
+                  </small>
+                </div>
+              </Panel>
+              <Panel
+                title="Governed AI remediation center"
+                actions={
+                  <div className="deploy-actions">
+                    <button disabled={!pid || busy} onClick={scanAiRemediation}>
+                      <Search size={15} />
+                      Scan review blockers
+                    </button>
+                    <button
+                      className="primary-action"
+                      disabled={!pid || busy || !aiPlan?.eligible}
+                      onClick={runAiRemediation}
+                    >
+                      <Sparkles size={15} />
+                      Run safe repair loop
+                    </button>
+                  </div>
+                }
+              >
+                <div className="ai-guardrail">
+                  <ShieldCheck size={22} />
+                  <div>
+                    <b>
+                      AI accelerates remediation; deterministic controls decide
+                      eligibility.
+                    </b>
+                    <span>
+                      Every safe fix becomes a new, statically validated DEV
+                      artifact version. AI cannot approve, deploy, bypass
+                      reconciliation, invent business rules, or modify PROD.
+                    </span>
+                  </div>
+                </div>
+                {aiPlan ? (
+                  <>
+                    <div className="deployment-summary">
+                      <div className="summary-stat">
+                        <span>Repair candidates</span>
+                        <b>{aiPlan.total || 0}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Eligible</span>
+                        <b>{aiPlan.eligible || 0}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Architecture review</span>
+                        <b>{aiPlan.manual_architecture_review || 0}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Provider</span>
+                        <b>{aiPlan.provider?.provider || "-"}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>AI fallback</span>
+                        <Badge
+                          s={
+                            aiPlan.provider?.enabled &&
+                            aiPlan.provider?.configured
+                              ? "READY"
+                              : "DISABLED"
+                          }
+                        />
+                      </div>
+                      <div className="summary-stat">
+                        <span>Repair attempts</span>
+                        <b>{aiPlan.provider?.max_attempts || "-"}</b>
+                      </div>
+                    </div>
+                    {!aiPlan.provider?.enabled && (
+                      <div className="notice">
+                        AI fallback is disabled. Deterministic remediation
+                        remains active. Run scripts\setup_ollama_windows.bat,
+                        restart the backend, then Test Ollama to enable local
+                        semantic remediation.
+                      </div>
+                    )}
+                    {aiPlan.provider?.enabled &&
+                      !aiPlan.provider?.configured && (
+                        <div className="notice">
+                          AI is enabled but the provider configuration is
+                          incomplete. Set LLM_PROVIDER=OLLAMA and LLM_MODEL to
+                          an installed local model.
+                        </div>
+                      )}
+                    {aiPlan.items?.length ? (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Object</th>
+                            <th>Type</th>
+                            <th>Current version</th>
+                            <th>Detected reason</th>
+                            <th>Route</th>
+                            <th>Eligible</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {aiPlan.items.map((x: any) => (
+                            <tr key={x.object_id}>
+                              <td>{x.object_name}</td>
+                              <td>{x.object_type}</td>
+                              <td>
+                                {x.artifact_version
+                                  ? `v${x.artifact_version}`
+                                  : "-"}
+                              </td>
+                              <td>{(x.reasons || []).join(", ")}</td>
+                              <td>{x.route}</td>
+                              <td>
+                                <Badge
+                                  s={x.eligible ? "YES" : "ARCHITECT_REVIEW"}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <Empty text="No artifact, validation, issue, or review item currently needs remediation." />
+                    )}
+                  </>
+                ) : (
+                  <Empty text="Scan the current project to build a project-scoped remediation plan." />
+                )}
+              </Panel>
+              {aiBatch && (
+                <Panel title={`Repair run ${aiBatch.run_id}`}>
+                  <div className="deployment-summary">
+                    <div className="summary-stat">
+                      <span>Status</span>
+                      <Badge s={aiBatch.status} />
+                    </div>
+                    <div className="summary-stat">
+                      <span>Planned</span>
+                      <b>{aiBatch.planned}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Ready for review</span>
+                      <b>{aiBatch.ready_for_review}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Candidate only</span>
+                      <b>{aiBatch.candidate_only}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Retry ready</span>
+                      <b>{aiBatch.retry_ready || 0}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Blocked</span>
+                      <b>{aiBatch.blocked}</b>
+                    </div>
+                    <div className="summary-stat">
+                      <span>Auto-deployed</span>
+                      <b>No</b>
+                    </div>
+                  </div>
+                  {aiBatch.results?.length ? (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Object</th>
+                          <th>Status</th>
+                          <th>Provider</th>
+                          <th>Confidence</th>
+                          <th>New version</th>
+                          <th>Evidence</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {aiBatch.results.map((x: any) => (
+                          <tr key={x.object_id}>
+                            <td>{x.object_name}</td>
+                            <td>
+                              <Badge s={x.status} />
+                            </td>
+                            <td>{x.provider || "-"}</td>
+                            <td>
+                              {x.confidence == null
+                                ? "-"
+                                : `${Math.round(x.confidence * 100)}%`}
+                            </td>
+                            <td>
+                              {x.artifact_version
+                                ? `v${x.artifact_version}`
+                                : "-"}
+                            </td>
+                            <td>
+                              {x.error ||
+                                x.evidence ||
+                                x.static_validation?.status ||
+                                "-"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <Empty text="No objects were processed." />
+                  )}
+                  <div className="notice ok">
+                    Safe SQL candidates are ready in Reviews. Runtime
+                    compatibility repairs are marked RETRY_READY and require
+                    Resume Failed Run; they do not rewrite business SQL with AI.
+                  </div>
+                </Panel>
+              )}
+            </>
+          )}
+          {page === "Reviews" && (
+            <Panel
+              title="Governed Medallion artifact reviews"
+              actions={
+                <button
+                  className="primary-action"
+                  disabled={
+                    !pid ||
+                    busy ||
+                    !medArts.some(
+                      (a: any) =>
+                        a.validation_status === "PASSED" &&
+                        a.executable &&
+                        a.review_status !== "APPROVED",
+                    )
+                  }
+                  onClick={approveAllMedallionArtifacts}
+                  title="Approve all validated artifacts to proceed directly to DEV deployment"
+                >
+                  <CheckCircle2 size={15} />
+                  Approve all validated artifacts for DEV
+                </button>
+              }
+            >
+              {medArts.length ? (
+                <>
+                  <div className="ai-guardrail">
+                    <ShieldCheck size={22} />
+                    <div>
+                      <b>Review the exact versions that will be deployed to DEV</b>
+                      <span>
+                        Passed artifacts require a human decision. Failed routine
+                        artifacts must complete the governed repair loop before
+                        approval becomes available.
+                      </span>
+                    </div>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Layer</th>
+                        <th>Target</th>
+                        <th>Version</th>
+                        <th>Validation</th>
+                        <th>Review status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {medArts.map((a: any) => {
+                        const isArchReview =
+                          a.node_type === "ARCHITECTURE_REVIEW" ||
+                          a.source_object_type === "TRIGGER";
+                        const valid =
+                          a.executable && a.validation_status === "PASSED";
+                        const canApprove = valid || isArchReview;
+                        const repairable =
+                          !valid &&
+                          !isArchReview &&
+                          ["PROCEDURE", "FUNCTION"].includes(
+                            a.source_object_type,
+                          );
+                        return (
+                          <tr key={a.artifact_version_id}>
+                            <td>
+                              <Badge s={a.layer} />
+                            </td>
+                            <td>
+                              <code>{a.target_fqn}</code>
+                            </td>
+                            <td>v{a.version}</td>
+                            <td>
+                              <Badge s={isArchReview ? "MANUAL_REVIEW" : a.validation_status} />
+                            </td>
+                            <td>
+                              <Badge s={a.review_status} />
+                            </td>
+                            <td>
+                              <div className="review-actions">
+                                {canApprove && a.review_status !== "APPROVED" && (
+                                  <button
+                                    className="primary-action"
+                                    disabled={busy}
+                                    title={
+                                      isArchReview
+                                        ? "Acknowledge and sign off on this architecture review for DEV deployment"
+                                        : "Approve this validated version for DEV deployment"
+                                    }
+                                    onClick={() =>
+                                      reviewMedArtifact(
+                                        a.artifact_version_id,
+                                        "APPROVED",
+                                      )
+                                    }
+                                  >
+                                    <CheckCircle2 size={14} />
+                                    {isArchReview
+                                      ? "Acknowledge Review"
+                                      : "Approve for DEV"}
+                                  </button>
+                                )}
+                                {canApprove && a.review_status !== "REJECTED" && (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => {
+                                      if (
+                                        confirm(
+                                          `Reject ${a.target_fqn} v${a.version}?`,
+                                        )
+                                      )
+                                        reviewMedArtifact(
+                                          a.artifact_version_id,
+                                          "REJECTED",
+                                        );
+                                    }}
+                                  >
+                                    Reject
+                                  </button>
+                                )}
+                                {canApprove &&
+                                  a.review_status !== "CHANGES_REQUIRED" && (
+                                    <button
+                                      disabled={busy}
+                                      onClick={() =>
+                                        reviewMedArtifact(
+                                          a.artifact_version_id,
+                                          "CHANGES_REQUIRED",
+                                        )
+                                      }
+                                    >
+                                      Request changes
+                                    </button>
+                                  )}
+                                {repairable && (
+                                  <button
+                                    className="primary-action"
+                                    disabled={busy}
+                                    title="Create a corrected, statically validated version for human review"
+                                    onClick={() =>
+                                      remediateMedArtifact(a.artifact_version_id)
+                                    }
+                                  >
+                                    <Sparkles size={14} />
+                                    Repair with {aiProvider?.provider || "AI"}
+                                  </button>
+                                )}
+                                {!canApprove && !repairable && (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => setPage("AI Remediation")}
+                                  >
+                                    Open remediation guidance
+                                  </button>
+                                )}
+                                <details>
+                                  <summary>View SQL and evidence</summary>
+                                  <pre>{a.content}</pre>
+                                  {!valid && !isArchReview && (
+                                    <div className="review-block-reason">
+                                      {(a.validation?.errors || []).join("; ") ||
+                                        "Static validation must pass before approval."}
+                                    </div>
+                                  )}
+                                  {isArchReview && (
+                                    <div
+                                      className="review-block-reason"
+                                      style={{
+                                        background: "#e8f0fe",
+                                        color: "#174ea6",
+                                        borderColor: "#aecbfa",
+                                      }}
+                                    >
+                                      Triggers do not exist in Databricks. Recommended target: implement as a Delta Table CHECK constraint or DLT expectation. Acknowledging this review allows DEV deployment to proceed.
+                                    </div>
+                                  )}
+                                </details>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </>
+              ) : artifacts.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Artifact</th>
+                      <th>Version</th>
+                      <th>Executable</th>
+                      <th>Validation</th>
+                      <th>Review status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {artifacts.map((a) => {
+                      const reviewStatus = a.review_status || "PENDING";
+                      const blockReason = (a.approval_blockers || []).join(
+                        "; ",
+                      );
+                      return (
+                        <tr key={a.artifact_id}>
+                          <td>
+                            {a.schema ? `${a.schema}.` : ""}
+                            {a.name}
+                          </td>
+                          <td>v{a.current_version}</td>
+                          <td>
+                            <Badge s={a.executable ? "YES" : "NO"} />
+                          </td>
+                          <td>
+                            <Badge s={a.validation_status || "NOT_RUN"} />
+                          </td>
+                          <td>
+                            <Badge s={reviewStatus} />
+                          </td>
+                          <td>
+                            <div className="review-actions">
+                              <button
+                                disabled={!a.artifact_version_id || busy}
+                                onClick={() =>
+                                  action(() =>
+                                    api(
+                                      `/projects/${pid}/validate/${a.object_id}?environment=DEV`,
+                                      { method: "POST" },
+                                    ),
+                                  )
+                                }
+                              >
+                                <FileCheck2 size={14} />
+                                Validate
+                              </button>
+                              <button
+                                title={
+                                  blockReason ||
+                                  "Approve current validated executable version"
+                                }
+                                disabled={
+                                  !a.artifact_version_id ||
+                                  !a.approval_allowed ||
+                                  reviewStatus === "APPROVED" ||
+                                  busy
+                                }
+                                onClick={() =>
+                                  action(() =>
+                                    api(`/projects/${pid}/reviews`, {
+                                      method: "POST",
+                                      body: JSON.stringify({
+                                        artifact_version_id:
+                                          a.artifact_version_id,
+                                        review_type: "ARCHITECT_REVIEW",
+                                        status: "APPROVED",
+                                        reviewer: "admin",
+                                        comments:
+                                          "Approved from UI after executable/static-validation checks",
+                                      }),
+                                    }),
+                                  )
+                                }
+                              >
+                                <CheckCircle2 size={14} />
+                                Approve
+                              </button>
+                              <button
+                                disabled={
+                                  !a.artifact_version_id ||
+                                  reviewStatus === "APPROVED" ||
+                                  busy
+                                }
+                                onClick={() => {
+                                  const reason = prompt(
+                                    `Reject ${a.schema ? `${a.schema}.` : ""}${a.name} v${a.current_version} - reason`,
+                                  );
+                                  if (reason)
+                                    action(() =>
+                                      api(`/projects/${pid}/reviews`, {
+                                        method: "POST",
+                                        body: JSON.stringify({
+                                          artifact_version_id:
+                                            a.artifact_version_id,
+                                          review_type: "ARCHITECT_REVIEW",
+                                          status: "REJECTED",
+                                          reviewer: "admin",
+                                          comments: reason,
+                                        }),
+                                      }),
+                                    );
+                                }}
+                              >
+                                Reject
+                              </button>
+                              <button
+                                disabled={!a.artifact_version_id || busy}
+                                onClick={() => {
+                                  const reason = prompt(
+                                    `Request changes for ${a.schema ? `${a.schema}.` : ""}${a.name} v${a.current_version}`,
+                                  );
+                                  if (reason)
+                                    action(() =>
+                                      api(`/projects/${pid}/reviews`, {
+                                        method: "POST",
+                                        body: JSON.stringify({
+                                          artifact_version_id:
+                                            a.artifact_version_id,
+                                          review_type: "ARCHITECT_REVIEW",
+                                          status: "CHANGES_REQUESTED",
+                                          reviewer: "admin",
+                                          comments: reason,
+                                        }),
+                                      }),
+                                    );
+                                }}
+                              >
+                                Request Changes
+                              </button>
+                              {reviewStatus === "APPROVED" && (
+                                <button
+                                  className="danger-action"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    const reason = prompt(
+                                      `Revoke approval for ${a.schema ? `${a.schema}.` : ""}${a.name} v${a.current_version} - mandatory reason`,
+                                    );
+                                    if (reason)
+                                      action(() =>
+                                        api(`/projects/${pid}/reviews`, {
+                                          method: "POST",
+                                          body: JSON.stringify({
+                                            artifact_version_id:
+                                              a.artifact_version_id,
+                                            review_type: "ARCHITECT_REVIEW",
+                                            status: "REVOKED",
+                                            reviewer: "admin",
+                                            comments: reason,
+                                          }),
+                                        }),
+                                      );
+                                  }}
+                                >
+                                  Revoke Approval
+                                </button>
+                              )}
+                            </div>
+                            {!a.approval_allowed && (
+                              <small className="review-block-reason">
+                                Approval blocked:{" "}
+                                {blockReason ||
+                                  "current version is not eligible"}
+                              </small>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="Build the Medallion plan and generate DEV artifacts before review." />
+              )}
+              {!medArts.length && reviews.length > 0 && (
+                <div className="subsection">
+                  <h4>Review history</h4>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Object</th>
+                        <th>Version</th>
+                        <th>Review</th>
+                        <th>Status</th>
+                        <th>Reviewer</th>
+                        <th>Reason / comments</th>
+                        <th>Date / time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reviews.map((r) => (
+                        <tr key={r.id}>
+                          <td>
+                            {r.schema ? `${r.schema}.` : ""}
+                            {r.object_name || "-"}
+                          </td>
+                          <td>v{r.version || "-"}</td>
+                          <td>{r.review_type}</td>
+                          <td>
+                            <Badge s={r.status} />
+                          </td>
+                          <td>{r.reviewer}</td>
+                          <td>{r.comments || "-"}</td>
+                          <td>{formatDateTime(r.reviewed_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Panel>
+          )}
+          {page === "Issues" && (
+            <>
+              <Panel title="Migration issues">
+                <div className="section-caption">
+                  Click an issue to inspect evidence, remediation and lifecycle
+                  actions.
+                </div>
+                {issues.length ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Severity</th>
+                        <th>Type</th>
+                        <th>Object</th>
+                        <th>Message</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {issues.map((i) => (
+                        <tr
+                          key={i.id}
+                          className="issue-row"
+                          onClick={() => openIssue(i)}
+                        >
+                          <td>
+                            <Badge s={i.severity} />
+                          </td>
+                          <td>{i.issue_type}</td>
+                          <td>{i.object_name || i.failed_object || "-"}</td>
+                          <td>{i.message}</td>
+                          <td>
+                            <Badge s={i.status} />
+                          </td>
+                          <td>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openIssue(i);
+                              }}
+                            >
+                              View Details
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <Empty text="No migration issues recorded." />
+                )}
+              </Panel>
+              {selectedIssue && (
+                <div
+                  className="issue-modal-backdrop"
+                  onClick={() => setSelectedIssue(null)}
+                >
+                  <div
+                    className="issue-modal"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="issue-modal-head">
+                      <div>
+                        <span className="eyebrow">ISSUE DETAILS</span>
+                        <h3>{selectedIssue.message}</h3>
+                      </div>
+                      <button onClick={() => setSelectedIssue(null)}>
+                        Close
+                      </button>
+                    </div>
+                    <div className="issue-detail-grid">
+                      <div>
+                        <span>Severity</span>
+                        <Badge s={selectedIssue.severity} />
+                      </div>
+                      <div>
+                        <span>Status</span>
+                        <Badge s={selectedIssue.status} />
+                      </div>
+                      <div>
+                        <span>Type</span>
+                        <b>{selectedIssue.issue_type}</b>
+                      </div>
+                      <div>
+                        <span>Object</span>
+                        <b>
+                          {selectedIssue.object_name ||
+                            selectedIssue.failed_object ||
+                            "-"}
+                        </b>
+                      </div>
+                      <div>
+                        <span>Run ID</span>
+                        <code>{selectedIssue.run_id || "-"}</code>
+                      </div>
+                      <div>
+                        <span>Issue ID</span>
+                        <code>{selectedIssue.id}</code>
+                      </div>
+                    </div>
+                    <div className="issue-section">
+                      <h4>Recommended remediation</h4>
+                      <p>
+                        {selectedIssue.recommended_action ||
+                          "Review the deployment evidence and remediate the failed object before continuing."}
+                      </p>
+                    </div>
+                    <div className="issue-section">
+                      <h4>Technical details</h4>
+                      <pre>
+                        {JSON.stringify(
+                          selectedIssue.technical_details || {},
+                          null,
+                          2,
+                        )}
+                      </pre>
+                    </div>
+                    <div className="issue-modal-actions">
+                      <button onClick={recheckIssue}>Re-check Evidence</button>
+                      <button onClick={viewIssueLogs}>View Logs</button>
+                      {selectedIssue.status === "OPEN" ? (
+                        <>
+                          <button onClick={() => issueAction("RESOLVE")}>
+                            Resolve
+                          </button>
+                          <button onClick={() => issueAction("CLOSE")}>
+                            Close Issue
+                          </button>
+                        </>
+                      ) : (
+                        <button onClick={() => issueAction("REOPEN")}>
+                          Reopen
+                        </button>
+                      )}
+                    </div>
+                    {showIssueLogs && (
+                      <div className="issue-section">
+                        <h4>Linked deployment logs</h4>
+                        {issueLogs.length ? (
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Time</th>
+                                <th>Status</th>
+                                <th>Run</th>
+                                <th>Step</th>
+                                <th>Target</th>
+                                <th>Message</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {issueLogs.map((x: any, i: number) => (
+                                <tr key={i}>
+                                  <td>{formatDateTime(x.timestamp)}</td>
+                                  <td>
+                                    <Badge s={x.status || "-"} />
+                                  </td>
+                                  <td>
+                                    <code>{x.run_id || "-"}</code>
+                                  </td>
+                                  <td>{x.step || "-"}</td>
+                                  <td>{x.target_fqn || "-"}</td>
+                                  <td>{x.message || "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <Empty text="No linked logs found for this issue yet." />
+                        )}
+                      </div>
+                    )}
+                    {selectedIssue.actions?.length > 0 && (
+                      <div className="issue-section">
+                        <h4>Issue history</h4>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Time</th>
+                              <th>Action</th>
+                              <th>From</th>
+                              <th>To</th>
+                              <th>Actor</th>
+                              <th>Comments</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedIssue.actions.map((a: any) => (
+                              <tr key={a.id}>
+                                <td>{formatDateTime(a.created_at)}</td>
+                                <td>{a.action}</td>
+                                <td>{a.from_status || "-"}</td>
+                                <td>{a.to_status || "-"}</td>
+                                <td>{a.actor || "-"}</td>
+                                <td>{a.comments || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          {page === "Deployments" && (
+            <>
+              <Panel title="DEV deployment and validation">
+                <p className="section-caption">
+                  Complete these three steps in order. This is the only DEV
+                  promotion workspace required after artifact approval.
+                </p>
+                <div className="dev-stage-flow">
+                  <div className="dev-stage-card">
+                    <div className="dev-stage-number">1</div>
+                    <div>
+                      <span>DEPLOY</span>
+                      <h4>Deploy Medallion to DEV</h4>
+                      <p>Deploy approved Bronze, Silver and Gold artifacts.</p>
+                    </div>
+                    <button
+                      className="primary-action"
+                      disabled={!pid || busy}
+                      title="Open the approved Medallion plan and deploy its data products to DEV"
+                      onClick={() => setPage("Medallion Design")}
+                    >
+                      <Layers3 size={15} /> Deploy approved data products to DEV
+                    </button>
+                  </div>
+                  <div className="dev-stage-card">
+                    <div className="dev-stage-number">2</div>
+                    <div>
+                      <span>VALIDATE</span>
+                      <h4>Run DEV reconciliation</h4>
+                      <p>Compare deployed targets with the source evidence.</p>
+                    </div>
+                    <button
+                      disabled={!pid || busy || medDeployment?.status !== "PASSED"}
+                      title={medDeployment?.status === "PASSED" ? "Validate deployed DEV data products against source evidence" : "Complete the Medallion DEV deployment first"}
+                      onClick={runDevReconciliation}
+                    >
+                      <Gauge size={15} /> Validate deployed DEV data products
+                    </button>
+                  </div>
+                  <div className="dev-stage-card">
+                    <div className="dev-stage-number">3</div>
+                    <div>
+                      <span>APPROVE</span>
+                      <h4>Evaluate DEV gate</h4>
+                      <p>Approve DEV only after reconciliation passes.</p>
+                    </div>
+                    <button
+                      disabled={!pid || busy || reconResult?.status !== "PASSED"}
+                      title={reconResult?.status === "PASSED" ? "Approve the validated DEV release for TEST promotion" : "DEV reconciliation must pass before gate evaluation"}
+                      onClick={() =>
+                        action(async () => {
+                          const r: any = await api(
+                            `/projects/${pid}/deployments/dev/evaluate-gate`,
+                            { method: "POST" },
+                          );
+                          setGateResult(r);
+                          return r;
+                        })
+                      }
+                    >
+                      <ShieldCheck size={15} /> Approve DEV release for TEST
+                    </button>
+                  </div>
+                </div>
+              </Panel>
+              <details className="legacy-deployment">
+                <summary>Legacy artifact deployment — separate workflow</summary>
+                <p>These controls deploy the legacy artifact set. They are not required after a successful Medallion deployment.</p>
+              <Panel
+                title="DEV deployment execution"
+                actions={
+                  <div className="deploy-actions">
+                    <button
+                      disabled={!pid || busy}
+                      onClick={() =>
+                        action(async () => {
+                          const r: any = await api(
+                            `/projects/${pid}/deployments/dev/test-databricks`,
+                            { method: "POST" },
+                          );
+                          setPrecheck(r);
+                          return r;
+                        })
+                      }
+                    >
+                      <PlugZap size={15} />
+                      Test Databricks
+                    </button>
+                    <button
+                      disabled={!pid || busy}
+                      onClick={() =>
+                        action(async () => {
+                          const r: any = await api(
+                            `/projects/${pid}/deployments/dev/precheck`,
+                            { method: "POST" },
+                          );
+                          setPrecheck(r);
+                          return r;
+                        })
+                      }
+                    >
+                      <FileCheck2 size={15} />
+                      DEV Precheck
+                    </button>
+                    <button
+                      className="primary-action"
+                      disabled={!pid || busy}
+                      onClick={() => {
+                        const allow = confirm(
+                          "Allow destructive DEV replacement only when policy permits and schema drift requires it?",
+                        );
+                        action(() =>
+                          api(`/projects/${pid}/deployments/dev/deploy`, {
+                            method: "POST",
+                            body: JSON.stringify({
+                              allow_destructive: allow,
+                              batch_size: deployBatch,
+                              max_rows: deployMaxRows
+                                ? Number(deployMaxRows)
+                                : null,
+                              load_mode: deployMode,
+                              replace_existing_data: allow,
+                            }),
+                          }),
+                        );
+                      }}
+                    >
+                      <Play size={15} />
+                      Deploy Approved to DEV
+                    </button>
+                    <button
+                      disabled={!pid || busy}
+                      onClick={() => {
+                        const allow = confirm(
+                          "Does the failed DEV artifact contain an intentional destructive operation that you reviewed and explicitly approve? Select Cancel to resume without destructive approval.",
+                        );
+                        action(() =>
+                          api(`/projects/${pid}/deployments/dev/resume`, {
+                            method: "POST",
+                            body: JSON.stringify({
+                              allow_destructive: allow,
+                              load_mode: "FULL_LOAD",
+                              replace_existing_data: allow,
+                            }),
+                          }),
+                        );
+                      }}
+                    >
+                      <RefreshCw size={15} />
+                      Resume Failed Run
+                    </button>
+                    <button disabled={!pid || busy} onClick={viewDevLogs}>
+                      <ScrollText size={15} />
+                      View Logs
+                    </button>
+                    <button disabled={!pid || busy} onClick={downloadDevLogs}>
+                      <Download size={15} />
+                      Download Log
+                    </button>
+                  </div>
+                }
+              >
+                <div className="deploy-config">
+                  <label>
+                    Load mode
+                    <select
+                      value={deployMode}
+                      onChange={(e) => setDeployMode(e.target.value)}
+                    >
+                      <option>FULL_LOAD</option>
+                      <option>APPEND</option>
+                    </select>
+                  </label>
+                  <label>
+                    Batch size
+                    <input
+                      type="number"
+                      min="1"
+                      value={deployBatch}
+                      onChange={(e) =>
+                        setDeployBatch(Math.max(1, Number(e.target.value) || 1))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Max rows (optional)
+                    <input
+                      type="number"
+                      min="1"
+                      value={deployMaxRows}
+                      onChange={(e) => setDeployMaxRows(e.target.value)}
+                      placeholder="Unlimited"
+                    />
+                  </label>
+                  <small>
+                    FULL_LOAD will not clear existing target data unless you
+                    explicitly approve replacement.
+                  </small>
+                </div>
+                <div className="deployment-summary">
+                  <div className="summary-stat">
+                    <span>Status</span>
+                    <Badge s={deployment.status || "NOT_STARTED"} />
+                  </div>
+                  <div className="summary-stat">
+                    <span>Run ID</span>
+                    <b>{deployment.run_id || "-"}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Objects</span>
+                    <b>{deployment.total || 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Passed</span>
+                    <b>{deployment.passed || 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Failed</span>
+                    <b>{deployment.failed || 0}</b>
+                  </div>
+                  <div className="summary-stat">
+                    <span>Checkpoint</span>
+                    <b>{deployment.checkpoint || "-"}</b>
+                  </div>
+                </div>
+                {deployment.failed_object && (
+                  <div className="notice">
+                    Failed object: {deployment.failed_object}. Fix the issue,
+                    then use Resume Failed Run.
+                  </div>
+                )}
+                {precheck && (
+                  <div className="subsection">
+                    <h4>Latest precheck / connection result</h4>
+                    <pre>{JSON.stringify(precheck, null, 2)}</pre>
+                  </div>
+                )}
+              </Panel>
+              <Panel title="Execution evidence">
+                {deployment.logs?.length ? (
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Status</th>
+                        <th>Object</th>
+                        <th>Target / action</th>
+                        <th>Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deployment.logs
+                        .slice()
+                        .reverse()
+                        .map((x: any, i: number) => (
+                          <tr key={i}>
+                            <td>{formatDateTime(x.created_at)}</td>
+                            <td>
+                              <Badge s={x.status} />
+                            </td>
+                            <td>{x.object_id || "-"}</td>
+                            <td>{x.target_fqn || x.action || "-"}</td>
+                            <td>
+                              <code>
+                                {JSON.stringify({
+                                  artifact_version: x.artifact_version,
+                                  layer: x.layer,
+                                  schema_action: x.schema_action,
+                                  load: x.load,
+                                  error: x.error,
+                                })}
+                              </code>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <Empty text="No DEV deployment evidence yet. Run DEV Precheck first." />
+                )}
+                {showLogs && (
+                  <div className="subsection">
+                    <div className="log-head">
+                      <h4>Full project-scoped DEV log</h4>
+                      <button onClick={() => setShowLogs(false)}>Hide</button>
+                    </div>
+                    {logView.length ? (
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Time</th>
+                            <th>Category</th>
+                            <th>Status</th>
+                            <th>Run</th>
+                            <th>Step</th>
+                            <th>Target</th>
+                            <th>Message</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {logView.map((x: any, i: number) => (
+                            <tr key={i}>
+                              <td>{formatDateTime(x.timestamp)}</td>
+                              <td>{x.category}</td>
+                              <td>
+                                <Badge s={x.status || "-"} />
+                              </td>
+                              <td>
+                                <code>{x.run_id || "-"}</code>
+                              </td>
+                              <td>{x.step || "-"}</td>
+                              <td>{x.target_fqn || "-"}</td>
+                              <td>{x.message || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <Empty text="No project-scoped DEV logs recorded yet." />
+                    )}
+                  </div>
+                )}
+              </Panel>
+              </details>
+            </>
+          )}
+          {page === "Deployments" && (
+            <Panel
+              title="DEV validation evidence"
+              actions={
+                <div className="deploy-actions">
+                  <button
+                    disabled={!pid || busy || !reconResult?.run_id}
+                    onClick={downloadReconciliation}
+                  >
+                    <Download size={15} />
+                    Download CSV
+                  </button>
+                </div>
+              }
+            >
+              <p className="section-caption">
+                Reconciliation evidence and the resulting DEV quality gate are
+                shown here for the current project.
+              </p>
+                {gateResult && (
+                  <div className="subsection">
+                    <h4>DEV quality gate</h4>
+                    <pre>{JSON.stringify(gateResult, null, 2)}</pre>
+                  </div>
+                )}
+              {environmentPassed("DEV") && (
+                <div className="dev-next-action">
+                  <button className="primary-action" onClick={() => setPage("Waves")}>
+                    Promote validated DEV release to TEST <ChevronRight size={15} />
+                  </button>
+                </div>
+              )}
+              <div className="notice ok">
+                Reconciliation uses the exact artifact versions from the latest
+                successful Medallion MDR run. Tables and views use count checks;
+                functions and procedures use safe metadata checks and are never
+                executed.
+              </div>
+              <div className="deployment-summary">
+                <div className="summary-stat">
+                  <span>Status</span>
+                  <Badge s={reconResult?.status || "NOT_STARTED"} />
+                </div>
+                <div className="summary-stat">
+                  <span>Workflow</span>
+                  <b>{reconResult?.workflow || "MEDALLION"}</b>
+                </div>
+                <div className="summary-stat">
+                  <span>Deployment run</span>
+                  <b>{reconResult?.run_id || "-"}</b>
+                </div>
+                <div className="summary-stat">
+                  <span>Objects checked</span>
+                  <b>{reconResult?.details_count || 0}</b>
+                </div>
+                <div className="summary-stat">
+                  <span>Passed</span>
+                  <b>{reconResult?.passed || 0}</b>
+                </div>
+                <div className="summary-stat">
+                  <span>Failed</span>
+                  <b>{reconResult?.failed || 0}</b>
+                </div>
+              </div>
+              {reconResult?.details?.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Layer</th>
+                      <th>Object</th>
+                      <th>Type</th>
+                      <th>Check</th>
+                      <th>Source</th>
+                      <th>Target</th>
+                      <th>Version</th>
+                      <th>Status</th>
+                      <th>Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reconResult.details.map((x: any) => (
+                      <tr
+                        key={`${x.medallion_node_id}-${x.artifact_version_id}`}
+                      >
+                        <td>
+                          <Badge s={x.layer} />
+                        </td>
+                        <td>
+                          <code>{x.target_fqn || x.object}</code>
+                        </td>
+                        <td>{x.object_type || "-"}</td>
+                        <td>{x.reconciliation_type}</td>
+                        <td>{x.source_count ?? "-"}</td>
+                        <td>{x.target_count ?? "-"}</td>
+                        <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
+                        <td>
+                          <Badge s={x.status} />
+                        </td>
+                        <td>{x.error || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="No Medallion reconciliation has been run yet. Deploy Medallion DEV successfully, then run reconciliation." />
+              )}
+            </Panel>
+          )}
+          {page === "Lifecycle" && (
+            <Panel title="Project-specific lifecycle">
+              <div className="lifecycle-big">
+                {life.map((x, i) => (
+                  <div className="stage" key={x.environment}>
+                    <div className="circle">{i + 1}</div>
+                    <h3>{x.environment}</h3>
+                    <Badge s={x.status} />
+                    <p>
+                      {x.pass_count} passed · {x.fail_count} failed ·{" "}
+                      {x.review_blockers} blockers
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          )}
+          {page === "Waves" && (
+            <>
+              <div className="promotion-studio">
+                {autoPromotionStatus?.run && (
+                  <div style={{ marginBottom: 14, padding: "12px 16px", background: "rgba(30, 41, 59, 0.8)", border: "1px solid rgba(59, 130, 246, 0.35)", borderRadius: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <small style={{ color: "#60a5fa", fontWeight: 700, letterSpacing: "0.08em" }}>AUTOMATED MASTER PROMOTION ACTIVE</small>
+                        <h4 style={{ margin: "2px 0 0", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+                          Run {autoPromotionStatus.run.run_id} · {autoPromotionStatus.run.current_operation}
+                        </h4>
+                      </div>
+                      <Badge s={autoPromotionStatus.run.status} />
+                    </div>
+                    {autoPromotionStatus.is_active && (
+                      <small style={{ color: "#94a3b8", display: "block", marginTop: 4 }}>
+                        Individual environment promotion buttons are temporarily disabled to prevent conflicting operations.
+                      </small>
+                    )}
+                  </div>
+                )}
+                <div className="prompt-studio-head">
+                  <div className="prompt-studio-title">
+                    <Sparkles size={20} color="#5b8cff" />
+                    <div>
+                      <h3>Release 5 · Prompt Promotion Studio</h3>
+                      <p>
+                        Promote one approved immutable release at a time through TEST, UAT, and PROD.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="prompt-badge"><ShieldCheck size={12} /> Environment governed</span>
+                </div>
+                <div className="prompt-input-row">
+                  <input
+                    value={promotionPrompt}
+                    onChange={(e) => setPromotionPrompt(e.target.value)}
+                    placeholder="Promote approved DEV release to TEST"
+                    disabled={busy || promotionRunning}
+                  />
+                  <button
+                    className="primary-action"
+                    disabled={!pid || busy || promotionRunning || !promotionPrompt.trim()}
+                    onClick={() => generatePromotionPlan()}
+                  >
+                    <Command size={15} /> Generate Promotion Plan
+                  </button>
+                </div>
+                <div className="prompt-quick-chips">
+                  <span>Quick prompts:</span>
+                  {[
+                    "Promote approved DEV release to TEST",
+                    "Promote approved TEST release to UAT",
+                    "Promote approved UAT release to PROD",
+                  ].map((template) => (
+                    <button
+                      key={template}
+                      className="prompt-chip"
+                      disabled={busy || promotionRunning}
+                      onClick={() => {
+                        setPromotionPrompt(template);
+                        generatePromotionPlan(template);
+                      }}
+                    >
+                      {template}
+                    </button>
+                  ))}
+                </div>
+
+                {promotionPlan && (
+                  <div className="prompt-plan-card">
+                    {promotionPlan.status === "NEEDS_USER_INPUT" ? (
+                      <div className="promotion-blocked">
+                        <b><ShieldAlert size={16} /> Promotion prerequisites required</b>
+                        <ul>
+                          {promotionPlan.blockers?.map((blocker: string, index: number) => (
+                            <li key={index}>{blocker}</li>
+                          ))}
+                        </ul>
+                        {promotionPlan.actionable_steps?.[0] && (
+                          <small><strong>Next action:</strong> {promotionPlan.actionable_steps[0]}</small>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="promotion-plan-head">
+                          <div>
+                            <small>GOVERNED SINGLE-ENVIRONMENT PLAN</small>
+                            <h4>
+                              {promotionPlan.intent?.source_environment} → {promotionPlan.intent?.target_environment}
+                              <Badge s={promotionPlan.status} />
+                            </h4>
+                          </div>
+                          {promotionPlan.status === "PENDING_APPROVAL" && (
+                            <button
+                              className="primary-action"
+                              disabled={busy || promotionRunning}
+                              onClick={executePromotionPlan}
+                            >
+                              <ShieldCheck size={15} />
+                              {promotionPlan.intent?.target_environment === "PROD"
+                                ? "Confirm & Promote to PROD"
+                                : `Approve & Promote to ${promotionPlan.intent?.target_environment}`}
+                            </button>
+                          )}
+                        </div>
+                        <div className="prompt-impact-grid">
+                          <div className="prompt-impact-item"><span>Approved artifacts</span><b>{promotionPlan.impact?.artifact_count || 0}</b></div>
+                          <div className="prompt-impact-item"><span>Source manifest</span><code>{promotionPlan.impact?.source_deployment_run_id || "-"}</code></div>
+                          <div className="prompt-impact-item"><span>Target catalog</span><code>{promotionPlan.intent?.target_catalog || "-"}</code></div>
+                          <div className="prompt-impact-item"><span>Risk</span><b>{promotionPlan.impact?.risk_level}</b></div>
+                        </div>
+                        <div className="prompt-stages-list promotion-stage-list">
+                          {promotionPlan.stages?.map((stage: any) => (
+                            <div className="prompt-stage-pill" key={stage.stage}>
+                              <b>{stage.title}</b><small>{stage.stage}</small>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="promotion-safety-note">
+                          <ShieldCheck size={14} /> No AI regeneration · no environment skipping · PROD requires separate confirmation
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {promotionExecution && (
+                  <div className="prompt-exec-card">
+                    <div className="promotion-exec-head">
+                      <div>
+                        <small>EXECUTION {promotionExecution.run_id}</small>
+                        <b>{promotionExecution.source_environment} → {promotionExecution.target_environment}</b>
+                      </div>
+                      <Badge s={promotionExecution.status} />
+                    </div>
+                    <div className="prompt-exec-stages promotion-exec-stages">
+                      {Object.entries(promotionExecution.stages || {}).map(([name, stage]: [string, any]) => (
+                        <div className="prompt-exec-step" key={name}>
+                          <span>{name}</span><Badge s={stage.status} />
+                          {stage.deployed_count !== undefined && <small>{stage.deployed_count} deployed</small>}
+                          {stage.passed !== undefined && <small>{stage.passed} reconciled</small>}
+                        </div>
+                      ))}
+                    </div>
+                    {promotionExecution.status === "FAILED" && (
+                      <div className="prompt-exec-error">
+                        <b><ShieldAlert size={15} /> Failed stage: {promotionExecution.failed_stage}</b>
+                        <span>{promotionExecution.error}</span>
+                        <small><strong>Next action:</strong> {promotionExecution.errors?.[0]?.recommended_action}</small>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <Panel
+                title="DEV → TEST promotion"
+                actions={
+                  <div className="deploy-actions">
+                    <button
+                      disabled={!pid || busy || !environmentPassed("DEV")}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/test/precheck`, { method: "POST" });
+                        setTestPrecheck(result);
+                        return result;
+                      })}
+                    >
+                      <FileCheck2 size={15} /> TEST Precheck
+                    </button>
+                    <button
+                      className="primary-action"
+                      disabled={!pid || busy || testPrecheck?.eligible !== true}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/test/deploy`, { method: "POST" });
+                        setTestPromotion(result);
+                        return result;
+                      })}
+                    >
+                      <Play size={15} /> Promote and Deploy to TEST
+                    </button>
+                    <button
+                      disabled={!pid || busy || testPromotion?.status !== "PASSED"}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/test/reconcile`, { method: "POST" });
+                        setTestRecon(result);
+                        return result;
+                      })}
+                    >
+                      <Gauge size={15} /> Run TEST Reconciliation
+                    </button>
+                    <button
+                      disabled={!pid || busy || testRecon?.status !== "PASSED"}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/test/evaluate-gate`, { method: "POST" });
+                        setTestGate(result);
+                        return result;
+                      })}
+                    >
+                      <ShieldCheck size={15} /> Evaluate TEST Gate
+                    </button>
+                  </div>
+                }
+              >
+                <div className="notice ok">
+                  TEST promotion uses the exact artifact-version manifest that passed the DEV quality gate. Bronze data is deep-cloned from DEV; Silver and Gold artifacts are deployed with TEST catalog references.
+                </div>
+                <div className="deployment-summary">
+                  <div className="summary-stat"><span>TEST status</span><Badge s={testPromotion?.status || "NOT_STARTED"} /></div>
+                  <div className="summary-stat"><span>Run ID</span><b>{testPromotion?.run_id || "-"}</b></div>
+                  <div className="summary-stat"><span>Objects</span><b>{testPromotion?.total ?? testPromotion?.count ?? 0}</b></div>
+                  <div className="summary-stat"><span>Passed</span><b>{testPromotion?.passed ?? 0}</b></div>
+                  <div className="summary-stat"><span>Failed</span><b>{testPromotion?.failed ?? 0}</b></div>
+                  <div className="summary-stat"><span>TEST gate</span><Badge s={testGate?.status || (environmentPassed("TEST") ? "PASSED" : "NOT_STARTED")} /></div>
+                </div>
+                {testPrecheck && (
+                  <div className="subsection">
+                    <h4>TEST promotion precheck</h4>
+                    <pre>{JSON.stringify(testPrecheck, null, 2)}</pre>
+                  </div>
+                )}
+                {testRecon?.run_id && (
+                  <div className="subsection">
+                    <h4>TEST reconciliation</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={testRecon.status} /></div>
+                      <div className="summary-stat"><span>Checked</span><b>{testRecon.details_count || 0}</b></div>
+                      <div className="summary-stat"><span>Passed</span><b>{testRecon.passed || 0}</b></div>
+                      <div className="summary-stat"><span>Failed</span><b>{testRecon.failed || 0}</b></div>
+                    </div>
+                  </div>
+                )}
+                {testGate && (
+                  <div className="subsection">
+                    <h4>TEST quality gate</h4>
+                    <pre>{JSON.stringify(testGate, null, 2)}</pre>
+                  </div>
+                )}
+                {environmentPassed("TEST") && (
+                  <div className="business-next">
+                    <div>
+                      <span>BUSINESS OUTCOME</span>
+                      <b>TEST validation passed</b>
+                      <p>The validated release is ready for business acceptance testing in UAT.</p>
+                    </div>
+                    <button
+                      className="primary-action"
+                      onClick={() => document.getElementById("uat-promotion")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                    >
+                      Begin UAT acceptance validation <ChevronRight size={15} />
+                    </button>
+                  </div>
+                )}
+              </Panel>
+              <Panel title="TEST execution evidence">
+                {testPromotion?.logs?.length ? (
+                  <table>
+                    <thead><tr><th>Time</th><th>Status</th><th>Target / action</th><th>Artifact version</th></tr></thead>
+                    <tbody>{testPromotion.logs.slice().reverse().map((x: any, i: number) => (
+                      <tr key={i}>
+                        <td>{formatDateTime(x.created_at)}</td>
+                        <td><Badge s={x.status} /></td>
+                        <td><code>{x.target_fqn || x.action || "-"}</code></td>
+                        <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                ) : <Empty text="Run TEST Precheck, then promote the approved DEV manifest to TEST." />}
+              </Panel>
+              <div id="uat-promotion" className="promotion-anchor">
+              <Panel
+                title="TEST → UAT promotion"
+                actions={
+                  <div className="deploy-actions">
+                    <button
+                      disabled={!pid || busy || !environmentPassed("TEST")}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/uat/precheck`, { method: "POST" });
+                        setUatPrecheck(result);
+                        return result;
+                      })}
+                    >
+                      <FileCheck2 size={15} /> UAT Precheck
+                    </button>
+                    <button
+                      className="primary-action"
+                      disabled={!pid || busy || uatPrecheck?.eligible !== true}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/uat/deploy`, { method: "POST" });
+                        setUatPromotion(result);
+                        return result;
+                      })}
+                    >
+                      <Play size={15} /> Promote and Deploy to UAT
+                    </button>
+                    <button
+                      disabled={!pid || busy || uatPromotion?.status !== "PASSED"}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/uat/reconcile`, { method: "POST" });
+                        setUatRecon(result);
+                        return result;
+                      })}
+                    >
+                      <Gauge size={15} /> Run UAT Reconciliation
+                    </button>
+                    <button
+                      disabled={!pid || busy || uatRecon?.status !== "PASSED"}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/uat/evaluate-gate`, { method: "POST" });
+                        setUatGate(result);
+                        return result;
+                      })}
+                    >
+                      <ShieldCheck size={15} /> Evaluate UAT Gate
+                    </button>
+                  </div>
+                }
+              >
+                <div className="notice ok">
+                  UAT promotion uses the exact artifact-version manifest that passed the TEST quality gate. Bronze data is deep-cloned from TEST; Silver and Gold artifacts are deployed with UAT catalog references.
+                </div>
+                <div className="deployment-summary">
+                  <div className="summary-stat"><span>UAT status</span><Badge s={uatPromotion?.status || "NOT_STARTED"} /></div>
+                  <div className="summary-stat"><span>Run ID</span><b>{uatPromotion?.run_id || "-"}</b></div>
+                  <div className="summary-stat"><span>Objects</span><b>{uatPromotion?.total ?? uatPromotion?.count ?? 0}</b></div>
+                  <div className="summary-stat"><span>Passed</span><b>{uatPromotion?.passed ?? 0}</b></div>
+                  <div className="summary-stat"><span>Failed</span><b>{uatPromotion?.failed ?? 0}</b></div>
+                  <div className="summary-stat"><span>UAT gate</span><Badge s={uatGate?.status || (environmentPassed("UAT") ? "PASSED" : "NOT_STARTED")} /></div>
+                </div>
+                {uatPrecheck && (
+                  <div className="subsection">
+                    <h4>UAT promotion precheck</h4>
+                    <pre>{JSON.stringify(uatPrecheck, null, 2)}</pre>
+                  </div>
+                )}
+                {uatRecon?.run_id && (
+                  <div className="subsection">
+                    <h4>UAT reconciliation</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={uatRecon.status} /></div>
+                      <div className="summary-stat"><span>Checked</span><b>{uatRecon.details_count || 0}</b></div>
+                      <div className="summary-stat"><span>Passed</span><b>{uatRecon.passed || 0}</b></div>
+                      <div className="summary-stat"><span>Failed</span><b>{uatRecon.failed || 0}</b></div>
+                    </div>
+                  </div>
+                )}
+                {uatGate && (
+                  <div className="subsection">
+                    <h4>UAT quality gate</h4>
+                    <pre>{JSON.stringify(uatGate, null, 2)}</pre>
+                  </div>
+                )}
+                {environmentPassed("UAT") && (
+                  <div className="business-next">
+                    <div>
+                      <span>BUSINESS OUTCOME</span>
+                      <b>Business acceptance completed</b>
+                      <p>The accepted release is eligible for final production readiness validation.</p>
+                    </div>
+                    <button
+                      className="primary-action"
+                      onClick={() => document.getElementById("prod-promotion")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                    >
+                      Validate production release readiness <ChevronRight size={15} />
+                    </button>
+                  </div>
+                )}
+              </Panel>
+              </div>
+              <Panel title="UAT execution evidence">
+                {uatPromotion?.logs?.length ? (
+                  <table>
+                    <thead><tr><th>Time</th><th>Status</th><th>Target / action</th><th>Artifact version</th></tr></thead>
+                    <tbody>{uatPromotion.logs.slice().reverse().map((x: any, i: number) => (
+                      <tr key={i}>
+                        <td>{formatDateTime(x.created_at)}</td>
+                        <td><Badge s={x.status} /></td>
+                        <td><code>{x.target_fqn || x.action || "-"}</code></td>
+                        <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                ) : <Empty text="Run UAT Precheck, then promote the approved TEST manifest to UAT." />}
+              </Panel>
+              <div id="prod-promotion" className="promotion-anchor">
+              <Panel
+                title="UAT → PROD promotion"
+                actions={
+                  <div className="deploy-actions">
+                    <button disabled={!pid || busy || !environmentPassed("UAT")} onClick={() => action(async () => {
+                      const result: any = await api(`/projects/${pid}/promotions/prod/precheck`, { method: "POST" });
+                      setProdPrecheck(result); return result;
+                    })}>
+                      <FileCheck2 size={15} /> PROD Precheck
+                    </button>
+                    <button className="primary-action" disabled={!pid || busy || prodPrecheck?.eligible !== true}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/prod/deploy`, { method: "POST" });
+                        setProdPromotion(result); return result;
+                      })}>
+                      <Play size={15} /> Promote and Deploy to PROD
+                    </button>
+                    <button disabled={!pid || busy || prodPromotion?.status !== "PASSED"}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/prod/reconcile`, { method: "POST" });
+                        setProdRecon(result); return result;
+                      })}>
+                      <Gauge size={15} /> Run PROD Reconciliation
+                    </button>
+                    <button disabled={!pid || busy || prodRecon?.status !== "PASSED"}
+                      onClick={() => action(async () => {
+                        const result: any = await api(`/projects/${pid}/promotions/prod/evaluate-gate`, { method: "POST" });
+                        setProdGate(result); return result;
+                      })}>
+                      <ShieldCheck size={15} /> Evaluate PROD Gate
+                    </button>
+                  </div>
+                }
+              >
+                <div className="notice ok">
+                  PROD promotion uses the exact artifact-version manifest that passed the UAT quality gate. Bronze data is deep-cloned from UAT; Silver and Gold artifacts are deployed with PROD catalog references.
+                </div>
+                <div className="deployment-summary">
+                  <div className="summary-stat"><span>PROD status</span><Badge s={prodPromotion?.status || "NOT_STARTED"} /></div>
+                  <div className="summary-stat"><span>Run ID</span><b>{prodPromotion?.run_id || "-"}</b></div>
+                  <div className="summary-stat"><span>Objects</span><b>{prodPromotion?.total ?? prodPromotion?.count ?? 0}</b></div>
+                  <div className="summary-stat"><span>Passed</span><b>{prodPromotion?.passed ?? 0}</b></div>
+                  <div className="summary-stat"><span>Failed</span><b>{prodPromotion?.failed ?? 0}</b></div>
+                  <div className="summary-stat"><span>PROD gate</span><Badge s={prodGate?.status || (environmentPassed("PROD") ? "PASSED" : "NOT_STARTED")} /></div>
+                </div>
+                {prodPrecheck && <div className="subsection"><h4>PROD promotion precheck</h4><pre>{JSON.stringify(prodPrecheck, null, 2)}</pre></div>}
+                {prodRecon?.run_id && (
+                  <div className="subsection">
+                    <h4>PROD reconciliation</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={prodRecon.status} /></div>
+                      <div className="summary-stat"><span>Checked</span><b>{prodRecon.details_count || 0}</b></div>
+                      <div className="summary-stat"><span>Passed</span><b>{prodRecon.passed || 0}</b></div>
+                      <div className="summary-stat"><span>Failed</span><b>{prodRecon.failed || 0}</b></div>
+                    </div>
+                  </div>
+                )}
+                {prodGate && <div className="subsection"><h4>PROD quality gate</h4><pre>{JSON.stringify(prodGate, null, 2)}</pre></div>}
+                {environmentPassed("PROD") && (
+                  <div className="business-next">
+                    <div>
+                      <span>BUSINESS OUTCOME</span>
+                      <b>Production release validated</b>
+                      <p>The migration is technically complete and ready for consumer switch-over.</p>
+                    </div>
+                    <button className="primary-action" onClick={() => setPage("Cutover")}>
+                      Record production cutover and acceptance <ChevronRight size={15} />
+                    </button>
+                  </div>
+                )}
+              </Panel>
+              </div>
+              <Panel title="PROD execution evidence">
+                {prodPromotion?.logs?.length ? (
+                  <table>
+                    <thead><tr><th>Time</th><th>Status</th><th>Target / action</th><th>Artifact version</th></tr></thead>
+                    <tbody>{prodPromotion.logs.slice().reverse().map((x: any, i: number) => (
+                      <tr key={i}>
+                        <td>{formatDateTime(x.created_at)}</td>
+                        <td><Badge s={x.status} /></td>
+                        <td><code>{x.target_fqn || x.action || "-"}</code></td>
+                        <td>{x.artifact_version ? `v${x.artifact_version}` : "-"}</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                ) : <Empty text="Run PROD Precheck, then promote the approved UAT manifest to PROD." />}
+              </Panel>
+            </>
+          )}
+          {genericModule &&
+            ![
+              "Assessment",
+              "Conversion Plans",
+              "Administration",
+              "Deployments",
+              "Waves",
+            ].includes(page) && (
+              <Panel
+                title={page}
+                actions={
+                  <button disabled={!pid} onClick={addRecord}>
+                    <Plus size={15} />
+                    Add record
+                  </button>
+                }
+              >
+                <RecordTable rows={records} />
+              </Panel>
+            )}
+          {page === "Users" && (
+            <Panel title="Users">
+              {users.length ? (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Role</th>
+                      <th>Locked</th>
+                      <th>Attempts</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map((u) => (
+                      <tr key={u.id}>
+                        <td>{u.username}</td>
+                        <td>{u.role}</td>
+                        <td>{String(u.locked)}</td>
+                        <td>{u.failed_attempts}</td>
+                        <td>
+                          {u.locked && (
+                            <button
+                              onClick={() =>
+                                action(() =>
+                                  api(`/users/${u.id}/unlock`, {
+                                    method: "POST",
+                                  }),
+                                )
+                              }
+                            >
+                              Unlock
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <Empty text="No users." />
+              )}
+            </Panel>
+          )}
+          {page === "Environment Setup" && (
+            <>
+              <Panel title="Client Databricks configuration">
+                <div className={`notice ${environmentConfig?.feature_enabled ? "ok" : ""}`}>
+                  {environmentConfig?.feature_enabled
+                    ? "DEV environment provisioning is enabled. TEST, UAT and PROD remain outside this release scope."
+                    : "Preview and preflight are available, but provisioning is disabled until DATABRICKS_ENVIRONMENT_PROVISIONING_ENABLED=true is configured on the backend."}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:12}}>
+                  {[
+                    ["workspace_host","Workspace host","dbc-example.cloud.databricks.com"],
+                    ["http_path","SQL warehouse HTTP path","/sql/1.0/warehouses/..."],
+                    ["token_env_key","Token secret reference","CLIENT_DATABRICKS_TOKEN"],
+                    ["catalog_prefix","Catalog prefix","migration"],
+                  ].map(([key,label,placeholder]) => (
+                    <label key={key} style={{display:"grid",gap:6,fontSize:11,color:"#65738a"}}>
+                      <b>{label}</b>
+                      <input
+                        value={(environmentForm as any)[key]}
+                        placeholder={placeholder}
+                        onChange={(e) => setEnvironmentForm({...environmentForm,[key]:e.target.value})}
+                        style={{border:"1px solid #d8e0ea",borderRadius:10,padding:"10px 12px"}}
+                      />
+                    </label>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+                  <button disabled={!pid || busy} onClick={() => action(() => api(`/projects/${pid}/databricks/configuration`,{
+                    method:"PUT",body:JSON.stringify(environmentForm),
+                  }))}><ShieldCheck size={15}/> Save configuration</button>
+                  <button disabled={!pid || busy || !environmentConfig?.configured} onClick={() => action(() =>
+                    api(`/projects/${pid}/databricks/connection-test`,{method:"POST"})
+                  )}><PlugZap size={15}/> Test connection</button>
+                </div>
+                {environmentConfig?.configured && (
+                  <div className="subsection">
+                    <b>Security status</b>
+                    <p style={{fontSize:11,color:"#6f7e94"}}>
+                      Secret reference: <code>{environmentConfig.token_env_key}</code> · Secret configured: {environmentConfig.token_configured ? "Yes" : "No"} · Connection: {environmentConfig.status}
+                    </p>
+                  </div>
+                )}
+              </Panel>
+              <Panel title="Governed DEV environment plan" actions={
+                <button disabled={!pid || busy || !environmentConfig?.configured} onClick={() => action(() =>
+                  api(`/projects/${pid}/environments/dev/plan`,{method:"POST"})
+                )}><Plus size={15}/> Create DEV plan</button>
+              }>
+                {!environmentPlan?.exists ? <Empty text="Save the Databricks configuration, then create the DEV environment plan." /> : (
+                  <>
+                    <div className="cards">
+                      <Card n={1} t="Environment: DEV" />
+                      <Card n={environmentPlan.schemas?.length || 0} t="Managed schemas" />
+                      <Card n={environmentPlan.preflight?.destructive_operations || 0} t="Destructive operations" />
+                    </div>
+                    <div className="subsection">
+                      <p style={{fontSize:11}}>Catalog: <code>{environmentPlan.catalog_name}</code> · Status: <Badge s={environmentPlan.status}/></p>
+                      <table>
+                        <thead><tr><th>Planned operation</th><th>Preflight action</th></tr></thead>
+                        <tbody>{(environmentPlan.operations || []).map((operation:string,index:number) => (
+                          <tr key={operation}><td><code>{operation}</code></td><td>{index===0 ? environmentPlan.preflight?.catalog?.action || "NOT_RUN" : environmentPlan.preflight?.schemas?.[index-1]?.action || "NOT_RUN"}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                    <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+                      <button disabled={busy || environmentConfig?.status!=="READY"} onClick={() => action(() =>
+                        api(`/projects/${pid}/environments/dev/preflight`,{method:"POST"})
+                      )}><Stethoscope size={15}/> Run preflight</button>
+                      <button disabled={busy || environmentPlan.status!=="PREFLIGHT_PASSED"} onClick={() => action(() =>
+                        api(`/projects/${pid}/environments/dev/approve`,{method:"POST"})
+                      )}><FileCheck2 size={15}/> Approve plan</button>
+                      <button disabled={busy || environmentPlan.status!=="APPROVED" || !environmentConfig?.feature_enabled} onClick={() => action(() =>
+                        api(`/projects/${pid}/environments/dev/provision`,{method:"POST"})
+                      )}><ServerCog size={15}/> Provision DEV</button>
+                    </div>
+                  </>
+                )}
+              </Panel>
+              <Panel
+                title="Release 2 · SQL Server to DEV Bronze ingestion"
+                actions={
+                  <button
+                    disabled={!pid || busy || environmentPlan?.status !== "PROVISIONED"}
+                    onClick={runBronzePreflight}
+                  >
+                    <Stethoscope size={15}/> Run ingestion preflight
+                  </button>
+                }
+              >
+                <p className="section-caption">
+                  Stream discovered SQL Server tables into <code>{environmentPlan?.catalog_name || "migration_dev"}.bronze</code> using the project-scoped Databricks connection.
+                </p>
+                <div className="deploy-config">
+                  <label>
+                    Load mode
+                    <select value={bronzeLoadMode} onChange={(event) => setBronzeLoadMode(event.target.value)}>
+                      <option>FULL_LOAD</option>
+                      <option>APPEND</option>
+                    </select>
+                  </label>
+                  <label>
+                    Batch size
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      value={bronzeBatchSize}
+                      onChange={(event) => setBronzeBatchSize(Math.min(10000, Math.max(1, Number(event.target.value) || 1)))}
+                    />
+                  </label>
+                  <label>
+                    Max rows (test only)
+                    <input
+                      type="number"
+                      min="1"
+                      value={bronzeMaxRows}
+                      onChange={(event) => setBronzeMaxRows(event.target.value)}
+                      placeholder="Unlimited"
+                    />
+                  </label>
+                  <button
+                    className="primary-action"
+                    disabled={busy || environmentPlan?.status !== "PROVISIONED" || bronzePreflight?.status !== "PASSED"}
+                    onClick={runBronzeIngestion}
+                  >
+                    <Play size={15}/> Start DEV Bronze ingestion
+                  </button>
+                </div>
+                {environmentPlan?.status !== "PROVISIONED" && (
+                  <div className="notice">Provision the governed DEV environment before running ingestion.</div>
+                )}
+                {bronzePreflight && (
+                  <div className="subsection">
+                    <h4>Latest ingestion preflight</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={bronzePreflight.status}/></div>
+                      <div className="summary-stat"><span>Tables</span><b>{bronzePreflight.table_count || 0}</b></div>
+                      <div className="summary-stat"><span>Catalog</span><b>{bronzePreflight.catalog || "-"}</b></div>
+                      <div className="summary-stat"><span>Blockers</span><b>{bronzePreflight.blockers?.length || 0}</b></div>
+                    </div>
+                    {bronzePreflight.blockers?.length > 0 && (
+                      <div className="notice">{bronzePreflight.blockers.join(" · ")}</div>
+                    )}
+                  </div>
+                )}
+                {bronzeRun?.run_id && (
+                  <div className="subsection">
+                    <h4>Latest Bronze ingestion run</h4>
+                    <div className="deployment-summary">
+                      <div className="summary-stat"><span>Status</span><Badge s={bronzeRun.status}/></div>
+                      <div className="summary-stat"><span>Run ID</span><b>{bronzeRun.run_id}</b></div>
+                      <div className="summary-stat"><span>Passed</span><b>{bronzeRun.passed || 0}</b></div>
+                      <div className="summary-stat"><span>Failed</span><b>{bronzeRun.failed || 0}</b></div>
+                    </div>
+                    {bronzeRun.results?.length > 0 && (
+                      <table>
+                        <thead><tr><th>Source</th><th>Target</th><th>Status</th><th>Rows</th><th>Details</th></tr></thead>
+                        <tbody>
+                          {bronzeRun.results.map((item:any,index:number) => (
+                            <tr key={`${item.object_id || index}-${index}`}>
+                              <td>{item.source || "-"}</td>
+                              <td><code>{item.target_fqn || "-"}</code></td>
+                              <td><Badge s={item.status}/></td>
+                              <td>{item.rows_loaded ?? "-"}</td>
+                              <td>{item.error || item.load_mode || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+              </Panel>
+            </>
+          )}
+          {page === "Administration" && (
+            <Panel
+              title="System diagnostics"
+              actions={
+                <>
+                  <button
+                    onClick={() =>
+                      action(async () => {
+                        const d = await api("/system/diagnostics");
+                        setDiag(d);
+                        return d;
+                      })
+                    }
+                  >
+                    <Stethoscope size={15} />
+                    Run diagnostics
+                  </button>
+                  <button
+                    onClick={() =>
+                      action(async () => {
+                        const d = await api("/system/databricks-test", {
+                          method: "POST",
+                        });
+                        setDiag(d);
+                        return d;
+                      })
+                    }
+                  >
+                    <PlugZap size={15} />
+                    Test Databricks
+                  </button>
+                  <button
+                    onClick={() =>
+                      action(async () => {
+                        const d: any = await api("/ai/provider-test", {
+                          method: "POST",
+                        });
+                        setDiag(d);
+                        setAiProvider(d);
+                        return d;
+                      })
+                    }
+                  >
+                    <Sparkles size={15} />
+                    Test AI Provider
+                  </button>
+                </>
+              }
+            >
+              {diag ? (
+                <pre>{JSON.stringify(diag, null, 2)}</pre>
+              ) : (
+                <Empty text="Run diagnostics to verify ODBC driver, auth mode, Databricks configuration and environment." />
+              )}
+            </Panel>
+          )}
+        </section>
+      </main>
+    </div>
+  );
+}
+function evidenceList(value: any): string[] {
+  if (value == null || value === "") return [];
+  if (Array.isArray(value))
+    return value.map((x) => (typeof x === "string" ? x : JSON.stringify(x)));
+  return [typeof value === "string" ? value : JSON.stringify(value)];
+}
+function repairList(value: any): string[] {
+  return evidenceList(value).map((x) => {
+    try {
+      const r = JSON.parse(x);
+      return r?.action && r?.value ? `${r.action}: ${r.value}` : x;
+    } catch {
+      return x;
+    }
+  });
+}
+function Card({ n, t, icon }: { n: number; t: string; icon?: string }) {
+  const I =
+    icon === "tables"
+      ? Database
+      : icon === "views"
+        ? Layers3
+        : icon === "procedures"
+          ? FileCode2
+          : icon === "blocked"
+            ? ShieldAlert
+            : Boxes;
+  return (
+    <div className={`card ${icon || ""}`}>
+      <div className="card-top">
+        <div className="metric-icon">
+          <I size={18} />
+        </div>
+        <span className="metric-trend">
+          <ArrowUpRight size={13} />
+          Live
+        </span>
+      </div>
+      <strong>{n}</strong>
+      <span>{t}</span>
+      <small>Current project</small>
+    </div>
+  );
+}
+function Layer({ t, n }: { t: string; n: number }) {
+  return (
+    <div className={`layer ${t.toLowerCase()}`}>
+      <div className="layer-icon">
+        <Layers3 size={17} />
+      </div>
+      <b>{t}</b>
+      <span>{n} objects</span>
+      <div className="layer-bar">
+        <i style={{ width: `${Math.min(100, Math.max(12, n * 8))}%` }} />
+      </div>
+    </div>
+  );
+}
+function RecordTable({ rows }: { rows: ModRecord[] }) {
+  return rows.length ? (
+    <table>
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Environment</th>
+          <th>Details</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.id}>
+            <td>{r.payload?.title || r.record_type}</td>
+            <td>
+              <Badge s={r.payload?.status || "-"} />
+            </td>
+            <td>{r.environment || "-"}</td>
+            <td>
+              <code>{JSON.stringify(r.payload?.details || {})}</code>
+            </td>
+            <td>
+              {formatDateTime(r.created_at)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  ) : (
+    <Empty text="No records yet." />
+  );
+}

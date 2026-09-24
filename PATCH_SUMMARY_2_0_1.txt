@@ -1,0 +1,41 @@
+SQL Server -> Databricks AI Migration Factory
+Patch: 2.0.1 COMPATIBILITY_ENGINE
+
+Primary fix
+-----------
+The DEV load path is now metadata-driven for runtime value transport. SQL Server
+binary-family types (binary, varbinary, image, timestamp/rowversion) are no longer
+passed to the Databricks connector as Python byte sequences. They are extracted as
+hexadecimal text and reconstructed with Databricks unhex(?), preventing connector
+inference such as ARRAY<VOID> -> BINARY.
+
+Dynamic coverage
+----------------
+- No table, schema, database, or column name is used to trigger the fix.
+- The strategy is selected from migration_column.data_type.
+- Scalar normalization covers bit, integer, float, decimal/money, UUID, date/time,
+  datetimeoffset, XML, hierarchyid, strings, and binary families.
+- sql_variant, geography/geometry, and unknown/user-defined types are explicit
+  governed representations with precheck review warnings.
+- Missing dependency schema is resolved only when the object name is unambiguous;
+  the engine no longer assumes dbo.
+- Imported/discovered objects must carry explicit source schema metadata.
+- Deployment failures record category, stable error code, failing stage, retryability,
+  deterministic-remediation availability, and recommended action.
+
+Existing project continuity
+---------------------------
+No control-plane schema migration is required. To continue the current failed run:
+1. Stop the old backend/frontend.
+2. Extract this package to a new folder.
+3. Copy the existing root .env and migration_factory.db into the new extracted root.
+4. Start backend and frontend.
+5. Open Deployments and use Resume Failed Run.
+6. Run Reconciliation and Evaluate DEV Gate after deployment passes.
+7. Do not manually close the old deployment issue first; successful later deployment
+   evidence can resolve it.
+
+Validation
+----------
+48 backend unit/API/regression tests passed in the packaging environment.
+See docs/VALIDATION_2_0_1.md for exact scope and external checks not performed.

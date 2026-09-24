@@ -1,0 +1,41 @@
+{
+  "database": "MigrationDemo",
+  "objects": [
+    {"schema": "dbo", "name": "Customers", "type": "TABLE", "columns": [
+      {"name": "CustomerID", "type": "int"}, {"name": "CustomerName", "type": "varchar"},
+      {"name": "Email", "type": "varchar"}, {"name": "Phone", "type": "varchar"},
+      {"name": "City", "type": "varchar"}, {"name": "State", "type": "varchar"},
+      {"name": "Country", "type": "varchar"}, {"name": "CustomerStatus", "type": "varchar"},
+      {"name": "CreatedDate", "type": "datetime"}, {"name": "ModifiedDate", "type": "datetime"}
+    ]},
+    {"schema": "dbo", "name": "CustomerSales", "type": "TABLE", "columns": [
+      {"name": "CustomerID", "type": "int"}, {"name": "CustomerName", "type": "varchar"},
+      {"name": "Country", "type": "varchar"}, {"name": "OrderCount", "type": "int"},
+      {"name": "TotalSales", "type": "decimal"}, {"name": "LoadDate", "type": "datetime"}
+    ]},
+    {"schema": "dbo", "name": "OrderItems", "type": "TABLE", "columns": [
+      {"name": "OrderItemID", "type": "int"}, {"name": "OrderID", "type": "int"},
+      {"name": "ProductID", "type": "int"}, {"name": "Quantity", "type": "int"},
+      {"name": "UnitPrice", "type": "decimal"}, {"name": "DiscountPercent", "type": "decimal"}
+    ]},
+    {"schema": "dbo", "name": "Orders", "type": "TABLE", "columns": [
+      {"name": "OrderID", "type": "int"}, {"name": "CustomerID", "type": "int"},
+      {"name": "OrderDate", "type": "date"}, {"name": "OrderStatus", "type": "varchar"},
+      {"name": "PaymentStatus", "type": "varchar"}, {"name": "ShippingCity", "type": "varchar"},
+      {"name": "ShippingCountry", "type": "varchar"}, {"name": "CreatedDate", "type": "datetime"},
+      {"name": "ModifiedDate", "type": "datetime"}
+    ]},
+    {"schema": "dbo", "name": "OrderSummary", "type": "TABLE", "columns": [
+      {"name": "OrderID", "type": "int"}, {"name": "CustomerID", "type": "int"},
+      {"name": "OrderDate", "type": "date"}, {"name": "OrderAmount", "type": "decimal"},
+      {"name": "LoadDate", "type": "datetime"}
+    ]},
+    {"schema": "dbo", "name": "Products", "type": "TABLE", "columns": [
+      {"name": "ProductID", "type": "int"}, {"name": "ProductName", "type": "varchar"},
+      {"name": "Category", "type": "varchar"}, {"name": "SubCategory", "type": "varchar"},
+      {"name": "UnitPrice", "type": "decimal"}, {"name": "CostPrice", "type": "decimal"},
+      {"name": "StockQuantity", "type": "int"}, {"name": "ProductStatus", "type": "varchar"},
+      {"name": "CreatedDate", "type": "datetime"}
+    ]}
+  ]
+}

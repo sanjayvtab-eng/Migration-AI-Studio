@@ -1,0 +1,20 @@
+SQL Server -> Databricks AI Migration Factory
+Build: 2.3.0 SEMANTIC_MEDALLION_FACTORY
+
+Architecture:
+- Metadata-first deterministic migration remains the primary execution path.
+- True multi-target Medallion graph supports one source object producing Source, Bronze, Silver and approved Gold targets.
+- Fact/dimension inference uses PK/FK relationships, column shape, naming evidence and downstream consumer evidence.
+- Downstream consumer analysis captures direct/transitive SQL consumers and allows explicit external consumer registration.
+- Gold artifacts are generated only from APPROVED business semantic definitions.
+- Stored procedures/functions are handled as governed logic assets; triggers remain architecture-review items.
+- Ollama remains optional and is reserved for semantic remediation, not for inventing business semantics.
+
+2.3.0 validation:
+- Python compile: PASS
+- Backend/API/regression tests: 76 PASSED
+- Frontend TSX transpile/syntax: PASS
+- Live SQL Server -> Databricks E2E: not available in packaging environment; must be validated with connected customer systems.
+- Fresh Vite production build: not completed because full npm dependencies were unavailable offline.
+
+See docs/MEDALLION_SEMANTIC_FRAMEWORK_2_3_0.md and docs/VALIDATION_2_3_0.md.
