@@ -73,23 +73,57 @@ def _checksum(value: Any) -> str:
     return hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
 
 
-def _source(db: Session, project_id: str, prompt: str) -> MigrationSource:
+def _source(db: Session, project_id: str, prompt: str, explicit_source_id: str | None = None) -> MigrationSource:
+    if explicit_source_id:
+        src = db.get(MigrationSource, explicit_source_id)
+        if src and src.project_id == project_id:
+            return src
+
     sources = list(db.scalars(select(MigrationSource).where(MigrationSource.project_id == project_id)).all())
-    lowered = prompt.lower()
-    matches = [
-        row for row in sources
-        if (row.database_name and row.database_name.lower() in lowered)
-        or (row.profile_name and row.profile_name.lower() in lowered)
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if not matches and len(sources) == 1:
-        return sources[0]
     if not sources:
         raise ValueError("No SQL Server source is registered for this project")
-    if len(matches) > 1:
-        raise ValueError("The prompt matches more than one registered source; select a source explicitly")
-    raise ValueError("The prompt does not identify exactly one registered source")
+    if len(sources) == 1:
+        return sources[0]
+
+    lowered = prompt.lower()
+
+    # 1. Explicit directive: e.g. "Source: Medallion" or "Source profile: SQLServer1"
+    explicit_match = re.search(r"\bsource\s*(?:profile|name|database)?\s*[:=]\s*([A-Za-z0-9_]+)\b", lowered)
+    if explicit_match:
+        target = explicit_match.group(1).strip().lower()
+        for row in sources:
+            if (row.profile_name and row.profile_name.lower() == target) or \
+               (row.database_name and row.database_name.lower() == target) or \
+               row.id.lower() == target:
+                return row
+
+    # 2. Match exact whole-word database name
+    db_matches = [
+        row for row in sources
+        if row.database_name and re.search(rf"\b{re.escape(row.database_name)}\b", prompt, re.IGNORECASE)
+    ]
+    if len(db_matches) == 1:
+        return db_matches[0]
+
+    # 3. Match non-generic profile names (ignore generic architectural keywords like "medallion", "bronze", "silver", "gold")
+    GENERIC = {"medallion", "bronze", "silver", "gold", "sql", "server", "db", "source", "database"}
+    profile_matches = [
+        row for row in sources
+        if row.profile_name and row.profile_name.lower() not in GENERIC and \
+           re.search(rf"\b{re.escape(row.profile_name)}\b", prompt, re.IGNORECASE)
+    ]
+    if len(profile_matches) == 1:
+        return profile_matches[0]
+
+    general = list({r.id: r for r in (db_matches + profile_matches)}.values())
+    if len(general) == 1:
+        return general[0]
+    if len(general) > 1:
+        names = ", ".join(f"'{s.profile_name}' ({s.database_name})" for s in general)
+        raise ValueError(f"The prompt matches multiple registered sources: {names}. Please specify 'Source: <profile_name>' at the top of your prompt.")
+
+    available = ", ".join(f"'{s.profile_name}' ({s.database_name})" for s in sources)
+    raise ValueError(f"The prompt matches more than one registered source; select a source explicitly by adding 'Source: <profile_name>' (available: {available}).")
 
 
 def _metadata_payload(db: Session, project_id: str, source_id: str) -> dict[str, Any]:
@@ -1021,7 +1055,7 @@ def _persist_version(
     return version
 
 
-def submit(db: Session, project_id: str, prompt: str, actor: str) -> dict[str, Any]:
+def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str | None = None) -> dict[str, Any]:
     if not get_settings().prompt_native_design_enabled:
         raise PermissionError("Prompt-native artifact design is disabled")
     if not prompt or not prompt.strip():
@@ -1036,7 +1070,7 @@ def submit(db: Session, project_id: str, prompt: str, actor: str) -> dict[str, A
         if created_at and created_at > datetime(2026, 9, 20):
             raise ValueError("Legacy rollback mode is prohibited for new projects")
 
-    source = _source(db, project_id, prompt)
+    source = _source(db, project_id, prompt, explicit_source_id=source_id)
     plan_row = environment_provisioning.get_dev_plan(db, project_id)
     if not plan_row or plan_row.status != "PROVISIONED":
         raise ValueError("The Databricks DEV environment must be provisioned before prompt design")
