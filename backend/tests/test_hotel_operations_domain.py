@@ -148,6 +148,16 @@ Validate every table and column against the discovery snapshot. Do not invent id
     fn_ver = db.get(MigrationStageArtifactVersion, fn_trace["artifact_version_id"])
     fn_sql = fn_ver.content
 
+    # Verify that clean views were generated for all 5 tables
+    clean_views = {item["name"] for item in spec["artifacts"] if item["type"] == "VIEW" and "clean" in item["name"]}
+    assert clean_views == {"vw_bookings_clean", "vw_guests_clean", "vw_rooms_clean", "vw_hotels_clean", "vw_payments_clean"}
+
+    # Verify fn_calculate_booking_amount upstream dependencies include vw_bookings_clean and vw_rooms_clean
+    booking_clean = next(item for item in spec["artifacts"] if item["name"] == "vw_bookings_clean")
+    room_clean = next(item for item in spec["artifacts"] if item["name"] == "vw_rooms_clean")
+    assert booking_clean["request_id"] in fn_req["dependencies"]
+    assert room_clean["request_id"] in fn_req["dependencies"]
+
     # Assert correct Databricks SQL structure
     assert "CREATE OR REPLACE FUNCTION" in fn_sql
     assert "p_booking_id INT" in fn_sql
@@ -158,3 +168,33 @@ Validate every table and column against the discovery snapshot. Do not invent id
     assert "b.booking_id = p_booking_id" in fn_sql
     assert "OrderID" not in fn_sql
     assert "MigrationDemo" not in fn_sql
+
+    # 5. Approve all artifacts and verify deployment order
+    for item in trace["requirements"]:
+        service.review_artifact(db, project.id, spec["id"], item["artifact_version_id"], "APPROVED", "hotel_architect")
+
+    from app.services import bronze_ingestion, databricks_client, deployment
+    executed_statements = []
+    loaded_tables = []
+
+    def mock_loader(*args, **kwargs):
+        loaded_tables.append(kwargs["target_fqn"])
+        return {"object_id": args[4].id, "target_fqn": kwargs["target_fqn"], "status": "PASSED", "rows_loaded": 1, "target_rows": 1}
+
+    def mock_execute(statement, *args, **kwargs):
+        executed_statements.append(statement)
+        return []
+
+    monkeypatch.setattr(bronze_ingestion, "_load_table", mock_loader)
+    monkeypatch.setattr(databricks_client, "execute_sql", mock_execute)
+    monkeypatch.setattr(deployment, "databricks_workspace_identity", lambda: "qa-workspace")
+    monkeypatch.setattr(deployment, "run_reconciliation", lambda *a, **k: {"status": "PASSED"})
+    monkeypatch.setattr(deployment, "evaluate_dev_gate", lambda *a, **k: {"status": "PASSED"})
+
+    dev_deploy = service.deploy_dev(db, project.id, spec["id"], "hotel_architect")
+    assert dev_deploy["status"] == "DEV_GATE_PASSED"
+
+    # Verify that vw_bookings_clean was deployed BEFORE fn_calculate_booking_amount
+    booking_clean_idx = next(i for i, stmt in enumerate(executed_statements) if "vw_bookings_clean" in stmt)
+    fn_calc_idx = next(i for i, stmt in enumerate(executed_statements) if "fn_calculate_booking_amount" in stmt)
+    assert booking_clean_idx < fn_calc_idx, "vw_bookings_clean must be deployed before fn_calculate_booking_amount"

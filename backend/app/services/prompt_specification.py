@@ -681,10 +681,17 @@ def _build_requests(
         add(table_name, "TABLE_COPY", "BRONZE", f"Traceable raw copy of dbo.{table_name}", [table_name], {"load_strategy": "FULL_LOAD"})
 
     # Silver clean views
-    clean_match = re.search(r"(?is)clean(?:ed)?\s+views?\s+for\s+(.+?)(?:\s+using\b|[.;\n]|$)", prompt)
+    clean_match = re.search(r"(?is)clean(?:ed)?\s+(?:(?:and|&)\s+standardized\s+)?views?\s+for\s+(.+?)(?:\s+using\b|[.;\n]|$)", prompt)
     clean_names = []
     if clean_match:
-        clean_names = [item["name"] for key, item in table_map.items() if re.search(rf"\b{re.escape(key)}\b", clean_match.group(1), re.I)]
+        target_clause = clean_match.group(1).strip()
+        if re.search(r"(?i)\b(?:every|all|each)\s+(?:discovered\s+)?(?:source\s+)?tables?\b", target_clause):
+            clean_names = [item["name"] for item in table_map.values()]
+        else:
+            clean_names = [item["name"] for key, item in table_map.items() if re.search(rf"\b{re.escape(key)}\b", target_clause, re.I)]
+    elif re.search(r"(?i)\b(?:clean|cleaned)\b.*?\b(?:views?\s+for\s+every\s+table|views?\s+for\s+all\s+tables|standardized\s+views)\b", prompt):
+        clean_names = [item["name"] for item in table_map.values()]
+
     for table_name in clean_names:
         add(f"vw_{_snake(table_name)}_clean", "VIEW", "SILVER", f"Cleaned and canonically named {table_name} view", [table_name], {"view_kind": "CLEAN"})
 
