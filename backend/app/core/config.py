@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     prompt_native_design_enabled: bool = True
     databricks_sql_procedures_supported: bool = False
     prompt_target_validation_required: bool = True
+    prompt_native_dynamic_generators_enabled: bool = True
+    enable_legacy_rollback_mode: bool = False
+    function_parameter_naming_pattern: str = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
 

@@ -2422,6 +2422,12 @@ export default function App() {
                                       <option value="">Select an approved answer</option>
                                       {(question.choices || []).map((choice: string) => <option key={choice} value={choice}>{choice}</option>)}
                                     </select>
+                                    {question.recommended_answer && (
+                                      <small style={{ color: "#475569", fontSize: "11px" }}>
+                                        Recommended: <b>{question.recommended_answer}</b>
+                                        {question.inference_reason ? ` — ${question.inference_reason}` : ""}
+                                      </small>
+                                    )}
                                   </label>
                                 ))}
                                 <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
@@ -2429,14 +2435,15 @@ export default function App() {
                                     className="prompt-secondary-btn"
                                     type="button"
                                     onClick={() => {
-                                      const defaults: Record<string, string> = {
-                                        completed_order_value: "COMPLETED",
-                                        customer_sales_target: "customer_sales_derived",
-                                        order_summary_target: "order_summary_derived",
-                                        dimension_scd_type: "TYPE_1",
-                                        fact_sales_grain: "ORDER_ITEM",
-                                      };
-                                      setPromptAnswers(Object.fromEntries(promptSpec.clarifications.filter((question: any) => question.status === "OPEN").map((question: any) => [question.key, defaults[question.key] || question.choices?.[0] || ""])));
+                                      setPromptAnswers((prev: Record<string, string>) => {
+                                        const next = { ...prev };
+                                        for (const q of (promptSpec.clarifications || [])) {
+                                          if (q.status === "OPEN" && q.recommended_answer) {
+                                            next[q.key] = q.recommended_answer;
+                                          }
+                                        }
+                                        return next;
+                                      });
                                     }}
                                   >Use recommended defaults</button>
                                   <button

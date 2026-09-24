@@ -363,12 +363,30 @@ class PromptClarification(Base, ProjectScoped):
     question: Mapped[str] = mapped_column(Text)
     affected_request_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     choices_json: Mapped[str] = mapped_column(Text, default="[]")
+    recommended_answer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    inference_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     answer_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="OPEN", index=True)
     asked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     answered_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     __table_args__ = (UniqueConstraint("spec_version_id", "question_key", name="uq_prompt_question_version"),)
+
+
+class MigrationDestructiveApproval(Base, ProjectScoped):
+    __tablename__ = "migration_destructive_approval"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(64), index=True)
+    artifact_version: Mapped[int] = mapped_column(Integer)
+    sql_content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    environment: Mapped[str] = mapped_column(String(16))
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    actor: Mapped[str] = mapped_column(String(255))
+    reason: Mapped[str] = mapped_column(Text)
+    confirmed_token: Mapped[str] = mapped_column(String(64))
+    destructive_operations_json: Mapped[str] = mapped_column(Text, default="[]")
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class PromptPlanApproval(Base, ProjectScoped):
