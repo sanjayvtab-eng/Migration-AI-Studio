@@ -169,6 +169,27 @@ Validate every table and column against the discovery snapshot. Do not invent id
     assert "OrderID" not in fn_sql
     assert "MigrationDemo" not in fn_sql
 
+    # Verify vw_booking_details has zero duplicate column names and zero 1 = 1 cross joins
+    vbd_trace = next(item for item in trace["requirements"] if "vw_booking_details" in item["target_fqn"].lower())
+    vbd_ver = db.get(MigrationStageArtifactVersion, vbd_trace["artifact_version_id"])
+    vbd_sql = vbd_ver.content
+    assert "CREATE OR REPLACE VIEW" in vbd_sql
+    assert "vw_booking_details" in vbd_sql
+    assert "1 = 1" not in vbd_sql, "Multi-table join should connect via ER graph relationships without cross joins"
+
+    import re
+    select_match = re.search(r"SELECT\s+(.*?)\s+FROM", vbd_sql, re.DOTALL | re.IGNORECASE)
+    assert select_match is not None
+    select_exprs = [e.strip() for e in select_match.group(1).split(",\n")]
+    output_cols = []
+    for expr in select_exprs:
+        if " AS " in expr.upper():
+            output_cols.append(re.split(r"\s+AS\s+", expr, flags=re.IGNORECASE)[-1].strip().strip("`"))
+        else:
+            output_cols.append(expr.split(".")[-1].strip().strip("`"))
+    assert len(output_cols) == len(set(output_cols)), f"Duplicate columns found in vw_booking_details: {output_cols}"
+
+
     # 5. Approve all artifacts and verify deployment order
     for item in trace["requirements"]:
         service.review_artifact(db, project.id, spec["id"], item["artifact_version_id"], "APPROVED", "hotel_architect")

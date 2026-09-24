@@ -1287,6 +1287,9 @@ def _generate_generic_view_sql(
     # Multi-table join resolution
     er_graph = _build_er_graph(table_map)
     primary_tbl = _source_object(snapshot, source_refs[0])
+    primary_low = primary_tbl["name"].lower()
+    primary_stem = _stem(primary_tbl["name"])
+
     aliases = {}
     for i, ref in enumerate(source_refs):
         tbl = table_map.get(ref.lower())
@@ -1295,83 +1298,206 @@ def _generate_generic_view_sql(
             alias = f"{alias}{i}"
         aliases[ref.lower()] = alias
 
-    primary_alias = aliases[primary_tbl["name"].lower()]
+    primary_alias = aliases[primary_low]
     primary_clean = f"vw_{_snake(primary_tbl['name'])}_clean"
     from_clause = f"{_fqn(catalog, 'silver', primary_clean)} {primary_alias}"
-    join_clauses = []
-    joined = {primary_tbl["name"].lower()}
 
-    for ref in source_refs[1:]:
-        ref_low = ref.lower()
-        alias = aliases[ref_low]
-        ref_tbl = table_map.get(ref_low)
-        if not ref_tbl:
-            continue
-        # Find connection to already joined tables
-        join_cond = None
-        for j_tbl in list(joined):
-            edges = er_graph.get(table_map[j_tbl]["name"], [])
-            for edge in edges:
-                if edge["target_table"].lower() == ref_low:
-                    join_cond = f"{aliases[j_tbl]}.{qident(edge['from_column'])} = {alias}.{qident(edge['to_column'])}"
+    # Order joins dynamically using ER graph connectivity so intermediate tables connect cleanly
+    join_clauses = []
+    joined = [primary_low]
+    remaining = [r for r in source_refs[1:] if r.lower() in table_map]
+
+    while remaining:
+        best_candidate = None
+        best_join_cond = None
+        for ref in remaining:
+            ref_low = ref.lower()
+            alias = aliases[ref_low]
+            for j_low in joined:
+                j_alias = aliases[j_low]
+                j_name = table_map[j_low]["name"]
+                ref_name = table_map[ref_low]["name"]
+
+                for edge in er_graph.get(j_name, []):
+                    if edge["target_table"].lower() == ref_low:
+                        best_candidate = ref
+                        best_join_cond = f"{j_alias}.{qident(edge['from_column'])} = {alias}.{qident(edge['to_column'])}"
+                        break
+                if best_candidate:
                     break
-            if join_cond:
+
+                for edge in er_graph.get(ref_name, []):
+                    if edge["target_table"].lower() == j_low:
+                        best_candidate = ref
+                        best_join_cond = f"{j_alias}.{qident(edge['to_column'])} = {alias}.{qident(edge['from_column'])}"
+                        break
+                if best_candidate:
+                    break
+            if best_candidate:
                 break
-        if not join_cond:
-            # Fallback to key matching
-            j_cols = {c["target_name"] for c in primary_tbl["columns"]}
-            r_cols = {c["target_name"] for c in ref_tbl["columns"]}
-            common = j_cols & r_cols
-            if common:
-                c = next(iter(common))
-                join_cond = f"{primary_alias}.{qident(c)} = {alias}.{qident(c)}"
-            else:
-                join_cond = "1 = 1"
+
+        if not best_candidate:
+            for ref in remaining:
+                ref_low = ref.lower()
+                alias = aliases[ref_low]
+                r_cols = {c["target_name"] for c in table_map[ref_low]["columns"]}
+                for j_low in joined:
+                    j_alias = aliases[j_low]
+                    j_cols = {c["target_name"] for c in table_map[j_low]["columns"]}
+                    common_keys = [c for c in j_cols & r_cols if c.endswith("_id") or c == "id"]
+                    if common_keys:
+                        best_candidate = ref
+                        c = common_keys[0]
+                        best_join_cond = f"{j_alias}.{qident(c)} = {alias}.{qident(c)}"
+                        break
+                if best_candidate:
+                    break
+
+        if not best_candidate:
+            best_candidate = remaining[0]
+            ref_low = best_candidate.lower()
+            alias = aliases[ref_low]
+            best_join_cond = "1 = 1"
+
+        ref_low = best_candidate.lower()
+        ref_tbl = table_map[ref_low]
         ref_clean = f"vw_{_snake(ref_tbl['name'])}_clean"
-        join_clauses.append(f"JOIN {_fqn(catalog, 'silver', ref_clean)} {alias} ON {join_cond}")
-        joined.add(ref_low)
+        join_clauses.append(f"JOIN {_fqn(catalog, 'silver', ref_clean)} {aliases[ref_low]} ON {best_join_cond}")
+        joined.append(ref_low)
+        remaining.remove(best_candidate)
 
     # WHERE filter
+    req_statement = str(request.get("structured", {}).get("statement") or request.get("statement") or "").lower()
+    req_filter = str(request.get("structured", {}).get("filter") or "").lower()
+    req_purpose = str(request.get("purpose") or "").lower()
+    filter_context = f"{req_statement} {req_filter} {req_purpose}"
+
     where_parts = []
-    completed_raw = str(answers.get("completed_order_value", "COMPLETED"))
-    completed_escaped = completed_raw.replace("'", "''")
-    for ref in source_refs:
-        tbl = table_map.get(ref.lower())
-        if tbl:
-            for c in tbl["columns"]:
-                if "status" in c["target_name"]:
-                    where_parts.append(f"{aliases[ref.lower()]}.{qident(c['target_name'])} = '{completed_escaped}'")
-                    break
+    if "complete" in filter_context:
+        for ref_low in joined:
+            tbl = table_map.get(ref_low)
+            stem = _stem(tbl["name"])
+            if stem in filter_context or ref_low in filter_context or (ref_low == primary_low and "order" in filter_context):
+                completed_val = str(answers.get(f"completed_{stem}_value", answers.get("completed_order_value", "COMPLETED"))).replace("'", "''")
+                for c in tbl["columns"]:
+                    if "status" in c["target_name"]:
+                        where_parts.append(f"{aliases[ref_low]}.{qident(c['target_name'])} = '{completed_val}'")
+                        break
 
     where_sql = ("\nWHERE " + " AND ".join(where_parts)) if where_parts else ""
 
     # Column projection
-    select_items = []
-    group_by_items = []
-    for ref in source_refs:
-        tbl = table_map.get(ref.lower())
-        if tbl:
-            alias = aliases[ref.lower()]
-            for c in tbl["columns"]:
-                cname = c["target_name"]
-                if cname.endswith("_id") or cname in {"customer_name", "country", "city", "state", "product_name"}:
-                    select_items.append(f"{alias}.{qident(cname)}")
-                    group_by_items.append(f"{alias}.{qident(cname)}")
-
-    # Add standard aggregate metrics if joining multiple transactional tables
     has_quantity = any("quantity" in {c["target_name"] for c in table_map[r.lower()]["columns"]} for r in source_refs if r.lower() in table_map)
     has_price = any("unit_price" in {c["target_name"] for c in table_map[r.lower()]["columns"]} for r in source_refs if r.lower() in table_map)
     has_order = any("order_id" in {c["target_name"] for c in table_map[r.lower()]["columns"]} for r in source_refs if r.lower() in table_map)
+    is_sales_aggregate = (has_order or has_quantity) and (has_price or "sales" in request["name"].lower())
 
-    if has_order:
-        select_items.append(f"COUNT(DISTINCT {primary_alias}.order_id) AS order_count")
-    if has_quantity and has_price:
-        oi_alias = aliases.get("orderitems", aliases.get("order_items", primary_alias))
-        select_items.append(f"CAST(SUM({oi_alias}.quantity * {oi_alias}.unit_price * (1 - COALESCE({oi_alias}.discount_percent, 0) / 100)) AS DECIMAL(18,2)) AS total_sales")
-    select_items.append("current_timestamp() AS load_date")
+    select_items = []
+    group_by_items = []
+    seen_output_cols: set[str] = set()
 
-    group_sql = ("\nGROUP BY " + ", ".join(dict.fromkeys(group_by_items))) if group_by_items and (has_order or has_quantity) else ""
-    select_sql = ",\n  ".join(dict.fromkeys(select_items))
+    if is_sales_aggregate:
+        for ref_low in joined:
+            tbl = table_map.get(ref_low)
+            if tbl:
+                alias = aliases[ref_low]
+                for c in tbl["columns"]:
+                    cname = c["target_name"]
+                    cname_low = cname.lower()
+                    if cname_low.endswith("_id") or cname_low in {"customer_name", "country", "city", "state", "product_name"}:
+                        if cname_low in seen_output_cols:
+                            continue
+                        select_items.append(f"{alias}.{qident(cname)}")
+                        group_by_items.append(f"{alias}.{qident(cname)}")
+                        seen_output_cols.add(cname_low)
+
+        if has_order:
+            select_items.append(f"COUNT(DISTINCT {primary_alias}.order_id) AS order_count")
+        if has_quantity and has_price:
+            oi_alias = aliases.get("orderitems", aliases.get("order_items", primary_alias))
+            select_items.append(f"CAST(SUM({oi_alias}.quantity * {oi_alias}.unit_price * (1 - COALESCE({oi_alias}.discount_percent, 0) / 100)) AS DECIMAL(18,2)) AS total_sales")
+        select_items.append("current_timestamp() AS load_date")
+        group_sql = ("\nGROUP BY " + ", ".join(dict.fromkeys(group_by_items))) if group_by_items else ""
+    else:
+        # Transformation / Detail View (Multi-table join projection with dynamic deduplication)
+        for ref_low in joined:
+            tbl = table_map.get(ref_low)
+            if not tbl:
+                continue
+            alias = aliases[ref_low]
+            stem = _stem(tbl["name"])
+            is_primary = (ref_low == primary_low)
+
+            for c in tbl["columns"]:
+                cname = c["target_name"]
+                cname_low = cname.lower()
+
+                # Skip secondary metadata/audit timestamps
+                if not is_primary and cname_low in {
+                    "created_date", "created_at", "modified_date", "modified_at",
+                    "sys_start_time", "sys_end_time", "load_date", "ingest_timestamp", "_ingest_timestamp"
+                }:
+                    continue
+
+                # Primary / foreign keys: deduplicate so identical key isn't projected twice
+                if cname_low.endswith("_id") or cname_low == "id":
+                    if cname_low in seen_output_cols:
+                        continue
+                    select_items.append(f"{alias}.{qident(cname)}")
+                    seen_output_cols.add(cname_low)
+                    continue
+
+                # Non-key attributes: deduplicate by qualifying with stem if colliding
+                if cname_low not in seen_output_cols:
+                    select_items.append(f"{alias}.{qident(cname)}")
+                    seen_output_cols.add(cname_low)
+                else:
+                    out_name = f"{stem}_{cname_low}"
+                    if out_name in seen_output_cols:
+                        out_name = f"{alias}_{cname_low}"
+                    select_items.append(f"{alias}.{qident(cname)} AS {qident(out_name)}")
+                    seen_output_cols.add(out_name)
+
+        # Dynamic calculated expressions if requested in prompt / requirements
+        # 1. Date differences (e.g. number_of_nights between check_in_date and check_out_date)
+        if "night" in filter_context and "number_of_nights" not in seen_output_cols:
+            cin_col = next((c["target_name"] for c in primary_tbl["columns"] if "check_in" in c["target_name"] or "start_date" in c["target_name"]), None)
+            cout_col = next((c["target_name"] for c in primary_tbl["columns"] if "check_out" in c["target_name"] or "end_date" in c["target_name"]), None)
+            if cin_col and cout_col:
+                select_items.append(f"DATEDIFF(day, {primary_alias}.{qident(cin_col)}, {primary_alias}.{qident(cout_col)}) AS number_of_nights")
+                seen_output_cols.add("number_of_nights")
+
+        # 2. Calculated booking / transaction amount if requested
+        if ("amount" in filter_context and ("calculat" in filter_context or "fn_calculat" in filter_context)) and f"calculated_{primary_stem}_amount" not in seen_output_cols:
+            rate_alias = None
+            rate_col = None
+            for r_low in joined:
+                r_tbl = table_map[r_low]
+                for c in r_tbl["columns"]:
+                    if any(tok in c["target_name"] for tok in ("rate", "price", "unit_price", "nightly_rate")):
+                        rate_alias = aliases[r_low]
+                        rate_col = c["target_name"]
+                        break
+                if rate_col:
+                    break
+
+            cin_col = next((c["target_name"] for c in primary_tbl["columns"] if "check_in" in c["target_name"] or "start_date" in c["target_name"]), None)
+            cout_col = next((c["target_name"] for c in primary_tbl["columns"] if "check_out" in c["target_name"] or "end_date" in c["target_name"]), None)
+            disc_col = next((c["target_name"] for c in primary_tbl["columns"] if "discount" in c["target_name"]), None)
+
+            if cin_col and cout_col and rate_col:
+                disc_expr = f"(1 - COALESCE({primary_alias}.{qident(disc_col)}, 0) / 100)" if disc_col else "1"
+                calc_expr = f"CAST(DATEDIFF(day, {primary_alias}.{qident(cin_col)}, {primary_alias}.{qident(cout_col)}) * {rate_alias}.{qident(rate_col)} * {disc_expr} AS DECIMAL(18,2))"
+                select_items.append(f"{calc_expr} AS calculated_{primary_stem}_amount")
+                seen_output_cols.add(f"calculated_{primary_stem}_amount")
+
+        if "load_date" not in seen_output_cols:
+            select_items.append("current_timestamp() AS load_date")
+            seen_output_cols.add("load_date")
+
+        group_sql = ""
+
+    select_sql = ",\n  ".join(select_items)
 
     return f"""CREATE OR REPLACE VIEW {_fqn(catalog, request['layer'], request['name'])} AS
 SELECT
