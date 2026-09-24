@@ -118,6 +118,8 @@ def _stage_validation(content: str, node: MigrationMedallionNode) -> dict[str, A
     for token in ("DROP CATALOG", "DROP SCHEMA", "DROP TABLE", "TRUNCATE TABLE", "DELETE FROM"):
         if token in upper:
             errors.append(f"Governed statement is not permitted: {token}")
+    if re.search(r"(?is)WHEN\s+NOT\s+MATCHED\s+BY\s+SOURCE\s+THEN\s+DELETE", content):
+        errors.append("Governed MERGE cannot delete rows absent from the current source batch")
     aliases = [x.lower() for x in re.findall(r"(?i)\bAS\s+`([A-Za-z_][A-Za-z0-9_]*)`", content)]
     duplicates = sorted({x for x in aliases if aliases.count(x) > 1})
     if duplicates:
@@ -1564,6 +1566,11 @@ def medallion_routine_issues(db: Session, project_id: str, environment: str, con
     issues = databricks_routine_contract_issues(content, kind)
     if kind not in {"FUNCTION", "PROCEDURE"}:
         return issues
+    if kind == "PROCEDURE" and re.search(r"(?i)\bPROCEDURE\s+[^\s(]*usp_?load", content):
+        if "INSERT INTO" in content.upper() and "MERGE INTO" not in content.upper():
+            issues.append("Loader procedure must use an idempotent MERGE strategy instead of an unconditional INSERT")
+        if re.search(r"(?is)WHEN\s+NOT\s+MATCHED\s+BY\s+SOURCE\s+THEN\s+DELETE", content):
+            issues.append("Loader MERGE cannot delete rows absent from the current source batch")
     bound, column_errors = _bind_routine_columns(db, project_id, environment, content)
     if bound != content:
         issues.append("Routine column names do not match the referenced Medallion relation schema; "
@@ -2094,8 +2101,19 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
     bronze_objects = [object_by_id[n.source_object_id] for n in node_by_id.values()
                       if n.layer == "BRONZE" and n.source_object_id in object_by_id
                       and object_by_id[n.source_object_id].object_type == "TABLE"]
-    checkpoint = bronze_ingestion.verified_checkpoint(db, project_id, bronze_objects) if reuse_bronze and max_rows is None else None
+    approved_bronze_targets = {
+        n.source_object_id: n.target_fqn for n in node_by_id.values()
+        if n.layer == "BRONZE" and n.source_object_id in object_by_id
+        and object_by_id[n.source_object_id].object_type == "TABLE"
+    }
+    checkpoint = bronze_ingestion.verified_checkpoint(
+        db, project_id, bronze_objects, approved_targets=approved_bronze_targets,
+        decision_run_id=run_id,
+    ) if reuse_bronze and max_rows is None else None
     reusable = {item["object_id"]: item for item in (checkpoint or {}).get("results", [])}
+    checkpoint_rejections = {
+        item["object_id"]: item for item in (checkpoint or {}).get("rejections", [])
+    }
     deployed = []
     for item in artifacts:
         node = node_by_id[item["node_id"]]
@@ -2106,26 +2124,48 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
             elif node.layer == "BRONZE" and obj and obj.object_type == "TABLE":
                 if obj.id in reusable:
                     evidence = reusable[obj.id]
-                    if evidence["target_fqn"].replace("`", "").lower() != node.target_fqn.replace("`", "").lower():
+                    if not bronze_ingestion._same_fqn(evidence["target_fqn"], node.target_fqn):
                         raise RuntimeError("Verified Bronze checkpoint target does not match the approved Medallion target")
                     detail = {"action": "REUSE_VERIFIED_BRONZE", "checkpoint_reused": True,
+                              "checkpoint_decision": "TARGET_MATCHED",
+                              "approved_target_fqn": node.target_fqn,
                               "bronze_run_id": checkpoint["run_id"], "load": evidence}
                 elif config is not None:
                     # Reuse the project-scoped atomic loader, including its approval gate.
                     plan, _ = bronze_ingestion._requirements(db, project_id)
-                    target = bronze_ingestion._fqn(plan.catalog_name, "bronze", obj.object_name)
-                    if target.replace("`", "").lower() != node.target_fqn.replace("`", "").lower():
-                        raise RuntimeError("Project Bronze plan does not match the approved Medallion target")
+                    approved_target = bronze_ingestion.validate_approved_bronze_target(
+                        node.target_fqn, expected_catalog=plan.catalog_name
+                    )
                     load = bronze_ingestion._load_table(
                         db, project_id, run_id, plan, obj, batch_size=batch_size,
                         max_rows=max_rows, load_mode="FULL_LOAD",
                         replace_existing_data=replace_existing_data or allow_destructive,
+                        target_fqn=approved_target,
                     )
-                    detail = {"action": "LOAD_BRONZE", "load": load}
+                    rejection = checkpoint_rejections.get(obj.id)
+                    detail = {
+                        "action": "LOAD_BRONZE", "load": load,
+                        "checkpoint_reused": False,
+                        "checkpoint_decision": rejection["action"] if rejection else "NO_REUSABLE_CHECKPOINT",
+                        "approved_target_fqn": approved_target,
+                    }
+                    if rejection:
+                        detail["checkpoint_rejection"] = rejection
                 else:
                     detail = _deploy_legacy_bronze(db, project_id, obj, node, item, run_id,
                                                  batch_size, max_rows, allow_destructive,
                                                  replace_existing_data)
+            elif node.node_type == "WORKFLOW_SQL" and node.generation_strategy == "PROMPT_NATIVE":
+                # Prompt-native workflow SQL is generated as a controlled sequence
+                # (target bootstrap followed by idempotent MERGE). Execute each
+                # statement separately because the Databricks SQL connector does
+                # not accept arbitrary multi-statement batches.
+                statements = [part.strip() for part in item["content"].split(";\n") if part.strip()]
+                if not statements or any(not re.match(r"(?is)^(?:CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|MERGE\s+INTO)\b", statement) for statement in statements):
+                    raise RuntimeError("Prompt workflow contains an unsupported statement sequence")
+                for statement in statements:
+                    execute_sql(statement.rstrip(";") + ";", safe_retry=False)
+                detail = {"action": "EXECUTE_WORKFLOW_SQL", "statement_count": len(statements)}
             else:
                 execute_sql(item["content"], safe_retry=False)
                 detail = {"action": "EXECUTE_ARTIFACT"}

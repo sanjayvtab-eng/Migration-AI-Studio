@@ -5,9 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models.entities import CanonicalRecord, MigrationDatabricksConfiguration, MigrationRun, MigrationStageArtifactVersion
+from app.models.canonical import MigrationDeployment
+from app.models.entities import (CanonicalRecord, MigrationDatabricksConfiguration,
+                                 MigrationMedallionNode, MigrationRun,
+                                 MigrationStageArtifactVersion)
 from app.services import bronze_ingestion, databricks_client, deployment, environment_provisioning, medallion
 from app.services.engine import ensure_project, uid
 from test_bronze_ingestion import _seed
@@ -63,6 +67,36 @@ def test_checkpoint_rechecks_live_source_target_and_schema(db, monkeypatch, chan
     assert all(call.args[2].startswith("DESCRIBE TABLE") for call in execute.call_args_list)
 
 
+def test_checkpoint_reuses_matching_approved_canonical_target(db, monkeypatch):
+    project, _, table = _seed(db)
+    run = _completed_ingestion(db, project, table)
+    table.object_name = "CustomerSales"
+    record = db.scalar(select(CanonicalRecord).where(
+        CanonicalRecord.project_id == project.id,
+        CanonicalRecord.object_id == table.id,
+        CanonicalRecord.record_type == "BRONZE_INGESTION",
+    ))
+    payload = json.loads(record.payload_json)
+    payload["source"] = "dbo.CustomerSales"
+    payload["target_fqn"] = "`migration_dev`.`bronze`.`customer_sales`"
+    record.payload_json = json.dumps(payload)
+    db.commit()
+    monkeypatch.setattr(bronze_ingestion, "_source_count", lambda *a: 5)
+    monkeypatch.setattr(bronze_ingestion, "_target_count", lambda *a: 5)
+    monkeypatch.setattr(environment_provisioning, "project_execute", lambda *a, **k: SCHEMA)
+
+    result = bronze_ingestion.verified_checkpoint(
+        db, project.id, [table],
+        approved_targets={table.id: "`MIGRATION_DEV` . `BRONZE` . `customer_sales`"},
+        decision_run_id="MDR_CURRENT",
+    )
+
+    assert result and result["checkpoint_reused"] is True
+    assert result["run_id"] == run.id
+    assert result["results"][0]["target_fqn"] == "`migration_dev`.`bronze`.`customer_sales`"
+    assert result["rejections"] == []
+
+
 def test_medallion_reuses_bronze_and_reconciles_with_saved_project_connection(db, monkeypatch):
     project, _, table = _seed(db)
     ingestion = _completed_ingestion(db, project, table)
@@ -92,6 +126,95 @@ def test_medallion_reuses_bronze_and_reconciles_with_saved_project_connection(db
     bronze = next(payload for _, payload in rows if payload["layer"] == "BRONZE")
     assert bronze["checkpoint_reused"] is True and bronze["bronze_run_id"] == ingestion.id
     assert bronze["databricks_workspace"] == "dbc-example.cloud.databricks.com"
+
+
+@pytest.mark.parametrize("source_name, canonical_name", [
+    ("CustomerSales", "customer_sales"),
+    ("OrderSummary", "order_summary"),
+])
+def test_medallion_loads_exact_approved_canonical_bronze_target(
+    db, monkeypatch, source_name, canonical_name
+):
+    project, _, table = _seed(db)
+    table.object_name = source_name
+    db.commit()
+    _approved_medallion(db, project)
+    bronze = db.scalar(select(MigrationMedallionNode).where(
+        MigrationMedallionNode.project_id == project.id,
+        MigrationMedallionNode.layer == "BRONZE",
+    ))
+    approved = f"`migration_dev`.`bronze`.`{canonical_name}`"
+    bronze.target_name = canonical_name
+    bronze.target_fqn = approved
+    db.commit()
+    loads = []
+
+    def loader(*args, **kwargs):
+        loads.append(kwargs)
+        return {"object_id": table.id, "target_fqn": kwargs["target_fqn"],
+                "status": "PASSED", "rows_loaded": 1, "target_rows": 1}
+
+    monkeypatch.setattr(bronze_ingestion, "verified_checkpoint", lambda *a, **k: None)
+    monkeypatch.setattr(bronze_ingestion, "_load_table", loader)
+    monkeypatch.setattr(databricks_client, "execute_sql", lambda *a, **k: [])
+    monkeypatch.setattr(deployment, "databricks_workspace_identity", lambda: "qa-workspace")
+
+    result = medallion.deploy_medallion_dev(db, project.id)
+
+    assert result["status"] == "PASSED", result.get("error")
+    assert loads[0]["target_fqn"] == approved
+    evidence = [json.loads(row.payload_json) for row in db.query(MigrationDeployment).filter_by(
+        project_id=project.id, object_id=table.id, status="PASSED"
+    )]
+    bronze_evidence = next(row for row in evidence if row.get("layer") == "BRONZE")
+    assert bronze_evidence["target_fqn"] == approved
+    assert bronze_evidence["approved_target_fqn"] == approved
+    assert bronze_evidence["load"]["target_fqn"] == approved
+
+
+def test_stale_checkpoint_target_is_audited_then_fresh_approved_target_is_loaded(db, monkeypatch):
+    project, _, table = _seed(db)
+    checkpoint_run = _completed_ingestion(db, project, table)
+    table.object_name = "CustomerSales"
+    db.commit()
+    _approved_medallion(db, project)
+    bronze = db.scalar(select(MigrationMedallionNode).where(
+        MigrationMedallionNode.project_id == project.id,
+        MigrationMedallionNode.layer == "BRONZE",
+    ))
+    approved = "`migration_dev`.`bronze`.`customer_sales`"
+    bronze.target_name = "customer_sales"
+    bronze.target_fqn = approved
+    db.commit()
+    loads = []
+
+    def loader(*args, **kwargs):
+        loads.append(kwargs)
+        return {"object_id": table.id, "target_fqn": kwargs["target_fqn"],
+                "status": "PASSED", "rows_loaded": 5, "target_rows": 5}
+
+    monkeypatch.setattr(bronze_ingestion, "_load_table", loader)
+    monkeypatch.setattr(databricks_client, "execute_sql", lambda *a, **k: [])
+    monkeypatch.setattr(deployment, "databricks_workspace_identity", lambda: "qa-workspace")
+
+    result = medallion.deploy_medallion_dev(db, project.id)
+
+    assert result["status"] == "PASSED", result.get("error")
+    assert loads and loads[0]["target_fqn"] == approved
+    records = [json.loads(row.payload_json) for row in db.query(CanonicalRecord).filter_by(
+        project_id=project.id, object_id=table.id, record_type="BRONZE_INGESTION"
+    )]
+    rejection = next(row for row in records if row.get("action") == "CHECKPOINT_TARGET_MISMATCH")
+    assert rejection["run_id"] == result["run_id"]
+    assert rejection["checkpoint_run_id"] == checkpoint_run.id
+    assert rejection["recorded_target_fqn"] == "`migration_dev`.`bronze`.`Customers`"
+    assert rejection["approved_target_fqn"] == approved
+    deployment_rows = [json.loads(row.payload_json) for row in db.query(MigrationDeployment).filter_by(
+        project_id=project.id, object_id=table.id, status="PASSED"
+    )]
+    bronze_evidence = next(row for row in deployment_rows if row.get("layer") == "BRONZE")
+    assert bronze_evidence["checkpoint_reused"] is False
+    assert bronze_evidence["checkpoint_decision"] == "CHECKPOINT_TARGET_MISMATCH"
 
 
 def test_failed_reload_keeps_data_and_exposes_failure_in_status_and_logs(db, client, auth_headers, monkeypatch):

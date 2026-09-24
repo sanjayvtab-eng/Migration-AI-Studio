@@ -930,9 +930,9 @@ Non-negotiable controls:
 - For Databricks SQL views, queries, and routines: never use '+' for string concatenation. Use the Databricks '||' operator or concat(...) for string concatenation (e.g. `first_name || ' ' || last_name`).
 - For Databricks SQL CTEs: self-referencing (recursive) common table expressions must use WITH RECURSIVE (e.g. `WITH RECURSIVE OrgChart AS ...`).
 - For Databricks SQL functions: use CREATE OR REPLACE FUNCTION and LANGUAGE SQL. If the function queries tables or views (via FROM or JOIN), specify READS SQL DATA after LANGUAGE SQL; never use CONTAINS SQL when querying tables or views.
-- SQL function bodies must use RETURN expression/query, never AS RETURN. When a parameter shares a column name, qualify the column with its table alias and the parameter with the function name; never emit OrderID = OrderID.
-- SQL function parameter scope is function_name.parameter_name (for example, `fn_CalculateOrderAmount`.`OrderID`), never catalog.schema.function_name.parameter_name. Catalog/schema qualification belongs on the CREATE name, table references, and function calls, not parameter references.
-- In the CREATE FUNCTION parameter list, declare only the parameter's simple name and data type (for example, `OrderID` INT). Never use `fn_CalculateOrderAmount`.`OrderID` INT in the declaration. Routine qualification is only for parameter references in the body.
+- SQL function bodies must use RETURN expression/query, never AS RETURN. Give parameters a p_ prefix, qualify same-named columns with their table alias, and never emit OrderID = OrderID.
+- SQL function parameters are always unqualified (for example, `p_order_id`), never function_name.parameter_name or catalog.schema.function_name.parameter_name.
+- In the CREATE FUNCTION parameter list, declare the unqualified p_ parameter and data type (for example, `p_order_id` INT).
 - For Databricks procedures: use CREATE OR REPLACE PROCEDURE, LANGUAGE SQL, and SQL SECURITY INVOKER.
 - Databricks CREATE PROCEDURE does not allow READS SQL DATA or CONTAINS SQL. Omit both from the procedure header; they are function-only clauses. Preserve the AS BEGIN ... END compound body.
 - Never emit DROP, TRUNCATE, DELETE, catalog/schema changes, secrets, approval, or production actions.

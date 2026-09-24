@@ -345,6 +345,21 @@ def dev_precheck(db: Session, project_id: str, test_databricks: bool = True, ign
     return result
 
 
+def _execute_promoted_sql(sql_content: str, safe_retry: bool = False) -> None:
+    """Execute SQL artifact content, splitting multi-statement batches if necessary.
+
+    Databricks SQL connectors do not accept arbitrary multi-statement batches in a single
+    execute call (raising [PARSE_SYNTAX_ERROR]: extra input). This function separates
+    statements (such as bootstrap CREATE TABLE followed by idempotent MERGE)
+    and executes each statement sequentially.
+    """
+    statements = [part.strip() for part in re.split(r";(?:\r?\n|\s*$)", sql_content) if part.strip()]
+    if not statements:
+        return
+    for statement in statements:
+        execute_sql(statement.rstrip(";") + ";", safe_retry=safe_retry)
+
+
 def _safe_execute_artifact(content: str, *, allow_destructive: bool = False) -> None:
     # One artifact version is treated as a single governed statement/batch. Destructive
     # statements require the explicit, per-request DEV approval supplied by the operator.
@@ -352,7 +367,7 @@ def _safe_execute_artifact(content: str, *, allow_destructive: bool = False) -> 
     forbidden = ("DROP TABLE", "DROP VIEW", "DROP SCHEMA", "TRUNCATE TABLE", "DELETE FROM")
     if any(x in upper for x in forbidden) and not allow_destructive:
         raise RuntimeError("Generated artifact contains a destructive statement; explicit governed replacement is required.")
-    execute_sql(content, safe_retry=False)
+    _execute_promoted_sql(content, safe_retry=False)
 
 
 def _apply_table_schema_policy(db: Session, project_id: str, obj: MigrationObject, mapping: MigrationMapping,
@@ -769,6 +784,19 @@ def _reconcile_medallion_run(
             elif node_type in {"SQL_PROCEDURE", "ROUTINE_PLAN"} or source_type == "PROCEDURE":
                 check_type = "PROCEDURE_EXISTENCE"
                 _routine_exists(target_fqn, "PROCEDURE")
+            elif node_type == "WORKFLOW_SQL":
+                check_type = "WORKFLOW_EXECUTION"
+                ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+                qualified = rf"{ident}\s*\.\s*{ident}\s*\.\s*{ident}"
+                content = version.content if version else ""
+                target_match = re.search(rf"(?is)\bMERGE\s+INTO\s+({qualified})", content) or \
+                               re.search(rf"(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({qualified})", content)
+                if target_match:
+                    workflow_target = target_match.group(1).strip()
+                    target_rows = execute_sql(f"SELECT COUNT(*) FROM {workflow_target}", safe_retry=True)
+                    target_count = int(target_rows[0][0]) if target_rows else 0
+                else:
+                    target_count = None
             else:
                 target_rows = execute_sql(f"SELECT COUNT(*) FROM {target_fqn}", safe_retry=True)
                 target_count = int(target_rows[0][0]) if target_rows else 0
@@ -1128,7 +1156,7 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
                 execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
                 action = "DEEP_CLONE_DEV"
             else:
-                execute_sql(_replace_catalog(version.content, dev_catalog, test_catalog), safe_retry=False)
+                _execute_promoted_sql(_replace_catalog(version.content, dev_catalog, test_catalog), safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="TEST", object_id=evidence.object_id,
@@ -1293,7 +1321,7 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
             else:
                 promoted_sql = _replace_catalog(version.content, dev_catalog, uat_catalog)
                 promoted_sql = _replace_catalog(promoted_sql, test_catalog, uat_catalog)
-                execute_sql(promoted_sql, safe_retry=False)
+                _execute_promoted_sql(promoted_sql, safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="UAT", object_id=evidence.object_id,
@@ -1459,7 +1487,7 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
                 promoted_sql = version.content
                 for catalog_name in (dev_catalog, test_catalog, uat_catalog):
                     promoted_sql = _replace_catalog(promoted_sql, catalog_name, prod_catalog)
-                execute_sql(promoted_sql, safe_retry=False)
+                _execute_promoted_sql(promoted_sql, safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="PROD", object_id=evidence.object_id,

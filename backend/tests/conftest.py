@@ -1,7 +1,10 @@
 import os
-# One shared in-memory database prevents shipped/stale SQLite files and open test
-# clients from contaminating later test cases.
-os.environ['DATABASE_URL']='sqlite://'
+import tempfile
+import uuid
+# A unique file-backed database keeps test data isolated while allowing truly
+# independent connections in concurrency tests.
+_test_db = os.path.join(tempfile.gettempdir(), f'migration_ai_studio_{uuid.uuid4().hex}.db')
+os.environ['DATABASE_URL']=f'sqlite:///{_test_db}'
 os.environ['JWT_SECRET']='test-secret-that-is-at-least-32-characters-long'
 import pytest
 from fastapi.testclient import TestClient

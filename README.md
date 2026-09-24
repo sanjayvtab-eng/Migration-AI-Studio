@@ -1,6 +1,6 @@
-# SQL Server → Databricks AI Migration Factory — 2.2.0 DYNAMIC_COMPATIBILITY_FRAMEWORK
+# SQL Server → Databricks AI Migration Factory — 2.4.1 BRONZE_TARGET_CONSISTENCY
 
-**Build marker:** the UI must display `Build 2.2.0 DYNAMIC_COMPATIBILITY_FRAMEWORK`. If you do not see that marker, you are running an older extracted folder or browser/Vite instance.
+**Build marker:** the UI must display `Build 2.4.1 BRONZE_TARGET_CONSISTENCY`. If you do not see that marker, you are running an older extracted folder or browser/Vite instance.
 
 ## Windows quick start
 1. Copy `.env.example` to `.env` and configure SQL Server/Databricks values.
@@ -9,7 +9,7 @@
 4. Create the first administrator with `python scripts\bootstrap_admin.py` from the project root.
 
 ## If you previously ran an older build
-Close all old Vite/Uvicorn terminals before starting this build. The build version in the header/login page should read `2.2.0 DYNAMIC_COMPATIBILITY_FRAMEWORK`.
+Close all old Vite/Uvicorn terminals before starting this build. The build version in the header/login page should read `2.4.1 BRONZE_TARGET_CONSISTENCY`.
 
 # SQL Server → Databricks AI Migration Factory — Enterprise Edition
 
@@ -32,6 +32,7 @@ A metadata-first, project-scoped migration control plane for SQL Server → Data
 - Golden SQL Server regression database generator (200 tables, 30 views, 20+ procedures, 15 functions, 10 triggers)
 - Pytest unit/API tests, Windows launchers, Docker files and documentation
 - Governed project-wide AI repair queue with deterministic-first conversion, bounded correction attempts, local Ollama support, automatic artifact versioning and static revalidation
+- Prompt-native Bronze/Silver/Gold design with metadata grounding, focused clarifications, exact-plan approval, per-artifact review, Databricks validation, and requirement-to-artifact traceability
 
 ## First run on Windows
 1. Install Python 3.12, Node.js 22+, and Microsoft ODBC Driver 18 for SQL Server.

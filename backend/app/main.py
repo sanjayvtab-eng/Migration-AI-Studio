@@ -28,7 +28,7 @@ if s.bootstrap_admin_username and s.bootstrap_admin_password:
                 role="ADMIN",
             ))
             db.commit()
-app=FastAPI(title=s.app_name,version="2.3.0")
+app=FastAPI(title=s.app_name,version="2.4.1")
 app.add_middleware(CORSMiddleware,allow_origins=s.origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 class SecurityHeaders(BaseHTTPMiddleware):

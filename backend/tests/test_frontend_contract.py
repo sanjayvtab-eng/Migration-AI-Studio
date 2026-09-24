@@ -11,7 +11,10 @@ def test_frontend_has_no_recovery_placeholder():
     assert "Infer fact/dimension" in app
     assert "Analyze consumers" in app
     assert "Generate stage artifacts" in app
-    assert "2.3.0 SEMANTIC_MEDALLION_FACTORY" in app
+    assert "2.4.1 BRONZE_TARGET_CONSISTENCY" in app
+    assert "Parse and Ground Prompt" in app
+    assert "Approve Exact Plan" in app
+    assert "Validate in Databricks" in app
 
 def test_frontend_api_uses_same_origin_api_for_production():
     api = (Path(__file__).parents[2] / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")

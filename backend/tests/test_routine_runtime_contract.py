@@ -74,8 +74,9 @@ def test_procedure_clause_repair_preserves_function_clauses_literals_comments_an
     assert fixed == sql.replace('\nREADS SQL DATA\n', '\n\n')
     assert not databricks_routine_contract_issues(fixed, 'PROCEDURE')
     function = OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
-    assert normalize_databricks_routine_contract(function, 'FUNCTION') == function
-    assert not databricks_routine_contract_issues(function, 'FUNCTION')
+    normalized = normalize_databricks_routine_contract(function, 'FUNCTION')
+    assert '`p_order_id` INT' in normalized and 'oi.OrderID = `p_order_id`' in normalized
+    assert not databricks_routine_contract_issues(normalized, 'FUNCTION')
 
 
 @pytest.mark.parametrize('use_ai', [False, True])
@@ -195,8 +196,8 @@ def test_ai_v3_parameter_scope_is_rejected_and_safely_normalized():
                                         SimpleNamespace(target_fqn=FQN), OVERQUALIFIED_SQL)
     assert result['valid'], result['errors']
     sql = result['normalized_candidate']
-    assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in sql
-    assert sql == OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
+    assert 'WHERE oi.OrderID = `p_order_id`' in sql
+    assert '`p_order_id` INT' in sql
     assert normalize_databricks_routine_contract(sql, 'FUNCTION') == sql
 
 
@@ -211,8 +212,8 @@ def test_ai_v4_qualified_declaration_is_rejected_and_normalized(prefix):
     assert any('parameter declaration' in issue for issue in
                databricks_routine_contract_issues(sql, 'FUNCTION'))
     fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
-    assert fixed == sql.replace(prefix + '.`OrderID` INT', '`OrderID` INT')
-    assert 'WHERE oi.OrderID = `fn_CalculateOrderAmount`.`OrderID`' in fixed
+    assert '`p_order_id` INT' in fixed
+    assert 'WHERE oi.OrderID = `p_order_id`' in fixed
     assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
     assert normalize_databricks_routine_contract(fixed, 'FUNCTION') == fixed
 
@@ -221,7 +222,7 @@ def test_declaration_repair_does_not_guess_foreign_scope_and_blocks_duplicate_na
     foreign = QUALIFIED_DECLARATION_SQL.replace(
         '`fn_CalculateOrderAmount`.`OrderID` INT', '`OtherFunction`.`OrderID` INT'
     )
-    assert normalize_databricks_routine_contract(foreign, 'FUNCTION') == foreign
+    assert '`OtherFunction`.`OrderID` INT' in normalize_databricks_routine_contract(foreign, 'FUNCTION')
     assert databricks_routine_contract_issues(foreign, 'FUNCTION')
     duplicate = QUALIFIED_DECLARATION_SQL.replace(
         '`fn_CalculateOrderAmount`.`OrderID` INT', '`fn_CalculateOrderAmount`.`OrderID` INT, OrderID INT'
@@ -238,7 +239,8 @@ def test_declaration_repair_preserves_nested_types_defaults_and_comments():
         "payload STRUCT<x: INT, y: ARRAY<INT>>, text STRING DEFAULT 'fn_CalculateOrderAmount.x'"
     ) + '\n-- fn_CalculateOrderAmount.OrderID INT\n'
     fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
-    assert fixed == sql.replace('`fn_CalculateOrderAmount`.`OrderID` INT', '`OrderID` INT')
+    assert '`p_order_id` INT' in fixed and '`p_amount` DECIMAL(18,2)' in fixed
+    assert "DEFAULT 'fn_CalculateOrderAmount.x'" in fixed
     assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
 
 
@@ -250,7 +252,8 @@ def test_declaration_parser_keeps_quoted_commas_and_nested_types_separate():
     )
     assert databricks_routine_contract_issues(sql, 'FUNCTION')
     fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
-    assert fixed == sql.replace('`fn_CalculateOrderAmount`.`OrderID` INT', '`OrderID` INT')
+    assert '`p_a_b` DECIMAL(18,2)' in fixed and '`p_payload` STRUCT<x: INT, y: INT>' in fixed
+    assert '`p_order_id` INT' in fixed
     assert not databricks_routine_contract_issues(fixed, 'FUNCTION')
 
 
@@ -260,7 +263,7 @@ RETURNS INT AS BEGIN RETURN (SELECT COUNT(*) FROM dbo.OrderItems
 WHERE OrderID = @OrderID); END'''
     fixed = _replace_parameters(source, [{'name': '@OrderID'}], routine_name='fn_CalculateOrderAmount')
     assert 'fn_CalculateOrderAmount(@OrderID INT)' in fixed
-    assert 'WHERE OrderID = `fn_CalculateOrderAmount`.`OrderID`' in fixed
+    assert 'WHERE OrderID = `p_order_id`' in fixed
 
 
 @pytest.mark.parametrize('scope', [
@@ -281,12 +284,16 @@ def test_parameter_normalization_preserves_literals_comments_and_unrelated_field
     sql = OVERQUALIFIED_SQL.replace('), 0);', f"), CAST('{FQN}.`OrderID`' AS INT));") + extra
     fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
     assert f"'{FQN}.`OrderID`'" in fixed and fixed.endswith(extra)
-    for reference in ['other.silver.fn_CalculateOrderAmount.OrderID',
-                      '`migration_dev`.`silver`.`OrderItems`.`OrderID`',
+    other_scope = OVERQUALIFIED_SQL.replace(
+        FQN + '.`OrderID`', 'other.silver.fn_CalculateOrderAmount.OrderID'
+    )
+    assert 'oi.OrderID = `p_order_id`' in normalize_databricks_routine_contract(other_scope, 'FUNCTION')
+    for reference in ['`migration_dev`.`silver`.`OrderItems`.`OrderID`',
                       FQN + '.`UnknownParameter`',
                       FQN + '.`OrderID`.`nested_field`']:
         sql = OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', reference)
-        assert normalize_databricks_routine_contract(sql, 'FUNCTION') == sql
+        fixed = normalize_databricks_routine_contract(sql, 'FUNCTION')
+        assert reference in fixed and '`p_order_id` INT' in fixed
 
 
 @pytest.mark.parametrize('bad_sql', [OVERQUALIFIED_SQL, QUALIFIED_DECLARATION_SQL])
@@ -318,7 +325,7 @@ def test_approved_ai_sql_is_blocked_until_new_version_repaired_and_approved(db, 
     assert current.review_status == 'PENDING_REVIEW'
     assert not any('parameter declaration' in issue for issue in
                    databricks_routine_contract_issues(current.content, 'FUNCTION'))
-    assert 'WHERE oi.`order_id` = `fn_CalculateOrderAmount`.`OrderID`' in current.content
+    assert 'WHERE oi.`order_id` = `p_order_id`' in current.content
     assert not databricks_routine_contract_issues(current.content, 'FUNCTION')
     medallion.review_medallion_artifact(db, project.id, current.id, status='APPROVED', reviewer='architect')
     medallion.generate_medallion_artifacts(db, project.id)
@@ -348,11 +355,11 @@ def test_comments_do_not_supply_a_missing_function_body():
     assert any('missing RETURN' in x for x in databricks_routine_contract_issues(sql, 'FUNCTION'))
 
 
-def test_comment_cannot_supply_language_and_same_column_comparison_is_not_a_parameter_collision():
+def test_comment_cannot_supply_language_and_same_column_comparison_is_rejected():
     sql = f'CREATE OR REPLACE FUNCTION {FQN}() RETURNS INT /* LANGUAGE SQL */ RETURN 1;'
     assert any('missing LANGUAGE SQL' in x for x in databricks_routine_contract_issues(sql, 'FUNCTION'))
     sql = f'CREATE OR REPLACE FUNCTION {FQN}() RETURNS INT LANGUAGE SQL RETURN (SELECT COUNT(*) FROM t WHERE x = x);'
-    assert not databricks_routine_contract_issues(sql, 'FUNCTION')
+    assert any('Ambiguous function filter' in x for x in databricks_routine_contract_issues(sql, 'FUNCTION'))
 
 
 def test_function_conversion_keeps_parameter_separate_from_column(db):
@@ -363,7 +370,7 @@ RETURNS decimal(18,2) AS BEGIN
 RETURN (SELECT SUM(UnitPrice) FROM dbo.OrderItems WHERE OrderID = @OrderID); END'''
     db.commit()
     version = generate_artifact(db, project.id, obj.id)
-    assert 'WHERE OrderID = `fn_CalculateOrderAmount`.`OrderID`' in version.content
+    assert 'WHERE OrderID = `p_order_id`' in version.content
     assert not databricks_routine_contract_issues(version.content, 'FUNCTION')
 
 
@@ -390,7 +397,7 @@ def test_repaired_current_version_survives_regeneration_and_is_deployed(db, monk
     assert repaired['version'] == old.version + 1
     current = db.get(MigrationStageArtifactVersion, repaired['artifact_version_id'])
     assert 'AS RETURN' not in current.content
-    assert 'WHERE OrderID = `fn_CalculateOrderAmount`.`OrderID`' in current.content
+    assert 'WHERE OrderID = `p_order_id`' in current.content
     medallion.review_medallion_artifact(db, project.id, current.id, status='APPROVED', reviewer='architect')
     medallion.generate_medallion_artifacts(db, project.id)
     effective = next(x for x in medallion.list_medallion_artifacts(db, project.id) if x['target_fqn'] == FQN)

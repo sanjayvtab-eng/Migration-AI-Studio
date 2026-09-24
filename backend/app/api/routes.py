@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 import re
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -19,6 +20,7 @@ from app.services import bronze_ingestion
 from app.services import prompt_orchestration
 from app.services import prompt_promotion
 from app.services import master_orchestration
+from app.services import prompt_specification
 from app.services.type_compatibility import compatibility_catalog, transport_contract, transport_summary
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
@@ -141,6 +143,31 @@ class MasterMigrationExecuteIn(BaseModel):
     workflow_authorized: bool=False
     production_authorized: bool=False
     data_replacement_authorized: bool=False
+
+class AutomatedPromotionAuthorizeIn(BaseModel):
+    confirmation_text: str = ""
+
+class AutomatedPromotionActionIn(BaseModel):
+    run_id: str | None = None
+
+
+class PromptSpecificationIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str
+
+class PromptClarificationsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    answers: dict[str, Any]
+
+class PromptPlanApprovalIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = "APPROVED"
+    comment: str | None = None
+
+class PromptArtifactReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = "APPROVED"
+    comment: str | None = None
 
 
 
@@ -359,6 +386,75 @@ def prompt_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
     except Exception as e: _environment_error(e)
 
 
+# Release 7 prompt-native design API. Submission, plan approval, artifact
+# validation/review, and deployment are intentionally separate commands.
+@router.post("/projects/{project_id}/prompt-specifications")
+def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_specification.submit(db,project_id,data.prompt,actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/prompt-specifications/{specification_id}")
+def prompt_specification_get(project_id:str,specification_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return prompt_specification.detail(db,project_id,specification_id)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/clarifications")
+def prompt_specification_clarify(project_id:str,specification_id:str,data:PromptClarificationsIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_specification.answer_clarifications(db,project_id,specification_id,data.answers,actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/prompt-specifications/{specification_id}/plan")
+def prompt_specification_plan(project_id:str,specification_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return prompt_specification.plan(db,project_id,specification_id)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/approve")
+def prompt_specification_approve(project_id:str,specification_id:str,data:PromptPlanApprovalIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_specification.approve_plan(db,project_id,specification_id,actor,data.status,data.comment)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/generate")
+def prompt_specification_generate(project_id:str,specification_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_specification.generate(db,project_id,specification_id,actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/validate")
+def prompt_specification_validate(project_id:str,specification_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    _admin_actor(user)
+    try: return prompt_specification.validate_target(db,project_id,specification_id)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/artifacts/{artifact_version_id}/review")
+def prompt_specification_review_artifact(project_id:str,specification_id:str,artifact_version_id:str,data:PromptArtifactReviewIn,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_specification.review_artifact(db,project_id,specification_id,artifact_version_id,data.status,actor,data.comment)
+    except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/deploy-dev")
+def prompt_specification_deploy_dev(project_id:str,specification_id:str,db:Session=Depends(get_db),user=Depends(auth)):
+    actor=_admin_actor(user)
+    try: return prompt_specification.deploy_dev(db,project_id,specification_id,actor)
+    except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/prompt-specifications/{specification_id}/trace")
+def prompt_specification_trace(project_id:str,specification_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return prompt_specification.trace(db,project_id,specification_id)
+    except Exception as e: _environment_error(e)
+
+
 @router.post("/projects/{project_id}/prompt-promotion/plan")
 def prompt_promotion_plan(project_id:str,data:PromptPromotionPlanIn,db:Session=Depends(get_db),user=Depends(auth)):
     actor=_admin_actor(user)
@@ -415,6 +511,84 @@ def master_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
             "execution":master_orchestration.latest_master_execution(db,project_id),
         }
     except Exception as e: _environment_error(e)
+
+
+@router.get("/projects/{project_id}/master-orchestration/current")
+@router.get("/projects/{project_id}/automated-promotion/current")
+def automated_promotion_current(project_id: str, db: Session = Depends(get_db), _=Depends(auth)):
+    try:
+        return master_orchestration.get_automated_promotion_status(db, project_id)
+    except Exception as e:
+        _environment_error(e)
+
+
+@router.post("/projects/{project_id}/master-orchestration/authorize")
+@router.post("/projects/{project_id}/automated-promotion/authorize")
+def automated_promotion_authorize(
+    project_id: str,
+    data: AutomatedPromotionAuthorizeIn,
+    db: Session = Depends(get_db),
+    user=Depends(auth),
+):
+    actor = _admin_actor(user)
+    try:
+        return master_orchestration.authorize_automated_promotion(
+            db, project_id, confirmation_text=data.confirmation_text, actor=actor
+        )
+    except Exception as e:
+        _environment_error(e)
+
+
+@router.post("/projects/{project_id}/master-orchestration/pause")
+@router.post("/projects/{project_id}/automated-promotion/pause")
+def automated_promotion_pause(
+    project_id: str,
+    data: AutomatedPromotionActionIn = AutomatedPromotionActionIn(),
+    db: Session = Depends(get_db),
+    user=Depends(auth),
+):
+    actor = _admin_actor(user)
+    try:
+        return master_orchestration.pause_automated_promotion(
+            db, project_id, run_id=data.run_id, actor=actor
+        )
+    except Exception as e:
+        _environment_error(e)
+
+
+@router.post("/projects/{project_id}/master-orchestration/resume")
+@router.post("/projects/{project_id}/automated-promotion/resume")
+def automated_promotion_resume(
+    project_id: str,
+    data: AutomatedPromotionActionIn = AutomatedPromotionActionIn(),
+    db: Session = Depends(get_db),
+    user=Depends(auth),
+):
+    actor = _admin_actor(user)
+    try:
+        return master_orchestration.resume_automated_promotion(
+            db, project_id, run_id=data.run_id, actor=actor
+        )
+    except Exception as e:
+        _environment_error(e)
+
+
+@router.post("/projects/{project_id}/master-orchestration/cancel")
+@router.post("/projects/{project_id}/automated-promotion/cancel")
+def automated_promotion_cancel(
+    project_id: str,
+    data: AutomatedPromotionActionIn = AutomatedPromotionActionIn(),
+    db: Session = Depends(get_db),
+    user=Depends(auth),
+):
+    actor = _admin_actor(user)
+    try:
+        return master_orchestration.cancel_automated_promotion(
+            db, project_id, run_id=data.run_id, actor=actor
+        )
+    except Exception as e:
+        _environment_error(e)
+
 
 
 @router.get("/projects/{project_id}/sources")

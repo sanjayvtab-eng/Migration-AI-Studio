@@ -12,6 +12,16 @@ def sha(text: str) -> str: return hashlib.sha256(text.encode()).hexdigest()
 def qident(v: str) -> str: return "`" + v.replace("`","``") + "`"
 
 
+def function_parameter_name(value: str) -> str:
+    """Return the stable, collision-resistant name used by generated SQL functions."""
+    source = re.sub(r"^@+", "", str(value or "").strip())
+    snake = re.sub(
+        r"[^A-Za-z0-9]+", "_",
+        re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", source),
+    ).strip("_").lower()
+    return snake if snake.startswith("p_") else f"p_{snake}"
+
+
 def _sql_code(content: str) -> str:
     """Mask literals/comments while retaining offsets and quoted identifiers."""
     pattern = r"'(?:(?:'')|[^'])*'|\"(?:(?:\"\")|[^\"])*\"|--[^\n]*|/\*.*?\*/|\$\$.*?\$\$"
@@ -142,8 +152,63 @@ def normalize_databricks_routine_contract(content: str, object_type: str) -> str
             return content
         for start, end, replacement in reversed(_qualified_function_declaration_repairs(content)):
             content = content[:start] + replacement + content[end:]
-        for start, end, replacement in reversed(_overqualified_function_parameters(content)):
-            content = content[:start] + replacement + content[end:]
+        # Give function parameters their own namespace. This removes the
+        # column/parameter ambiguity that previously produced filters such as
+        # OrderID = OrderID and avoids unsupported routine-qualified references.
+        signature = _function_signature(content)
+        declarations = _function_parameter_declarations(content)
+        declared = []
+        if signature:
+            for start, end, parts in reversed(declarations):
+                # A foreign qualifier in a declaration is not safely
+                # attributable to this function; leave it for validation.
+                if len(parts) > 1:
+                    continue
+                old = parts[-1].strip('`').replace('``', '`')
+                new = function_parameter_name(old)
+                declared.append((old, new))
+                content = content[:start] + qident(new) + content[end:]
+            signature = _function_signature(content)
+        if signature:
+            body = re.search(r"(?is)\bRETURN\b", _sql_code(content)[signature.end():])
+            if body:
+                body_start = signature.end() + body.end()
+                body_text = content[body_start:]
+                body_code = _sql_code(body_text)
+                ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+                qualified = rf"{ident}(?:\s*\.\s*{ident})+"
+                routine_name = re.findall(ident, signature.group(1))[-1].strip('`').replace('``', '`').lower()
+                edits: list[tuple[int, int, str]] = []
+                for old, new in declared:
+                    old_key = old.lower()
+                    # Old routine-qualified parameters are always safe to
+                    # rewrite, including a complete catalog/schema/routine path.
+                    for match in re.finditer(qualified, body_code):
+                        parts = [part.strip('`').replace('``', '`').lower()
+                                 for part in re.findall(ident, match.group())]
+                        if len(parts) >= 2 and parts[-2:] == [routine_name, old_key]:
+                            edits.append((match.start(), match.end(), qident(new)))
+                    # A bare parameter opposite a qualified column is also
+                    # unambiguous. Leave bare same-name comparisons untouched so
+                    # validation can reject them instead of guessing.
+                    old_ident = rf"(?:`{re.escape(old)}`|{re.escape(old)})(?![\w`])"
+                    for match in re.finditer(
+                        rf"(?i){ident}\s*\.\s*{ident}\s*=\s*({old_ident})", body_code
+                    ):
+                        edits.append((match.start(1), match.end(1), qident(new)))
+                    for match in re.finditer(
+                        rf"(?i)(?<![\w`.])({old_ident})\s*=\s*{ident}\s*\.\s*{ident}", body_code
+                    ):
+                        edits.append((match.start(1), match.end(1), qident(new)))
+                # Prefer the longest edit when a qualified reference overlaps a
+                # shorter comparison capture, and never touch masked literals or comments.
+                selected: list[tuple[int, int, str]] = []
+                for edit in sorted(set(edits), key=lambda item: (item[0], -(item[1] - item[0]))):
+                    if not any(edit[0] < end and edit[1] > start for start, end, _ in selected):
+                        selected.append(edit)
+                for start, end, replacement in sorted(selected, reverse=True):
+                    body_text = body_text[:start] + replacement + body_text[end:]
+                content = content[:body_start] + body_text
         code = _sql_code(content)
         # SQL functions use RETURN expression/query; AS is for other body forms.
         # Limit this rewrite to the first body RETURN, never literals/comments.
@@ -198,15 +263,22 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
         if any(len(parts) > 1 for _, _, parts in declarations):
             issues.append("Invalid function parameter declaration; declare parameter_name data_type without a routine qualifier")
         names = [parts[-1].strip('`').replace('``', '`').lower() for _, _, parts in declarations]
+        for name in names:
+            if not name.startswith("p_"):
+                issues.append(f"Function parameter {name} must use the unambiguous p_ namespace")
         if len(names) != len(set(names)):
             issues.append("Duplicate function parameter names are not allowed")
         if _overqualified_function_parameters(content):
-            issues.append("Invalid function parameter qualification; use routine.parameter without catalog/schema")
+            issues.append("Invalid function parameter qualification; use an unqualified p_ parameter")
         body = re.search(r"(?is)\bRETURN\b", code)
         if not body:
             issues.append("Databricks SQL function is missing RETURN expression/query")
         elif re.search(r"(?is)\bAS\s*$", code[:body.start()]):
             issues.append("Databricks SQL function must use RETURN, not AS RETURN")
+        if body:
+            for name in names:
+                if re.search(rf"(?i)(?:`?[A-Za-z_]\w*`?)\s*\.\s*`?{re.escape(name)}`?", code[body.end():]):
+                    issues.append(f"Function parameter {name} must not be qualified by the routine name")
         if body:
             # A same-name comparison cannot distinguish a column from a parameter.
             # Do not guess which side to rewrite in an AI candidate.
@@ -214,7 +286,7 @@ def databricks_routine_contract_issues(content: str, object_type: str) -> list[s
             parameters = set(names)
             for comparison in re.finditer(rf"(?<![\w`.])({ident})\s*=\s*({ident})(?![\w`.]|\s*\.)", code[body.end():]):
                 left, right = (part.strip('`').lower() for part in comparison.groups())
-                if left == right and left in parameters and re.search(r"(?i)\b(?:FROM|JOIN)\b", code[body.end():]):
+                if left == right and re.search(r"(?i)\b(?:FROM|JOIN)\b", code[body.end():]):
                     issues.append(f"Ambiguous function filter {left} = {right}; qualify the column and function parameter separately")
         has_contains = bool(re.search(r"(?is)\bCONTAINS\s+SQL\b", code))
         has_reads = bool(re.search(r"(?is)\bREADS\s+SQL\s+DATA\b", code))
@@ -346,7 +418,8 @@ def _parameter_signature(params: list[dict], *, procedure: bool=False) -> str:
         raw=str(p.get("name") or "").strip()
         if not raw or raw.lower() in {"@return_value","return_value"}:
             continue
-        name=re.sub(r"^@+","",raw)
+        source_name=re.sub(r"^@+","",raw)
+        name=source_name if procedure else function_parameter_name(source_name)
         dtype=map_sqlserver_type(str(p.get("type") or "string"),p.get("precision"),p.get("scale"))
         mode="OUT " if procedure and p.get("is_output") else ("IN " if procedure else "")
         parts.append(f"{mode}{qident(name)} {dtype}")
@@ -358,7 +431,8 @@ def _replace_parameters(text: str, params: list[dict], *, routine_name: str | No
     for p in params:
         raw=str(p.get("name") or "").strip()
         if raw.startswith("@"):
-            replacement = (qident(routine_name) + "." if routine_name else "") + qident(raw[1:])
+            source_name=raw[1:]
+            replacement=(qident(function_parameter_name(source_name)) if routine_name else qident(source_name))
             code = _sql_code(out)
             matches = list(re.finditer(rf"(?<![\w@]){re.escape(raw)}\b", code, flags=re.I))
             signature = _function_signature(out) if routine_name else None

@@ -53,6 +53,49 @@ def _fqn(catalog: str, schema: str, table: str) -> str:
     return ".".join(_qident(x) for x in (catalog, schema, table))
 
 
+_FQN_IDENTIFIER = r"(?:`(?:``|[^`])+`|[A-Za-z_][A-Za-z0-9_]*)"
+_FQN_PATTERN = re.compile(
+    rf"^\s*({_FQN_IDENTIFIER})\s*\.\s*({_FQN_IDENTIFIER})\s*\.\s*({_FQN_IDENTIFIER})\s*$"
+)
+
+
+def _parse_fqn(value: str) -> tuple[str, str, str]:
+    """Parse exactly one safe Databricks catalog.schema.object identifier."""
+    match = _FQN_PATTERN.fullmatch(str(value or ""))
+    if not match:
+        raise ValueError(f"Target FQN must be exactly catalog.schema.object: {value}")
+
+    def unquote(identifier: str) -> str:
+        if identifier.startswith("`"):
+            identifier = identifier[1:-1].replace("``", "`")
+        if not identifier or "\x00" in identifier:
+            raise ValueError("Target FQN contains an invalid identifier")
+        return identifier
+
+    return tuple(unquote(item) for item in match.groups())
+
+
+def _same_fqn(left: str | None, right: str | None) -> bool:
+    try:
+        return tuple(item.casefold() for item in _parse_fqn(str(left or ""))) == tuple(
+            item.casefold() for item in _parse_fqn(str(right or ""))
+        )
+    except ValueError:
+        return False
+
+
+def validate_approved_bronze_target(target_fqn: str, *, expected_catalog: str) -> str:
+    """Validate a persisted approved target without deriving or renaming it."""
+    catalog, schema, _ = _parse_fqn(target_fqn)
+    if catalog.casefold() != str(expected_catalog).casefold():
+        raise ValueError(
+            f"Approved Bronze target catalog {catalog} does not match provisioned DEV catalog {expected_catalog}"
+        )
+    if schema.casefold() != "bronze":
+        raise ValueError("Approved Bronze target must use the bronze schema")
+    return str(target_fqn).strip()
+
+
 def _payload(value: str | None) -> dict[str, Any]:
     try:
         return json.loads(value or "{}")
@@ -284,6 +327,7 @@ def _load_table(
     max_rows: int | None,
     load_mode: str,
     replace_existing_data: bool,
+    target_fqn: str | None = None,
 ) -> dict[str, Any]:
     source = db.get(MigrationSource, table.source_id)
     if not source or source.project_id != project_id:
@@ -291,11 +335,15 @@ def _load_table(
     columns = _columns(db, project_id, table.id)
     if not columns:
         raise RuntimeError("No discovered source columns")
+    target = validate_approved_bronze_target(
+        target_fqn or _fqn(plan.catalog_name, "bronze", table.object_name),
+        expected_catalog=plan.catalog_name,
+    )
+    target_catalog, target_schema, _ = _parse_fqn(target)
     connection = connector_info(source.id)
     if connection["mode"] == "CONNECTOR":
         connector_request(source.id, "test")
 
-    target = _fqn(plan.catalog_name, "bronze", table.object_name)
     existing_count = _target_count(db, project_id, target)
     if load_mode == "FULL_LOAD" and existing_count is not None and not replace_existing_data:
         raise RuntimeError(
@@ -305,7 +353,7 @@ def _load_table(
     expected_rows = min(source_total, max_rows) if max_rows is not None else source_total
 
     suffix = re.sub(r"[^A-Za-z0-9_]", "_", run_id[-16:])
-    stage = _fqn(plan.catalog_name, "bronze", f"__mf_stage_{suffix}_{table.id[-8:]}")
+    stage = _fqn(target_catalog, target_schema, f"__mf_stage_{suffix}_{table.id[-8:]}")
     write_target = stage if load_mode == "FULL_LOAD" else target
     if load_mode == "FULL_LOAD":
         environment_provisioning.project_execute(
@@ -585,7 +633,13 @@ def latest(db: Session, project_id: str) -> dict[str, Any]:
     }
 
 
-def verified_checkpoint(db: Session, project_id: str, tables: list[MigrationObject]) -> dict[str, Any] | None:
+def verified_checkpoint(
+    db: Session,
+    project_id: str,
+    tables: list[MigrationObject],
+    approved_targets: dict[str, str] | None = None,
+    decision_run_id: str | None = None,
+) -> dict[str, Any] | None:
     """Reuse completed ingestion only after checking the current source and target."""
     evidence = latest(db, project_id)
     if evidence.get("status") != "PASSED" or not evidence.get("run_id") or not tables:
@@ -595,13 +649,31 @@ def verified_checkpoint(db: Session, project_id: str, tables: list[MigrationObje
         return None
     results = {item.get("object_id"): item for item in evidence.get("results", [])}
     verified = []
+    rejections = []
     from app.services.engine import compare_schema
     for table in tables:
         item = results.get(table.id)
-        target = _fqn(plan.catalog_name, "bronze", table.object_name)
-        normalize = lambda value: str(value or "").replace("`", "").lower()
+        target = (approved_targets or {}).get(
+            table.id, _fqn(plan.catalog_name, "bronze", table.object_name)
+        )
+        target = validate_approved_bronze_target(target, expected_catalog=plan.catalog_name)
+        if item and item.get("status") == "PASSED" and not _same_fqn(item.get("target_fqn"), target):
+            rejection = {
+                "object_id": table.id,
+                "action": "CHECKPOINT_TARGET_MISMATCH",
+                "checkpoint_reused": False,
+                "recorded_target_fqn": item.get("target_fqn"),
+                "approved_target_fqn": target,
+                "reason": "Verified checkpoint target differs from the current approved Bronze target",
+            }
+            rejections.append(rejection)
+            _record(
+                db, project_id, status="SKIPPED", run_id=decision_run_id,
+                object_id=table.id, checkpoint_run_id=evidence.get("run_id"),
+                **{key: value for key, value in rejection.items() if key != "object_id"},
+            )
+            continue
         if (not item or item.get("status") != "PASSED"
-                or normalize(item.get("target_fqn")) != normalize(target)
                 or item.get("source") != f"{table.schema_name}.{table.object_name}"):
             return None
         source = db.get(MigrationSource, table.source_id)
@@ -627,4 +699,9 @@ def verified_checkpoint(db: Session, project_id: str, tables: list[MigrationObje
         if compare_schema(expected, actual)["status"] != "IDENTICAL":
             return None
         verified.append({**item, "checkpoint_reused": True})
-    return {**evidence, "results": verified, "checkpoint_reused": True}
+    return {
+        **evidence,
+        "results": verified,
+        "checkpoint_reused": bool(verified),
+        "rejections": rejections,
+    }

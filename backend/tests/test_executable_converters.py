@@ -242,7 +242,7 @@ def test_function_with_select_assign_and_coalesce_return(db):
     assert 'CREATE OR REPLACE FUNCTION' in rem['generated_candidate']
     assert 'READS SQL DATA' in rem['generated_candidate']
     assert 'RETURN coalesce((SELECT' in rem['generated_candidate']
-    assert '`department_id` INT' in rem['generated_candidate']
+    assert '`p_department_id` INT' in rem['generated_candidate']
 
     repaired = remediate_one_artifact(db, p.id, obj.id, environment='DEV', use_ai=False)
     assert repaired['status'] == 'READY_FOR_REVIEW'
@@ -280,7 +280,7 @@ def test_function_remediation_parses_definition_parameters_when_metadata_missing
     generate_artifact(db, p.id, obj.id)
     rem = analyze_remediation(db, p.id, obj.id, 'DEV', use_ai=False)
     assert 'CREATE OR REPLACE FUNCTION' in rem['generated_candidate']
-    assert '`dept_id` INT' in rem['generated_candidate']
+    assert '`p_dept_id` INT' in rem['generated_candidate']
     assert 'READS SQL DATA' in rem['generated_candidate']
     assert rem['deterministic_validation']['valid'] is True
 

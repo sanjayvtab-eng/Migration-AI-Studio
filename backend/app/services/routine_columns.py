@@ -178,7 +178,9 @@ def bind_columns(sql: str, relations: dict[tuple[str, ...], dict[str, str]]) -> 
             clauses[token.scope] = token.value.upper()
         if any(p in protected for p in parts):
             continue
-        if names[-1] in parameters and tuple(names[:-1]) in {routine_name, routine_name[-1:]}:
+        if names[-1] in parameters and (
+            len(parts) == 1 or tuple(names[:-1]) in {routine_name, routine_name[-1:]}
+        ):
             continue
         # Calls, declaration names and projected aliases are not column references.
         if end < len(tokens) and tokens[end].value == '(':

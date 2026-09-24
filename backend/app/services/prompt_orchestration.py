@@ -91,6 +91,7 @@ def parse_and_validate_prompt(
     project_id: str,
     prompt: str,
     actor: str = "admin",
+    target_environment_override: str | None = None,
 ) -> dict[str, Any]:
     """Parse user prompt, validate prerequisites, and return intent or NEEDS_USER_INPUT."""
     if not prompt or not prompt.strip():
@@ -129,15 +130,14 @@ def parse_and_validate_prompt(
             matched_source = sources[0]
 
     # 2. Identify target environment
-    env = "DEV"
-    if "dev" in lower or "development" in lower:
-        env = "DEV"
-    elif "prod" in lower or "production" in lower:
-        env = "PROD"
-    elif "uat" in lower:
-        env = "UAT"
-    elif "test" in lower:
-        env = "TEST"
+    env = (target_environment_override or "").upper() or "DEV"
+    if not target_environment_override:
+        if "prod" in lower or "production" in lower:
+            env = "PROD"
+        elif "uat" in lower:
+            env = "UAT"
+        elif "test" in lower:
+            env = "TEST"
 
     # 3. Check prerequisites & handle blockers
     blockers: list[str] = []
@@ -205,9 +205,12 @@ def generate_prompt_plan(
     project_id: str,
     prompt: str,
     actor: str = "admin",
+    target_environment_override: str | None = None,
 ) -> dict[str, Any]:
     """Validate prompt and generate a structured migration plan with impact assessment."""
-    validation = parse_and_validate_prompt(db, project_id, prompt, actor)
+    validation = parse_and_validate_prompt(
+        db, project_id, prompt, actor, target_environment_override
+    )
     if validation["status"] == "NEEDS_USER_INPUT":
         return validation
 
@@ -525,10 +528,13 @@ def execute_prompt_plan(
         # Step 3: Medallion Modeling & Artifact Generation
         current_stage = "MEDALLION_GENERATION"
         sem_res = medallion.infer_semantics_hybrid(db, project_id)
-        semantic_approval = medallion.approve_all_semantics(db, project_id, actor=actor)
-        if semantic_approval.get("errors"):
+        pending_semantics = [
+            item for item in medallion.list_semantics(db, project_id)
+            if item.get("status") != "APPROVED"
+        ]
+        if pending_semantics:
             raise RuntimeError(
-                "Semantic approval failed: " + "; ".join(semantic_approval["errors"][:3])
+                f"{len(pending_semantics)} semantic definition(s) require explicit human approval in Medallion Design"
             )
         plan_res = medallion.build_medallion_plan(db, project_id, environment="DEV", catalog=catalog_name)
         art_res = medallion.generate_medallion_artifacts(db, project_id, environment="DEV")
@@ -565,12 +571,13 @@ def execute_prompt_plan(
                 f"{validation_report.get('failed_count', len(failed))} artifact(s) remain unresolved after remediation"
                 + (f": {detail}" if detail else "")
             )
-        artifact_approval = medallion.approve_all_medallion_artifacts(
-            db, project_id, environment="DEV", reviewer=actor
-        )
-        if artifact_approval.get("errors"):
+        pending_artifacts = [
+            item for item in medallion.list_medallion_artifacts(db, project_id, environment="DEV")
+            if item.get("review_status") != "APPROVED"
+        ]
+        if pending_artifacts:
             raise RuntimeError(
-                "Artifact approval failed: " + "; ".join(artifact_approval["errors"][:3])
+                f"{len(pending_artifacts)} validated artifact(s) require explicit human approval in Reviews"
             )
         execution_results["stages"]["VALIDATION_AND_REMEDIATION"] = {
             "status": "PASSED",

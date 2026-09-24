@@ -15,7 +15,9 @@ ITEMS = ('migration_dev', 'silver', 'orderitems')
 SCHEMA = {'orderid': 'order_id', 'order_id': 'order_id', 'unitprice': 'unit_price',
           'unit_price': 'unit_price', 'quantity': 'quantity',
           'discountpercent': 'discount_percent', 'discount_percent': 'discount_percent'}
-SCHEMA_SQL = OVERQUALIFIED_SQL.replace(FQN + '.`OrderID`', '`fn_CalculateOrderAmount`.`OrderID`')
+SCHEMA_SQL = OVERQUALIFIED_SQL.replace('(OrderID INT)', '(`p_order_id` INT)').replace(
+    FQN + '.`OrderID`', '`p_order_id`'
+)
 
 
 def test_function_columns_bind_without_renaming_parameters_values_or_output_aliases():
@@ -23,9 +25,9 @@ def test_function_columns_bind_without_renaming_parameters_values_or_output_alia
     sql = sql.replace('), 0);', "), CAST('oi.UnitPrice' AS DECIMAL(18,2)));")
     fixed, errors = bind_columns(sql, {ITEMS: SCHEMA})
     assert not errors
-    assert '(OrderID INT)' in fixed
+    assert '(`p_order_id` INT)' in fixed
     assert 'oi.`unit_price`' in fixed
-    assert 'oi.`order_id` = `fn_CalculateOrderAmount`.`OrderID`' in fixed
+    assert 'oi.`order_id` = `p_order_id`' in fixed
     assert 'oi.`discount_percent`' in fixed
     assert "'oi.UnitPrice'" in fixed and fixed.endswith('-- oi.UnitPrice\n/* oi.OrderID */')
     assert bind_columns(fixed, {ITEMS: SCHEMA}) == (fixed, [])
@@ -46,21 +48,21 @@ def test_unqualified_query_uses_silver_columns_and_keeps_aggregate_alias():
 
 
 def test_inline_return_query_preserves_declaration_and_order_by_output_alias():
-    sql = f'''CREATE OR REPLACE FUNCTION {FQN}(OrderID INT)
+    sql = f'''CREATE OR REPLACE FUNCTION {FQN}(`p_order_id` INT)
 RETURNS TABLE LANGUAGE SQL RETURN SELECT UnitPrice * 2 AS UnitPrice
-FROM `migration_dev`.`silver`.`OrderItems` WHERE OrderID = `fn_CalculateOrderAmount`.`OrderID`
+FROM `migration_dev`.`silver`.`OrderItems` WHERE OrderID = `p_order_id`
 ORDER BY UnitPrice;'''
     fixed, errors = bind_columns(sql, {ITEMS: SCHEMA})
     assert not errors
-    assert '(OrderID INT)' in fixed and 'SELECT `unit_price` * 2 AS UnitPrice' in fixed
-    assert 'WHERE `order_id` = `fn_CalculateOrderAmount`.`OrderID`' in fixed
+    assert '(`p_order_id` INT)' in fixed and 'SELECT `unit_price` * 2 AS UnitPrice' in fixed
+    assert 'WHERE `order_id` = `p_order_id`' in fixed
     assert 'ORDER BY UnitPrice' in fixed
 
 
 def test_routine_parameter_qualifier_is_preserved_when_relation_name_matches():
-    sql = '''CREATE OR REPLACE FUNCTION `migration_dev`.`silver`.`OrderItems`(OrderID INT)
+    sql = '''CREATE OR REPLACE FUNCTION `migration_dev`.`silver`.`OrderItems`(`p_order_id` INT)
 RETURNS INT LANGUAGE SQL RETURN (SELECT COUNT(*) FROM `migration_dev`.`silver`.`OrderItems`
-WHERE order_id = `OrderItems`.`OrderID`);'''
+WHERE order_id = `p_order_id`);'''
     assert bind_columns(sql, {ITEMS: SCHEMA}) == (sql, [])
 
 

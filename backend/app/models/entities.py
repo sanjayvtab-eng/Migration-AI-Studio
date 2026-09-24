@@ -295,3 +295,119 @@ class MigrationStageArtifactVersion(Base, ProjectScoped):
     generator_version: Mapped[str] = mapped_column(String(64), default="medallion-2.3.0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     __table_args__ = (UniqueConstraint("artifact_id","version", name="uq_stage_artifact_version"),)
+
+
+# Release 7 prompt-native design. Prompt requirements are versioned separately from
+# generated artifacts so an approval can always be tied to the exact prompt,
+# metadata snapshot, mappings, and clarification answers that produced it.
+class MigrationMetadataSnapshot(Base, ProjectScoped):
+    __tablename__ = "migration_metadata_snapshot"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PromptSpecification(Base, ProjectScoped):
+    __tablename__ = "migration_prompt_specification"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(String(64), index=True)
+    target_environment: Mapped[str] = mapped_column(String(16), default="DEV")
+    current_status: Mapped[str] = mapped_column(String(48), default="PROMPT_SUBMITTED", index=True)
+    current_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PromptSpecificationVersion(Base, ProjectScoped):
+    __tablename__ = "migration_prompt_specification_version"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    specification_id: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    original_prompt: Mapped[str] = mapped_column(Text)
+    parsed_json: Mapped[str] = mapped_column(Text, default="{}")
+    metadata_snapshot_id: Mapped[str] = mapped_column(String(64), index=True)
+    parser_provider: Mapped[str] = mapped_column(String(64), default="DETERMINISTIC")
+    parser_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    checksum: Mapped[str] = mapped_column(String(64), index=True)
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("specification_id", "version", name="uq_prompt_specification_version"),)
+
+
+class PromptArtifactRequest(Base, ProjectScoped):
+    __tablename__ = "migration_prompt_artifact_request"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    spec_version_id: Mapped[str] = mapped_column(String(64), index=True)
+    request_id: Mapped[str] = mapped_column(String(96), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    artifact_type: Mapped[str] = mapped_column(String(48), index=True)
+    layer: Mapped[str] = mapped_column(String(16), index=True)
+    structured_json: Mapped[str] = mapped_column(Text, default="{}")
+    grounding_status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    source_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    dependencies_json: Mapped[str] = mapped_column(Text, default="[]")
+    identifier_mappings_json: Mapped[str] = mapped_column(Text, default="[]")
+    assumptions_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("spec_version_id", "request_id", name="uq_prompt_request_version"),)
+
+
+class PromptClarification(Base, ProjectScoped):
+    __tablename__ = "migration_prompt_clarification"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    spec_version_id: Mapped[str] = mapped_column(String(64), index=True)
+    question_key: Mapped[str] = mapped_column(String(128), index=True)
+    question: Mapped[str] = mapped_column(Text)
+    affected_request_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    choices_json: Mapped[str] = mapped_column(Text, default="[]")
+    recommended_answer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    inference_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answer_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="OPEN", index=True)
+    asked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    answered_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    __table_args__ = (UniqueConstraint("spec_version_id", "question_key", name="uq_prompt_question_version"),)
+
+
+class MigrationDestructiveApproval(Base, ProjectScoped):
+    __tablename__ = "migration_destructive_approval"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(String(64), index=True)
+    artifact_version: Mapped[int] = mapped_column(Integer)
+    sql_content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    environment: Mapped[str] = mapped_column(String(16))
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    actor: Mapped[str] = mapped_column(String(255))
+    reason: Mapped[str] = mapped_column(Text)
+    confirmed_token: Mapped[str] = mapped_column(String(64))
+    destructive_operations_json: Mapped[str] = mapped_column(Text, default="[]")
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PromptPlanApproval(Base, ProjectScoped):
+    __tablename__ = "migration_prompt_plan_approval"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    spec_version_id: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    reviewer: Mapped[str] = mapped_column(String(255))
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RequirementArtifactTrace(Base, ProjectScoped):
+    __tablename__ = "migration_requirement_artifact_trace"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    specification_id: Mapped[str] = mapped_column(String(64), index=True)
+    spec_version_id: Mapped[str] = mapped_column(String(64), index=True)
+    request_id: Mapped[str] = mapped_column(String(96), index=True)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    artifact_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    artifact_version_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("spec_version_id", "request_id", name="uq_requirement_trace_version"),)

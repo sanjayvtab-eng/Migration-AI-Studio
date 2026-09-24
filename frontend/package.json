@@ -1,11 +1,12 @@
 {
   "name": "migration-factory-frontend",
   "private": true,
-  "version": "2.3.0",
+  "version": "2.4.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node tests/prompt-native-contract.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

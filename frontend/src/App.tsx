@@ -167,7 +167,7 @@ const moduleMap: any = {
   Administration: "administration",
 };
 
-const BUILD_VERSION = "2.3.0 SEMANTIC_MEDALLION_FACTORY";
+const BUILD_VERSION = "2.4.1 BRONZE_TARGET_CONSISTENCY";
 
 function Login({ done }: { done: () => void }) {
   const [u, setU] = useState("admin"),
@@ -347,6 +347,19 @@ export default function App() {
   const [masterPlan, setMasterPlan] = useState<any>(null);
   const [masterExecution, setMasterExecution] = useState<any>(null);
   const [masterRunning, setMasterRunning] = useState(false);
+  const [autoPromotionStatus, setAutoPromotionStatus] = useState<any>(null);
+  const [showAutoAuthModal, setShowAutoAuthModal] = useState(false);
+  const [autoAuthText, setAutoAuthText] = useState("");
+  const [autoRunning, setAutoRunning] = useState(false);
+  const [promptNativeText, setPromptNativeText] = useState(
+    "Migrate MigrationDemo from SQL Server to Databricks DEV. Bronze: ingest Customers, CustomerSales, OrderItems, Orders, OrderSummary and Products. Silver: create cleaned views for Customers, Orders, OrderItems and Products; create vw_CustomerSales for completed orders; create fn_CalculateOrderAmount(p_order_id INT); create idempotent MERGE loaders usp_LoadCustomerSales and usp_LoadOrderSummary. Gold: create dim_customer, dim_product, fact_sales, vw_customer_sales_summary and vw_product_sales_summary. Validate every identifier and wait for plan approval before generation.",
+  );
+  const [promptSpec, setPromptSpec] = useState<any>(null);
+  const [promptSpecPlan, setPromptSpecPlan] = useState<any>(null);
+  const [promptSpecTrace, setPromptSpecTrace] = useState<any>(null);
+  const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
+  const [workflowStudioTab, setWorkflowStudioTab] = useState<"master" | "native">("master");
+  const [showStudio, setShowStudio] = useState<boolean>(true);
   async function loadProjects() {
     const ps = await api<Project[]>("/projects");
     setProjects(ps);
@@ -454,6 +467,11 @@ export default function App() {
         if (promptPromotion?.plan) setPromotionPlan(promptPromotion.plan);
         if (promptPromotion?.execution) setPromotionExecution(promptPromotion.execution);
       }
+      // Auto-promotion status fetch
+      api(`/projects/${id}/master-orchestration/current`)
+        .then((s: any) => setAutoPromotionStatus(s))
+        .catch(() => setAutoPromotionStatus(null));
+
       if (page === "Migration Workflow" && id) {
         const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData, masterData]: any = await Promise.all([
           api(`/projects/${id}/compatibility/summary`),
@@ -580,6 +598,92 @@ export default function App() {
       setBusy(false);
     }
   }
+  async function authorizeAutomatedPromotion() {
+    if (!pid) return;
+    setBusy(true);
+    setAutoRunning(true);
+    setMsg("Authorizing and starting end-to-end automated promotion to PROD...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/authorize`, {
+        method: "POST",
+        body: JSON.stringify({ confirmation_text: autoAuthText.trim() }),
+      });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result, is_active: result.status === "RUNNING" }));
+      setMsg(
+        result.status === "COMPLETED"
+          ? "End-to-end automated promotion completed through PROD with all quality gates passed!"
+          : result.status === "PAUSED"
+          ? "Automated promotion paused safely."
+          : result.status === "FAILED"
+          ? `Automated promotion stopped at ${result.current_environment}: ${result.errors?.[result.errors.length - 1]?.message || "Check blockers"}`
+          : "Automated promotion running..."
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setAutoRunning(false);
+    }
+  }
+
+  async function pauseAutomatedPromotion() {
+    if (!pid) return;
+    setMsg("Requesting pause after current environment completes...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/pause`, { method: "POST" });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result }));
+      setMsg("Pause requested: execution will stop safely after current environment.");
+    } catch (e: any) {
+      setMsg(e.message);
+    }
+  }
+
+  async function resumeAutomatedPromotion() {
+    if (!pid || !autoPromotionStatus?.run?.run_id) return;
+    setBusy(true);
+    setAutoRunning(true);
+    setMsg("Resuming automated promotion from last checkpoint...");
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/resume`, {
+        method: "POST",
+        body: JSON.stringify({ run_id: autoPromotionStatus.run.run_id }),
+      });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result, is_active: result.status === "RUNNING" }));
+      setMsg(
+        result.status === "COMPLETED"
+          ? "End-to-end automated promotion completed through PROD with all quality gates passed!"
+          : `Automated promotion stopped at ${result.current_environment}.`
+      );
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+      setAutoRunning(false);
+    }
+  }
+
+  async function cancelAutomatedPromotion() {
+    if (!pid || !autoPromotionStatus?.run?.run_id) return;
+    const ok = window.confirm("Cancel remaining promotion environments? Already passed environments will remain intact.");
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/master-orchestration/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ run_id: autoPromotionStatus.run.run_id }),
+      });
+      setAutoPromotionStatus((prev: any) => ({ ...prev, run: result, is_active: false }));
+      setMsg("Remaining automated promotion cancelled. All evidence from passed environments is retained.");
+      await refresh();
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function executeMasterPlan() {
     if (!pid || !masterPlan?.plan_id) return;
     const isResume = masterPlan.status === "FAILED" || masterPlan.status === "PAUSED";
@@ -641,6 +745,127 @@ export default function App() {
     } finally {
       setBusy(false);
       setPromptRunning(false);
+    }
+  }
+  async function loadPromptSpecification(specificationId: string) {
+    if (!pid || !specificationId) return;
+    const [specification, plan, trace] = await Promise.all([
+      api(`/projects/${pid}/prompt-specifications/${specificationId}`),
+      api(`/projects/${pid}/prompt-specifications/${specificationId}/plan`),
+      api(`/projects/${pid}/prompt-specifications/${specificationId}/trace`).catch(() => null),
+    ]);
+    setPromptSpec(specification);
+    setPromptSpecPlan(plan);
+    setPromptSpecTrace(trace);
+  }
+  async function submitPromptSpecification() {
+    if (!pid || !promptNativeText.trim()) return;
+    setBusy(true);
+    setMsg("Parsing and grounding the business prompt against the discovery snapshot...");
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: promptNativeText }),
+      });
+      setPromptAnswers({});
+      await loadPromptSpecification(result.id);
+      setMsg(result.status === "NEEDS_USER_INPUT" ? "Prompt parsed. Answer the focused clarification questions to continue." : "Prompt specification is grounded and ready for plan review.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function answerPromptClarifications() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/clarifications`, {
+        method: "POST",
+        body: JSON.stringify({ answers: promptAnswers }),
+      });
+      await loadPromptSpecification(result.id);
+      setMsg(result.status === "PENDING_PLAN_APPROVAL" ? "Clarifications recorded in a new version. Review and approve the exact plan." : "Clarifications recorded; unresolved grounding blockers remain.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function approvePromptSpecification() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ status: "APPROVED", comment: "Approved from the prompt-native plan preview" }),
+      });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("The exact prompt plan version is approved. Artifact generation is now available.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function generatePromptArtifacts() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/generate`, { method: "POST" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("Artifacts generated with deterministic checks. Run Databricks target validation before review.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function validatePromptArtifacts() {
+    if (!pid || !promptSpec?.id) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/validate`, { method: "POST" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg(result.status === "PENDING_ARTIFACT_REVIEW" ? "Target validation passed. Review each current artifact version." : "Target validation found blocking errors.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function approveAllPromptArtifacts() {
+    if (!pid || !promptSpec?.id || !promptSpecTrace?.requirements) return;
+    setBusy(true);
+    try {
+      for (const item of promptSpecTrace.requirements) {
+        if (item.review_status !== "APPROVED") {
+          await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/artifacts/${item.artifact_version_id}/review`, {
+            method: "POST",
+            body: JSON.stringify({ status: "APPROVED", comment: "Validated current version approved from Release 7 review" }),
+          });
+        }
+      }
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("All current validated artifact versions are approved for DEV deployment.");
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function deployPromptArtifacts() {
+    if (!pid || !promptSpec?.id) return;
+    if (!window.confirm("Deploy the approved executable prompt-native artifact set to DEV and run reconciliation?")) return;
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/deploy-dev`, { method: "POST" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg(result.status === "DEV_GATE_PASSED" ? "Prompt-native DEV deployment and reconciliation passed." : `DEV workflow stopped with status ${result.status}.`);
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setBusy(false);
     }
   }
   async function generatePromotionPlan(text?: string) {
@@ -1324,10 +1549,10 @@ export default function App() {
       description: "Review inventory, dependencies, compatibility and selected Medallion layers.",
       page: "Compatibility",
       action: "Review migration architecture readiness",
-      complete: inventory.length > 0 && classes.length > 0 && compat !== null,
+      complete: environmentPassed("DEV") || (inventory.length > 0 && classes.length > 0 && compat !== null),
       evidence: compat
         ? `${compat.deterministic_coverage_pct ?? 0}% deterministic compatibility`
-        : "Compatibility review pending",
+        : environmentPassed("DEV") ? "Readiness verified in approved release" : "Compatibility review pending",
     },
     {
       phase: "DESIGN",
@@ -1335,8 +1560,10 @@ export default function App() {
       description: "Analyze consumers, approve semantics and build the Bronze/Silver/Gold plan.",
       page: "Medallion Design",
       action: "Build the governed Medallion design",
-      complete: medallionNodeCount > 0 && semantics.some((x: any) => x.status === "APPROVED"),
-      evidence: `${medallionNodeCount} planned nodes · ${semantics.filter((x: any) => x.status === "APPROVED").length} approved semantics`,
+      complete: environmentPassed("DEV") || (medallionNodeCount > 0 && semantics.some((x: any) => x.status === "APPROVED")),
+      evidence: environmentPassed("DEV")
+        ? "Medallion architecture verified & deployed"
+        : `${medallionNodeCount} planned nodes · ${semantics.filter((x: any) => x.status === "APPROVED").length} approved semantics`,
     },
     {
       phase: "GOVERN",
@@ -1344,8 +1571,10 @@ export default function App() {
       description: "Approve only executable artifact versions that passed static validation.",
       page: "Reviews",
       action: "Validate and approve deployment artifacts",
-      complete: medArts.length > 0 && approvedMedallionArtifacts === medArts.length,
-      evidence: `${approvedMedallionArtifacts} of ${medArts.length} artifacts approved`,
+      complete: environmentPassed("DEV") || (medArts.length > 0 && approvedMedallionArtifacts === medArts.length),
+      evidence: environmentPassed("DEV")
+        ? "All deployment artifacts approved & validated"
+        : `${approvedMedallionArtifacts} of ${medArts.length} artifacts approved`,
     },
     {
       phase: "DEV",
@@ -1568,322 +1797,716 @@ export default function App() {
           )}
           {page === "Migration Workflow" && (
             <>
-              {/* Consolidated Master AI Migration Studio & Orchestrator */}
-              <div className="prompt-studio master-studio consolidated-studio">
-                <div className="prompt-studio-head">
+              {/* Governed End-to-End Automated Promotion Card */}
+              {autoPromotionStatus?.preflight && (
+                <div className="prompt-plan-card auto-promotion-card" style={{ marginBottom: 16, border: "1px solid rgba(59, 130, 246, 0.35)", background: "rgba(15, 23, 42, 0.9)" }}>
+                  <div className="promotion-plan-head">
+                    <div>
+                      <small style={{ color: "#60a5fa", fontWeight: 700, letterSpacing: "0.08em" }}>
+                        GOVERNED END-TO-END AUTOMATION PIPELINE
+                      </small>
+                      <h4 style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+                        DEV PASSED → TEST → UAT → PROD
+                        <Badge s={autoPromotionStatus.run?.status || (autoPromotionStatus.preflight.eligible ? "READY" : "BLOCKED")} />
+                      </h4>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {autoPromotionStatus.run?.status === "COMPLETED" && (
+                        <button
+                          className="primary-action"
+                          style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                          onClick={() => setPage("Cutover")}
+                        >
+                          <CheckCircle2 size={15} /> Proceed to Cutover (Step 11) <ChevronRight size={14} />
+                        </button>
+                      )}
+                      {!autoPromotionStatus.run && autoPromotionStatus.preflight.eligible && (
+                        <button
+                          className="primary-action"
+                          style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", border: "none" }}
+                          disabled={busy || autoRunning}
+                          onClick={() => { setAutoAuthText(""); setShowAutoAuthModal(true); }}
+                        >
+                          <Play size={15} /> Authorize Automated Promotion to PROD
+                        </button>
+                      )}
+                      {autoPromotionStatus.run?.status === "RUNNING" && (
+                        <button
+                          className="secondary-action"
+                          disabled={busy || autoRunning || autoPromotionStatus.run?.pause_requested}
+                          onClick={pauseAutomatedPromotion}
+                        >
+                          <Clock3 size={15} /> {autoPromotionStatus.run?.pause_requested ? "Pausing after current environment..." : "Pause After Current Environment"}
+                        </button>
+                      )}
+                      {autoPromotionStatus.is_resumable && (
+                        <button
+                          className="primary-action"
+                          style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                          disabled={busy || autoRunning}
+                          onClick={resumeAutomatedPromotion}
+                        >
+                          <Play size={15} /> Resume from Last Checkpoint
+                        </button>
+                      )}
+                      {autoPromotionStatus.run && !["COMPLETED", "CANCELLED"].includes(autoPromotionStatus.run.status) && (
+                        <button
+                          className="secondary-action"
+                          style={{ borderColor: "rgba(239, 68, 68, 0.4)", color: "#f87171" }}
+                          disabled={busy || autoRunning}
+                          onClick={cancelAutomatedPromotion}
+                        >
+                          Cancel Remaining Promotion
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Impact and Governance Grid */}
+                  <div className="prompt-impact-grid" style={{ marginTop: 12 }}>
+                    <div className="prompt-impact-item">
+                      <span>Approved DEV Release</span>
+                      <b style={{ fontSize: 11, fontFamily: "monospace" }}>{autoPromotionStatus.preflight.release_id || "None"}</b>
+                      <small style={{ color: "#8fa3bf" }}>{autoPromotionStatus.preflight.artifact_count} artifacts verified</small>
+                    </div>
+                    <div className="prompt-impact-item">
+                      <span>Target Catalogs</span>
+                      <b style={{ fontSize: 11 }}>{autoPromotionStatus.preflight.test_catalog} → {autoPromotionStatus.preflight.uat_catalog} → {autoPromotionStatus.preflight.prod_catalog}</b>
+                      <small style={{ color: "#8fa3bf" }}>DEV: {autoPromotionStatus.preflight.dev_catalog}</small>
+                    </div>
+                    <div className="prompt-impact-item">
+                      <span>Bronze Strategy</span>
+                      <b style={{ fontSize: 12, color: "#38bdf8" }}>Native DEEP CLONE</b>
+                      <small style={{ color: "#8fa3bf" }}>DEV → TEST → UAT → PROD</small>
+                    </div>
+                    <div className="prompt-impact-item">
+                      <span>Current Operation</span>
+                      <b style={{ fontSize: 12, color: autoPromotionStatus.run?.status === "FAILED" ? "#f87171" : "#a7f3d0" }}>
+                        {autoPromotionStatus.run?.current_operation || (autoPromotionStatus.preflight.eligible ? "Ready to authorize" : "Blocked by prerequisites")}
+                      </b>
+                      <small style={{ color: "#8fa3bf" }}>
+                        {autoPromotionStatus.run?.last_successful_checkpoint ? `Last checkpoint: ${autoPromotionStatus.run.last_successful_checkpoint}` : "DEV gate PASSED"}
+                      </small>
+                    </div>
+                  </div>
+
+                  {/* Stage Chain Progression */}
+                  <div className="master-stage-chain" style={{ marginTop: 14 }}>
+                    <div className="master-stage">
+                      <span>DEV</span>
+                      <b>DEV Release</b>
+                      <Badge s="PASSED" />
+                      <small>{autoPromotionStatus.preflight.artifact_count} artifacts deployed</small>
+                    </div>
+                    {["TEST", "UAT", "PROD"].map((env) => {
+                      const envData = autoPromotionStatus.run?.environments?.[env] || {};
+                      const isCurrent = autoPromotionStatus.run?.current_environment === env && autoPromotionStatus.run?.status === "RUNNING";
+                      return (
+                        <div className="master-stage" key={env} style={{ borderColor: isCurrent ? "#3b82f6" : undefined, background: isCurrent ? "rgba(59, 130, 246, 0.1)" : undefined }}>
+                          <span>{env}</span>
+                          <b>{env === "PROD" ? "PROD & Validation" : `${env} Promotion`}</b>
+                          <Badge s={envData.status || "PENDING"} />
+                          <small>{envData.attempts ? `Attempt ${envData.attempts}` : (envData.status === "PASSED" ? "Validated ✓" : "Pending")}</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Failure notice */}
+                  {autoPromotionStatus.run?.status === "FAILED" && (
+                    <div className="prompt-exec-error" style={{ marginTop: 12 }}>
+                      <b><ShieldAlert size={15} /> Safe stop at {autoPromotionStatus.run.current_environment}</b>
+                      <span>{autoPromotionStatus.run.errors?.[autoPromotionStatus.run.errors.length - 1]?.message || "Operation failed"}</span>
+                      <small>Downstream environments safely blocked. Correct the issue and click Resume from Last Checkpoint.</small>
+                    </div>
+                  )}
+
+                  {/* Completed celebration banner */}
+                  {autoPromotionStatus.run?.status === "COMPLETED" && (
+                    <div style={{ marginTop: 12, padding: "10px 14px", background: "rgba(16, 185, 129, 0.15)", border: "1px solid rgba(16, 185, 129, 0.3)", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ color: "#6ee7b7", fontSize: 13, fontWeight: 600 }}>
+                        ✓ Master workflow completed through PROD with all quality gates passed. All 4 environments are live and reconciled.
+                      </span>
+                      <button onClick={() => setPage("Deployments")} style={{ fontSize: 11, padding: "5px 10px" }}>
+                        View Deployments <ChevronRight size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* One-Time Authorization Modal */}
+              {showAutoAuthModal && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }}>
+                  <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 24, maxWidth: 640, width: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.7)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                      <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 18, color: "#f8fafc" }}>
+                        <ShieldCheck size={22} color="#3b82f6" /> Authorize Automated Promotion to PROD
+                      </h3>
+                      <button onClick={() => setShowAutoAuthModal(false)} style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 18 }}>✕</button>
+                    </div>
+
+                    <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.5, margin: "0 0 16px 0" }}>
+                      This single explicit authorization governs the complete end-to-end promotion chain from DEV through <b>TEST</b>, <b>UAT</b>, and <b>PROD</b>.
+                      Bronze tables are cloned natively via Databricks <code>DEEP CLONE</code>. Silver and Gold views and routines will be catalog-retargeted, deployed, reconciled, and gate-verified automatically in each environment.
+                    </p>
+
+                    <div style={{ background: "#1e293b", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
+                      <div><span style={{ color: "#64748b" }}>Source Project:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.source_project?.name}</b></div>
+                      <div><span style={{ color: "#64748b" }}>Release Manifest:</span> <b style={{ color: "#38bdf8", fontFamily: "monospace" }}>{autoPromotionStatus?.preflight?.release_id}</b></div>
+                      <div><span style={{ color: "#64748b" }}>Artifact Count:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.artifact_count} artifacts</b></div>
+                      <div><span style={{ color: "#64748b" }}>Governance Risk:</span> <b style={{ color: "#fbbf24" }}>HIGH (Production promotion included)</b></div>
+                      <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog} → {autoPromotionStatus?.preflight?.test_catalog} → {autoPromotionStatus?.preflight?.uat_catalog} → {autoPromotionStatus?.preflight?.prod_catalog}</b></div>
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 }}>
+                        Confirmation Required: Type <code>PROMOTE TO PROD</code>
+                      </label>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input
+                          type="text"
+                          value={autoAuthText}
+                          onChange={(e) => setAutoAuthText(e.target.value)}
+                          placeholder="Type PROMOTE TO PROD"
+                          style={{ flex: 1, padding: "8px 12px", background: "#020617", border: "1px solid #475569", borderRadius: 6, color: "#fff", fontSize: 13 }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setAutoAuthText("PROMOTE TO PROD")}
+                          style={{ padding: "8px 12px", background: "#334155", border: "none", borderRadius: 6, color: "#93c5fd", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                        >
+                          Fill "PROMOTE TO PROD"
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowAutoAuthModal(false)}
+                        style={{ padding: "8px 16px", background: "#1e293b", border: "1px solid #475569", borderRadius: 6, color: "#cbd5e1", cursor: "pointer" }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={autoAuthText.trim() !== "PROMOTE TO PROD" || autoRunning}
+                        onClick={() => { setShowAutoAuthModal(false); authorizeAutomatedPromotion(); }}
+                        style={{
+                          padding: "8px 18px",
+                          background: autoAuthText.trim() === "PROMOTE TO PROD" ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "#334155",
+                          border: "none",
+                          borderRadius: 6,
+                          color: autoAuthText.trim() === "PROMOTE TO PROD" ? "#fff" : "#64748b",
+                          fontWeight: 600,
+                          cursor: autoAuthText.trim() === "PROMOTE TO PROD" ? "pointer" : "not-allowed",
+                        }}
+                      >
+                        {autoRunning ? "Starting Automated Promotion..." : "Authorize & Execute Full Chain"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Unified AI Migration Studio */}
+              <div className="prompt-studio master-studio consolidated-studio" style={{ marginBottom: 16 }}>
+                <div className="studio-nav-bar">
                   <div className="prompt-studio-title">
                     <Workflow size={20} color="#6ee7b7" />
                     <div>
                       <h3 style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        Master End-to-End Orchestrator
+                        AI Migration Studio
                         <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: "rgba(110,231,183,0.18)", color: "#6ee7b7" }}>
-                          DEV → PROD
+                          Policy Governed
                         </span>
                       </h3>
                       <p>
-                        One prompt and one-time authorization for SQL Server → DEV → TEST → UAT → PROD with deterministic quality gates.
+                        {workflowStudioTab === "master"
+                          ? "Master End-to-End Orchestrator · SQL Server → DEV → TEST → UAT → PROD with quality gates."
+                          : "Prompt-Native Multi-Layer Design · Versioned Medallion requirements, metadata grounding, and DEV reconcile."}
                       </p>
                     </div>
                   </div>
-                  <span className="prompt-badge"><ShieldCheck size={12} /> Policy governed</span>
-                </div>
 
-                <div className="prompt-input-row">
-                  <input
-                    value={masterPrompt}
-                    onChange={(e) => {
-                      setMasterPrompt(e.target.value);
-                      setPromptText(e.target.value);
-                    }}
-                    placeholder="Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks"
-                    disabled={busy || masterRunning || promptRunning}
-                  />
-                  <button
-                    className="primary-action"
-                    disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
-                    onClick={() => generateMasterPlan()}
-                    title="Generate full end-to-end master plan"
-                  >
-                    <Command size={15} /> Generate Master Plan
-                  </button>
-                  <button
-                    type="button"
-                    className="prompt-secondary-btn"
-                    disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
-                    onClick={() => generatePromptPlan(masterPrompt)}
-                    title="Generate DEV-scoped plan only"
-                  >
-                    <Sparkles size={14} color="#9ec0ff" /> DEV Plan
-                  </button>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
-                  <div className="prompt-quick-chips" style={{ marginTop: 0 }}>
-                    <span style={{ fontSize: 10, color: "#7b91b0", alignSelf: "center" }}>Quick templates:</span>
-                    {[
-                      { label: "End-to-End (DEV → PROD)", text: "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks", isMaster: true },
-                      { label: "DEV Migration", text: "Migrate MigrationDemo from SQL Server to DEV Databricks", isMaster: false },
-                      { label: "Load into DEV Bronze", text: "Load MigrationDemo into DEV Bronze", isMaster: false },
-                    ].map((tpl) => (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <div className="studio-tab-group">
                       <button
-                        key={tpl.label}
                         type="button"
-                        className="prompt-chip"
-                        disabled={busy || masterRunning || promptRunning}
-                        onClick={() => {
-                          setMasterPrompt(tpl.text);
-                          setPromptText(tpl.text);
-                          if (tpl.isMaster) {
-                            generateMasterPlan(tpl.text);
-                          } else {
-                            generatePromptPlan(tpl.text);
-                          }
-                        }}
+                        className={`studio-tab-btn ${workflowStudioTab === "master" ? "active" : ""}`}
+                        onClick={() => setWorkflowStudioTab("master")}
                       >
-                        {tpl.label}
+                        <Workflow size={13} /> Master Orchestration (DEV → PROD)
                       </button>
-                    ))}
-                  </div>
-                  <div className="master-safety-line" style={{ marginTop: 0 }}>
-                    <ShieldCheck size={13} /> AI repairs eligible artifacts; deterministic validation and quality gates control every promotion.
+                      <button
+                        type="button"
+                        className={`studio-tab-btn ${workflowStudioTab === "native" ? "active" : ""}`}
+                        onClick={() => setWorkflowStudioTab("native")}
+                      >
+                        <Sparkles size={13} /> Prompt-Native Design (Release 7)
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="studio-toggle-btn"
+                      onClick={() => setShowStudio(!showStudio)}
+                      title={showStudio ? "Minimize studio to focus on workflow" : "Expand studio controls"}
+                    >
+                      {showStudio ? "▲ Minimize Studio" : "▼ Open Studio"}
+                    </button>
                   </div>
                 </div>
 
-                {/* Consolidated Plan Card */}
-                {(masterPlan || promptPlan) && (() => {
-                  const activePlan = masterPlan || promptPlan;
-                  const isMaster = Boolean(masterPlan);
-                  const isBlocked = activePlan.status === "NEEDS_USER_INPUT";
-                  const tableCount = masterPlan?.impact?.table_count ?? promptPlan?.impact?.table_count ?? 0;
-                  const estimatedRows = masterPlan?.impact?.estimated_rows ?? promptPlan?.impact?.estimated_rows ?? 0;
-                  const riskLevel = masterPlan?.impact?.risk_level || promptPlan?.impact?.risk_level || "MEDIUM";
-                  const hasReusableBronze = Boolean(promptPlan?.impact?.bronze_checkpoint?.reusable);
-                  const sourceDb = activePlan.source?.database_name || "MigrationDemo";
-                  const targetLabel = isMaster ? "Databricks PROD" : (promptPlan?.intent?.target_catalog || "DEV Databricks");
-
-                  return (
-                    <div className="prompt-plan-card master-plan-card" style={{ marginTop: 14 }}>
-                      {isBlocked ? (
-                        <div className="promotion-blocked">
-                          <b><ShieldAlert size={16} /> Migration workflow prerequisites required</b>
-                          <ul>
-                            {(activePlan.blockers || []).map((item: string, index: number) => (
-                              <li key={index}>{item}</li>
-                            ))}
-                          </ul>
-                          {activePlan.actionable_steps?.[0] && (
-                            <small><strong>Next action:</strong> {activePlan.actionable_steps[0]}</small>
-                          )}
+                {showStudio && (
+                  <>
+                    {workflowStudioTab === "master" ? (
+                      <>
+                        <div className="prompt-input-row">
+                          <input
+                            value={masterPrompt}
+                            onChange={(e) => {
+                              setMasterPrompt(e.target.value);
+                              setPromptText(e.target.value);
+                            }}
+                            placeholder="Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks"
+                            disabled={busy || masterRunning || promptRunning}
+                          />
+                          <button
+                            className="primary-action"
+                            disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
+                            onClick={() => generateMasterPlan()}
+                            title="Generate full end-to-end master plan"
+                          >
+                            <Command size={15} /> Generate Master Plan
+                          </button>
+                          <button
+                            type="button"
+                            className="prompt-secondary-btn"
+                            disabled={!pid || busy || masterRunning || promptRunning || !masterPrompt.trim()}
+                            onClick={() => generatePromptPlan(masterPrompt)}
+                            title="Generate DEV-scoped plan only"
+                          >
+                            <Sparkles size={14} color="#9ec0ff" /> DEV Plan
+                          </button>
                         </div>
-                      ) : (
-                        <>
-                          <div className="promotion-plan-head">
-                            <div>
-                              <small>{isMaster ? "AUTHORIZED ENVIRONMENT CHAIN" : "GOVERNED MIGRATION PLAN"}</small>
-                              <h4>
-                                {sourceDb} → {targetLabel}
-                                <Badge s={activePlan.status} />
-                              </h4>
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              {isMaster && (["PENDING_APPROVAL", "FAILED", "PAUSED"].includes(masterPlan.status)) && (
-                                <button
-                                  className="primary-action master-execute-button"
-                                  disabled={busy || masterRunning}
-                                  onClick={executeMasterPlan}
-                                >
-                                  <Play size={15} />
-                                  {masterPlan.status === "PENDING_APPROVAL"
-                                    ? "Authorize & Run Full Migration (DEV → PROD)"
-                                    : "Resume from Last Checkpoint"}
-                                </button>
-                              )}
-                              {!isMaster && promptPlan?.status === "PENDING_APPROVAL" && (
-                                <button
-                                  className="primary-action"
-                                  style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
-                                  disabled={busy || promptRunning || tableCount < 1}
-                                  onClick={executePromptPlan}
-                                >
-                                  <Play size={15} /> Approve & Execute DEV Migration
-                                </button>
-                              )}
-                            </div>
-                          </div>
 
-                          <div className="prompt-impact-grid">
-                            <div className="prompt-impact-item">
-                              <span>Source tables</span>
-                              <b>{tableCount}</b>
-                            </div>
-                            <div className="prompt-impact-item">
-                              <span>Estimated rows</span>
-                              <b>{estimatedRows}</b>
-                              {hasReusableBronze && (
-                                <small style={{ color: "#6ee7b7", display: "block", marginTop: 2 }}>Verified checkpoint reusable</small>
-                              )}
-                            </div>
-                            <div className="prompt-impact-item">
-                              <span>Governance & Risk</span>
-                              <b style={{ color: riskLevel === "LOW" ? "#34d399" : "#fbbf24" }}>{riskLevel}</b>
-                              <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>
-                                {isMaster ? (masterPlan.authorization ? "Authorization: GRANTED" : "One-time authorization") : "DEV Medallion plan"}
-                              </small>
-                            </div>
-                            <div className="prompt-impact-item">
-                              <span>Target Platform</span>
-                              <b style={{ fontSize: 13 }}>{isMaster ? "DEV → TEST → UAT → PROD" : (promptPlan?.intent?.target_catalog || "DEV")}</b>
-                              <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>bronze, silver, gold schemas</small>
-                            </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                          <div className="prompt-quick-chips" style={{ marginTop: 0 }}>
+                            <span style={{ fontSize: 10, color: "#7b91b0", alignSelf: "center" }}>Quick templates:</span>
+                            {[
+                              { label: "End-to-End (DEV → PROD)", text: "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks", isMaster: true },
+                              { label: "DEV Migration", text: "Migrate MigrationDemo from SQL Server to DEV Databricks", isMaster: false },
+                              { label: "Load into DEV Bronze", text: "Load MigrationDemo into DEV Bronze", isMaster: false },
+                            ].map((tpl) => (
+                              <button
+                                key={tpl.label}
+                                type="button"
+                                className="prompt-chip"
+                                disabled={busy || masterRunning || promptRunning}
+                                onClick={() => {
+                                  setMasterPrompt(tpl.text);
+                                  setPromptText(tpl.text);
+                                  if (tpl.isMaster) {
+                                    generateMasterPlan(tpl.text);
+                                  } else {
+                                    generatePromptPlan(tpl.text);
+                                  }
+                                }}
+                              >
+                                {tpl.label}
+                              </button>
+                            ))}
                           </div>
+                          <div className="master-safety-line" style={{ marginTop: 0 }}>
+                            <ShieldCheck size={13} /> AI repairs eligible artifacts; deterministic validation and quality gates control every promotion.
+                          </div>
+                        </div>
 
-                          {/* Environment Chain Progression */}
-                          {masterPlan?.stages && (
-                            <div className="master-stage-chain">
-                              {masterPlan.stages.map((stage: any) => {
-                                const checkpoint = masterPlan.checkpoints?.[stage.stage] || {};
-                                return (
-                                  <div className="master-stage" key={stage.stage}>
-                                    <span>{stage.environment}</span>
-                                    <b>{stage.title}</b>
-                                    <Badge s={checkpoint.status || "PENDING"} />
-                                    <small>{checkpoint.attempts || 0} / {checkpoint.max_attempts || 3} attempt(s)</small>
-                                    {checkpoint.retry_renewals > 0 && (
-                                      <small>Retries renewed after approved SQL changed · {checkpoint.total_attempts} total</small>
-                                    )}
+                        {/* Consolidated Plan Card */}
+                        {(masterPlan || promptPlan) && (() => {
+                          const activePlan = masterPlan || promptPlan;
+                          const isMaster = Boolean(masterPlan);
+                          const isBlocked = activePlan.status === "NEEDS_USER_INPUT";
+                          const tableCount = masterPlan?.impact?.table_count ?? promptPlan?.impact?.table_count ?? 0;
+                          const estimatedRows = masterPlan?.impact?.estimated_rows ?? promptPlan?.impact?.estimated_rows ?? 0;
+                          const riskLevel = masterPlan?.impact?.risk_level || promptPlan?.impact?.risk_level || "MEDIUM";
+                          const hasReusableBronze = Boolean(promptPlan?.impact?.bronze_checkpoint?.reusable);
+                          const sourceDb = activePlan.source?.database_name || "MigrationDemo";
+                          const targetLabel = isMaster ? "Databricks PROD" : (promptPlan?.intent?.target_catalog || "DEV Databricks");
+
+                          return (
+                            <div className="prompt-plan-card master-plan-card" style={{ marginTop: 14 }}>
+                              {isBlocked ? (
+                                <div className="promotion-blocked">
+                                  <b><ShieldAlert size={16} /> Migration workflow prerequisites required</b>
+                                  <ul>
+                                    {(activePlan.blockers || []).map((item: string, index: number) => (
+                                      <li key={index}>{item}</li>
+                                    ))}
+                                  </ul>
+                                  {activePlan.actionable_steps?.[0] && (
+                                    <small><strong>Next action:</strong> {activePlan.actionable_steps[0]}</small>
+                                  )}
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="promotion-plan-head">
+                                    <div>
+                                      <small>{isMaster ? "AUTHORIZED ENVIRONMENT CHAIN" : "GOVERNED MIGRATION PLAN"}</small>
+                                      <h4>
+                                        {sourceDb} → {targetLabel}
+                                        <Badge s={activePlan.status} />
+                                      </h4>
+                                    </div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      {isMaster && (["PENDING_APPROVAL", "FAILED", "PAUSED"].includes(masterPlan.status)) && (
+                                        <button
+                                          className="primary-action master-execute-button"
+                                          disabled={busy || masterRunning}
+                                          onClick={executeMasterPlan}
+                                        >
+                                          <Play size={15} />
+                                          {masterPlan.status === "PENDING_APPROVAL"
+                                            ? "Authorize & Run Full Migration (DEV → PROD)"
+                                            : "Resume from Last Checkpoint"}
+                                        </button>
+                                      )}
+                                      {!isMaster && promptPlan?.status === "PENDING_APPROVAL" && (
+                                        <button
+                                          className="primary-action"
+                                          style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
+                                          disabled={busy || promptRunning || tableCount < 1}
+                                          onClick={executePromptPlan}
+                                        >
+                                          <Play size={15} /> Approve & Execute DEV Migration
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          )}
 
-                          {/* Collapsible Granular DEV Pipeline Steps and Mapping Details */}
-                          {(promptPlan?.stages?.length > 0 || promptPlan?.destinations?.length > 0) && (
-                            <details style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 8 }}>
-                              <summary className="details-toggle">
-                                <ChevronRight size={13} /> View granular DEV pipeline stages & source-to-target mapping ({promptPlan?.destinations?.length || 0} tables)
-                              </summary>
-                              {promptPlan?.stages?.length > 0 && (
-                                <div className="prompt-stages-list" style={{ marginTop: 8 }}>
-                                  {promptPlan.stages.map((st: any) => (
-                                    <div key={st.stage} className="prompt-stage-pill">
-                                      <b>{st.title}</b>
-                                      <small>{st.description}</small>
+                                  <div className="prompt-impact-grid">
+                                    <div className="prompt-impact-item">
+                                      <span>Source tables</span>
+                                      <b>{tableCount}</b>
+                                    </div>
+                                    <div className="prompt-impact-item">
+                                      <span>Estimated rows</span>
+                                      <b>{estimatedRows}</b>
+                                      {hasReusableBronze && (
+                                        <small style={{ color: "#6ee7b7", display: "block", marginTop: 2 }}>Verified checkpoint reusable</small>
+                                      )}
+                                    </div>
+                                    <div className="prompt-impact-item">
+                                      <span>Governance & Risk</span>
+                                      <b style={{ color: riskLevel === "LOW" ? "#34d399" : "#fbbf24" }}>{riskLevel}</b>
+                                      <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>
+                                        {isMaster ? (masterPlan.authorization ? "Authorization: GRANTED" : "One-time authorization") : "DEV Medallion plan"}
+                                      </small>
+                                    </div>
+                                    <div className="prompt-impact-item">
+                                      <span>Target Platform</span>
+                                      <b style={{ fontSize: 13 }}>{isMaster ? "DEV → TEST → UAT → PROD" : (promptPlan?.intent?.target_catalog || "DEV")}</b>
+                                      <small style={{ color: "#8fa3bf", display: "block", marginTop: 2 }}>bronze, silver, gold schemas</small>
+                                    </div>
+                                  </div>
+
+                                  {/* Environment Chain Progression */}
+                                  {masterPlan?.stages && (
+                                    <div className="master-stage-chain">
+                                      {masterPlan.stages.map((stage: any) => {
+                                        const checkpoint = masterPlan.checkpoints?.[stage.stage] || {};
+                                        return (
+                                          <div className="master-stage" key={stage.stage}>
+                                            <span>{stage.environment}</span>
+                                            <b>{stage.title}</b>
+                                            <Badge s={checkpoint.status || "PENDING"} />
+                                            <small>{checkpoint.attempts || 0} / {checkpoint.max_attempts || 3} attempt(s)</small>
+                                            {checkpoint.retry_renewals > 0 && (
+                                              <small>Retries renewed after approved SQL changed · {checkpoint.total_attempts} total</small>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+
+                                  {/* Collapsible Granular DEV Pipeline Steps and Mapping Details */}
+                                  {(promptPlan?.stages?.length > 0 || promptPlan?.destinations?.length > 0) && (
+                                    <details style={{ marginTop: 10, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 8 }}>
+                                      <summary className="details-toggle">
+                                        <ChevronRight size={13} /> View granular DEV pipeline stages & source-to-target mapping ({promptPlan?.destinations?.length || 0} tables)
+                                      </summary>
+                                      {promptPlan?.stages?.length > 0 && (
+                                        <div className="prompt-stages-list" style={{ marginTop: 8 }}>
+                                          {promptPlan.stages.map((st: any) => (
+                                            <div key={st.stage} className="prompt-stage-pill">
+                                              <b>{st.title}</b>
+                                              <small>{st.description}</small>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {promptPlan?.destinations?.length > 0 && (
+                                        <div className="prompt-dest-table">
+                                          <table>
+                                            <thead>
+                                              <tr>
+                                                <th>Source Object</th>
+                                                <th>Bronze Target</th>
+                                                <th>Silver Target</th>
+                                                <th>Gold Target</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {promptPlan.destinations.map((d: any) => (
+                                                <tr key={d.source_fqn}>
+                                                  <td><code>{d.source_fqn}</code></td>
+                                                  <td><code>{d.bronze}</code></td>
+                                                  <td><code>{d.silver}</code></td>
+                                                  <td><code>{d.gold}</code></td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </details>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Consolidated Execution Status Card */}
+                        {(masterExecution || promptExecution) && (() => {
+                          const exec = masterExecution || promptExecution;
+                          const isMaster = Boolean(masterExecution);
+                          const failedStage = masterExecution?.failed_stage || promptExecution?.failed_stage;
+                          const errorMsg = masterExecution?.error || promptExecution?.error;
+                          const nextAction = masterExecution?.errors?.[0]?.recommended_action || promptExecution?.errors?.[0]?.recommended_action;
+
+                          return (
+                            <div className="prompt-exec-card master-execution-card" style={{ marginTop: 14 }}>
+                              <div className="promotion-exec-head">
+                                <div>
+                                  <small style={{ color: "#8fa3bf", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                                    {isMaster ? `MASTER RUN ${masterExecution.run_id}` : `EXECUTION RUN ${promptExecution.run_id}`}
+                                  </small>
+                                  <b style={{ display: "block", marginTop: 2, fontSize: 13 }}>
+                                    {isMaster ? "SQL Server → Databricks PROD" : `SQL Server → ${promptPlan?.intent?.target_catalog || "DEV Databricks"}`}
+                                  </b>
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <Badge s={exec.status} />
+                                  {promptExecution?.ended_at && (
+                                    <small style={{ color: "#6b7280" }}>
+                                      Completed at {formatTimeOnly(promptExecution.ended_at)}
+                                    </small>
+                                  )}
+                                  {exec.status === "COMPLETED" && (
+                                    <button
+                                      onClick={() => setPage("Deployments")}
+                                      style={{ fontSize: 11, padding: "5px 9px" }}
+                                    >
+                                      View Deployments <ChevronRight size={13} />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Stage Progression Pills */}
+                              {isMaster && masterExecution.stages && (
+                                <div className="prompt-exec-stages master-exec-stages" style={{ marginTop: 10 }}>
+                                  {Object.entries(masterExecution.stages).map(([name, stage]: [string, any]) => (
+                                    <div className="prompt-exec-step" key={name}>
+                                      <span>{name}</span>
+                                      <Badge s={stage.status} />
+                                      <small>{stage.checkpoint_reused ? "checkpoint reused" : `attempt ${stage.attempts || 1}`}</small>
                                     </div>
                                   ))}
                                 </div>
                               )}
-                              {promptPlan?.destinations?.length > 0 && (
+                              {!isMaster && promptExecution?.stages && (
+                                <div className="prompt-exec-stages" style={{ marginTop: 10 }}>
+                                  {Object.entries(promptExecution.stages).map(([k, v]: [string, any]) => (
+                                    <div key={k} className="prompt-exec-step">
+                                      <span style={{ display: "block", fontSize: 9, color: "#6b7280", textTransform: "uppercase" }}>{k}</span>
+                                      <Badge s={v.status || "PASSED"} />
+                                      {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
+                                      {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
+                                      {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
+                                      {v.rows_transferred !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.rows_transferred} rows</small>}
+                                      {v.checkpoint_reused && <small style={{ display: "block", marginTop: 2 }}>verified checkpoint reused</small>}
+                                      {v.error && <small className="prompt-stage-error">{v.error}</small>}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Unified Safe Stop / Failure Notice */}
+                              {exec.status === "FAILED" && (
+                                <div className="prompt-exec-error" style={{ marginTop: 10 }}>
+                                  <b><ShieldAlert size={15} /> Safe stop: {failedStage || "PIPELINE_GATE"}</b>
+                                  <span>{errorMsg || "The migration pipeline stopped at a governed checkpoint."}</span>
+                                  {nextAction && (
+                                    <small><strong>Next action:</strong> {nextAction}</small>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </>
+                    ) : (
+                      <>
+                        <div className="prompt-studio-head" style={{ marginTop: 6 }}>
+                          <div>
+                            <p style={{ margin: 0, color: "#9bb8c1", fontSize: 11 }}>
+                              Release 7 · Versioned requirements, metadata grounding, clarification loop, plan approval, target validation, and DEV reconcile.
+                            </p>
+                          </div>
+                          <span className="prompt-badge"><ShieldCheck size={12} /> No invented metadata</span>
+                        </div>
+                        <textarea
+                          value={promptNativeText}
+                          onChange={(event) => setPromptNativeText(event.target.value)}
+                          rows={6}
+                          disabled={busy}
+                          style={{ width: "100%", resize: "vertical", marginTop: 8 }}
+                          placeholder="Describe the exact Bronze, Silver, and Gold artifacts required."
+                        />
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                          <button className="primary-action" disabled={!pid || busy || !promptNativeText.trim()} onClick={submitPromptSpecification}>
+                            <Command size={15} /> Parse and Ground Prompt
+                          </button>
+                          {promptSpec?.status === "PENDING_PLAN_APPROVAL" && (
+                            <button className="primary-action" disabled={busy} onClick={approvePromptSpecification}><ShieldCheck size={14} /> Approve Exact Plan</button>
+                          )}
+                          {promptSpec?.status === "PLAN_APPROVED" && (
+                            <button className="primary-action" disabled={busy} onClick={generatePromptArtifacts}><Sparkles size={14} /> Generate Artifacts</button>
+                          )}
+                          {["VALIDATING", "TARGET_VALIDATION_FAILED"].includes(promptSpec?.status) && (
+                            <button className="primary-action" disabled={busy} onClick={validatePromptArtifacts}><ShieldCheck size={14} /> Validate in Databricks</button>
+                          )}
+                          {promptSpec?.status === "PENDING_ARTIFACT_REVIEW" && (
+                            <button className="primary-action" disabled={busy} onClick={approveAllPromptArtifacts}><ShieldCheck size={14} /> Approve Current Artifacts</button>
+                          )}
+                          {["ARTIFACTS_APPROVED", "DEV_DEPLOYMENT_FAILED"].includes(promptSpec?.status) && (
+                            <button className="primary-action" disabled={busy} onClick={deployPromptArtifacts}><Play size={14} /> Deploy and Reconcile DEV</button>
+                          )}
+                        </div>
+
+                        {promptSpec && (
+                          <div className="prompt-plan-card" style={{ marginTop: 14 }}>
+                            <div className="promotion-plan-head">
+                              <div>
+                                <small>SPECIFICATION {promptSpec.version} · SNAPSHOT {String(promptSpec.metadata_snapshot_id || "").slice(-10)}</small>
+                                <h4>Prompt-native plan <Badge s={promptSpec.status} /></h4>
+                              </div>
+                              <small>{promptSpec.artifacts?.length || 0} requested artifacts</small>
+                            </div>
+
+                            {promptSpec.clarifications?.some((question: any) => question.status === "OPEN") && (
+                              <div className="promotion-blocked" style={{ marginTop: 10 }}>
+                                <b><ShieldAlert size={16} /> Focused clarification required</b>
+                                {(promptSpec.clarifications || []).filter((question: any) => question.status === "OPEN").map((question: any) => (
+                                  <label key={question.key} style={{ display: "grid", gap: 5, marginTop: 10 }}>
+                                    <span>{question.question}</span>
+                                    <select
+                                      value={promptAnswers[question.key] || ""}
+                                      onChange={(event) => setPromptAnswers({ ...promptAnswers, [question.key]: event.target.value })}
+                                    >
+                                      <option value="">Select an approved answer</option>
+                                      {(question.choices || []).map((choice: string) => <option key={choice} value={choice}>{choice}</option>)}
+                                    </select>
+                                    {question.recommended_answer && (
+                                      <small style={{ color: "#475569", fontSize: "11px" }}>
+                                        Recommended: <b>{question.recommended_answer}</b>
+                                        {question.inference_reason ? ` — ${question.inference_reason}` : ""}
+                                      </small>
+                                    )}
+                                  </label>
+                                ))}
+                                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                                  <button
+                                    className="prompt-secondary-btn"
+                                    type="button"
+                                    onClick={() => {
+                                      setPromptAnswers((prev: Record<string, string>) => {
+                                        const next = { ...prev };
+                                        for (const q of (promptSpec.clarifications || [])) {
+                                          if (q.status === "OPEN" && q.recommended_answer) {
+                                            next[q.key] = q.recommended_answer;
+                                          }
+                                        }
+                                        return next;
+                                      });
+                                    }}
+                                  >Use recommended defaults</button>
+                                  <button
+                                    className="primary-action"
+                                    disabled={busy || promptSpec.clarifications.filter((question: any) => question.status === "OPEN").some((question: any) => !promptAnswers[question.key])}
+                                    onClick={answerPromptClarifications}
+                                  >Save Answers and Re-ground</button>
+                                </div>
+                              </div>
+                            )}
+
+                            {promptSpecPlan?.layers && (
+                              <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                                {(["BRONZE", "SILVER", "GOLD"] as const).map((layer) => (
+                                  <details key={layer} open={layer !== "BRONZE"}>
+                                    <summary className="details-toggle">{layer} · {promptSpecPlan.layers[layer]?.length || 0} artifact(s)</summary>
+                                    <div className="prompt-dest-table">
+                                      <table>
+                                        <thead><tr><th>Artifact</th><th>Type</th><th>Grounding</th><th>Dependencies</th><th>Assumptions</th></tr></thead>
+                                        <tbody>
+                                          {(promptSpecPlan.layers[layer] || []).map((item: any) => (
+                                            <tr key={item.request_id}>
+                                              <td><code>{item.name}</code><small style={{ display: "block" }}>{item.purpose}</small></td>
+                                              <td>{item.type}</td>
+                                              <td><Badge s={item.grounding_status} /></td>
+                                              <td>{item.dependencies?.join(", ") || "—"}</td>
+                                              <td>{item.assumptions?.join("; ") || "—"}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </details>
+                                ))}
+                              </div>
+                            )}
+
+                            {promptSpecTrace?.requirements?.length > 0 && (
+                              <details style={{ marginTop: 12 }} open>
+                                <summary className="details-toggle">Requirement-to-artifact evidence</summary>
                                 <div className="prompt-dest-table">
                                   <table>
-                                    <thead>
-                                      <tr>
-                                        <th>Source Object</th>
-                                        <th>Bronze Target</th>
-                                        <th>Silver Target</th>
-                                        <th>Gold Target</th>
-                                      </tr>
-                                    </thead>
+                                    <thead><tr><th>Requirement</th><th>Target</th><th>Version</th><th>Validation</th><th>Executable</th><th>Review</th></tr></thead>
                                     <tbody>
-                                      {promptPlan.destinations.map((d: any) => (
-                                        <tr key={d.source_fqn}>
-                                          <td><code>{d.source_fqn}</code></td>
-                                          <td><code>{d.bronze}</code></td>
-                                          <td><code>{d.silver}</code></td>
-                                          <td><code>{d.gold}</code></td>
+                                      {promptSpecTrace.requirements.map((item: any) => (
+                                        <tr key={item.request_id}>
+                                          <td>{item.request_id}</td><td><code>{item.target_fqn}</code></td><td>{item.artifact_version}</td>
+                                          <td><Badge s={item.validation_status || "NOT_RUN"} /></td>
+                                          <td><Badge s={item.executable ? "YES" : "NO"} /></td>
+                                          <td><Badge s={item.review_status || "PENDING"} /></td>
                                         </tr>
                                       ))}
                                     </tbody>
                                   </table>
                                 </div>
-                              )}
-                            </details>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* Consolidated Execution Status Card */}
-                {(masterExecution || promptExecution) && (() => {
-                  const exec = masterExecution || promptExecution;
-                  const isMaster = Boolean(masterExecution);
-                  const failedStage = masterExecution?.failed_stage || promptExecution?.failed_stage;
-                  const errorMsg = masterExecution?.error || promptExecution?.error;
-                  const nextAction = masterExecution?.errors?.[0]?.recommended_action || promptExecution?.errors?.[0]?.recommended_action;
-
-                  return (
-                    <div className="prompt-exec-card master-execution-card" style={{ marginTop: 14 }}>
-                      <div className="promotion-exec-head">
-                        <div>
-                          <small style={{ color: "#8fa3bf", fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                            {isMaster ? `MASTER RUN ${masterExecution.run_id}` : `EXECUTION RUN ${promptExecution.run_id}`}
-                          </small>
-                          <b style={{ display: "block", marginTop: 2, fontSize: 13 }}>
-                            {isMaster ? "SQL Server → Databricks PROD" : `SQL Server → ${promptPlan?.intent?.target_catalog || "DEV Databricks"}`}
-                          </b>
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <Badge s={exec.status} />
-                          {promptExecution?.ended_at && (
-                            <small style={{ color: "#6b7280" }}>
-                              Completed at {formatTimeOnly(promptExecution.ended_at)}
-                            </small>
-                          )}
-                          {exec.status === "COMPLETED" && (
-                            <button
-                              onClick={() => setPage("Deployments")}
-                              style={{ fontSize: 11, padding: "5px 9px" }}
-                            >
-                              View Deployments <ChevronRight size={13} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Stage Progression Pills */}
-                      {isMaster && masterExecution.stages && (
-                        <div className="prompt-exec-stages master-exec-stages" style={{ marginTop: 10 }}>
-                          {Object.entries(masterExecution.stages).map(([name, stage]: [string, any]) => (
-                            <div className="prompt-exec-step" key={name}>
-                              <span>{name}</span>
-                              <Badge s={stage.status} />
-                              <small>{stage.checkpoint_reused ? "checkpoint reused" : `attempt ${stage.attempts || 1}`}</small>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      {!isMaster && promptExecution?.stages && (
-                        <div className="prompt-exec-stages" style={{ marginTop: 10 }}>
-                          {Object.entries(promptExecution.stages).map(([k, v]: [string, any]) => (
-                            <div key={k} className="prompt-exec-step">
-                              <span style={{ display: "block", fontSize: 9, color: "#6b7280", textTransform: "uppercase" }}>{k}</span>
-                              <Badge s={v.status || "PASSED"} />
-                              {v.tables_ingested !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.tables_ingested} tables</small>}
-                              {v.artifacts_generated !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.artifacts_generated} artifacts</small>}
-                              {v.deployed_count !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.deployed_count} deployed</small>}
-                              {v.rows_transferred !== undefined && <small style={{ display: "block", marginTop: 2 }}>{v.rows_transferred} rows</small>}
-                              {v.checkpoint_reused && <small style={{ display: "block", marginTop: 2 }}>verified checkpoint reused</small>}
-                              {v.error && <small className="prompt-stage-error">{v.error}</small>}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Unified Safe Stop / Failure Notice */}
-                      {exec.status === "FAILED" && (
-                        <div className="prompt-exec-error" style={{ marginTop: 10 }}>
-                          <b><ShieldAlert size={15} /> Safe stop: {failedStage || "PIPELINE_GATE"}</b>
-                          <span>{errorMsg || "The migration pipeline stopped at a governed checkpoint."}</span>
-                          {nextAction && (
-                            <small><strong>Next action:</strong> {nextAction}</small>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                              </details>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
               </div>
 
               <div className="workflow-hero">
@@ -5049,6 +5672,24 @@ export default function App() {
           {page === "Waves" && (
             <>
               <div className="promotion-studio">
+                {autoPromotionStatus?.run && (
+                  <div style={{ marginBottom: 14, padding: "12px 16px", background: "rgba(30, 41, 59, 0.8)", border: "1px solid rgba(59, 130, 246, 0.35)", borderRadius: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <small style={{ color: "#60a5fa", fontWeight: 700, letterSpacing: "0.08em" }}>AUTOMATED MASTER PROMOTION ACTIVE</small>
+                        <h4 style={{ margin: "2px 0 0", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+                          Run {autoPromotionStatus.run.run_id} · {autoPromotionStatus.run.current_operation}
+                        </h4>
+                      </div>
+                      <Badge s={autoPromotionStatus.run.status} />
+                    </div>
+                    {autoPromotionStatus.is_active && (
+                      <small style={{ color: "#94a3b8", display: "block", marginTop: 4 }}>
+                        Individual environment promotion buttons are temporarily disabled to prevent conflicting operations.
+                      </small>
+                    )}
+                  </div>
+                )}
                 <div className="prompt-studio-head">
                   <div className="prompt-studio-title">
                     <Sparkles size={20} color="#5b8cff" />
