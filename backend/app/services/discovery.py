@@ -123,11 +123,11 @@ def connection_diagnostic(error: Exception) -> str:
         return "AUTHENTICATION_FAILED: Verify the SQL login or the Windows account running the local connector."
     if "certificate" in message or "ssl" in message:
         return "TLS_ERROR: Verify the SQL Server certificate and encryption settings."
-    if "im002" in message or "driver" in message and ("not found" in message or "can't open" in message):
+    if any(word in message for word in ("timeout", "hyt00", "08001", "network-related", "server does not exist", "server is not found", "not accessible", "error locating server")):
+        return ("NETWORK_UNREACHABLE: The backend or connector could not reach SQL Server. "
+                "Check if the server/instance name is correct (e.g. SHANJI\\SQLEXPRESS or .\\SQLEXPRESS), if the service is running, and if TCP/IP or Named Pipes are enabled.")
+    if "im002" in message or "data source name not found" in message or ("driver" in message and ("can't open lib" in message or "failed to load" in message)):
         return "DRIVER_MISSING: Install the configured Microsoft ODBC Driver on the machine running the connection."
-    if any(word in message for word in ("timeout", "hyt00", "08001", "network-related", "server does not exist")):
-        return ("NETWORK_UNREACHABLE: The backend could not reach SQL Server. For a local SQL Server with a hosted "
-                "backend, register and start a local connector. Otherwise verify hostname, TCP port and firewall access.")
     return "SOURCE_OPERATION_FAILED: Check SQL Server read permissions, supported data types and connector configuration."
 
 

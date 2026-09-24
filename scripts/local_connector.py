@@ -86,8 +86,12 @@ class LocalAgent:
         op, data = task["operation"], task.get("payload", {})
         self.cleanup()
         if op == "test":
+            conn = self.connect()
+            conn.close()
             return test_sqlserver_connection(self.connection_string)
         if op == "discover":
+            conn = self.connect()
+            conn.close()
             return discover_sqlserver(self.connection_string)
         if op == "close":
             item = self.streams.pop(data.get("stream_id"), None)
@@ -184,7 +188,8 @@ def main():
     if args.username:
         password = os.environ.get("CONNECTOR_SQL_PASSWORD") or getpass.getpass("SQL Server password: ")
         credentials = f"UID={odbc_value(args.username)};PWD={odbc_value(password)};"
-    connection = (f"DRIVER={odbc_value(args.driver)};SERVER={odbc_value(args.server)};"
+    clean_driver = args.driver.strip("\"'{}")
+    connection = (f"DRIVER={odbc_value(clean_driver)};SERVER={odbc_value(args.server)};"
                   f"DATABASE={odbc_value(args.database)};{credentials}Encrypt=yes;"
                   f"TrustServerCertificate={'yes' if args.trust_server_certificate else 'no'};")
     agent = LocalAgent(args.source, args.server, args.database, connection)
