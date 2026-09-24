@@ -249,7 +249,7 @@ def _dev_log_rows(db: Session, project_id: str) -> list[dict]:
 
 def _sqlserver_conn_for_source(src: MigrationSource) -> str:
     cfg=get_settings()
-    driver=cfg.sqlserver_driver.replace("{","").replace("}","")
+    driver=cfg.sqlserver_driver.replace("{","").replace("}","").strip("\"'")
     if cfg.sqlserver_username:
         return f"DRIVER={{{driver}}};SERVER={src.server_name};DATABASE={src.database_name};UID={cfg.sqlserver_username};PWD={cfg.sqlserver_password or ''};TrustServerCertificate=yes;"
     return f"DRIVER={{{driver}}};SERVER={src.server_name};DATABASE={src.database_name};Trusted_Connection=yes;TrustServerCertificate=yes;"
