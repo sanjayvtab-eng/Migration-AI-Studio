@@ -163,6 +163,15 @@ def _tables(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _sentence(prompt: str, token: str) -> str:
+    paragraphs = [para.strip() for para in re.split(r"(?:\r?\n\s*\r?\n)", prompt) if para.strip()]
+    for i, para in enumerate(paragraphs):
+        if token.lower() in para.lower():
+            res = para
+            if (para.endswith(":") or not para.endswith(".")) and i + 1 < len(paragraphs):
+                next_p = paragraphs[i + 1]
+                if not re.match(r"^(?:Create|Ingest|Bronze|Silver|Gold|The application|Validate)\b", next_p, re.I):
+                    res = res + " " + next_p
+            return " ".join(res.split()).strip(" -\t")
     for part in re.split(r"(?<=[.;])\s+|\n+", prompt):
         if token.lower() in part.lower():
             return part.strip(" -\t")
@@ -332,6 +341,32 @@ def _source_refs_for(name: str, sentence: str, table_map: dict[str, dict[str, An
                         found.append(tbl_data["name"])
                         break
 
+        # Check connected tables in er_graph whose table name, stem, or columns appear in sentence
+        for base in list(found):
+            for edge in er_graph.get(base, []):
+                connected = edge["target_table"]
+                if connected in found:
+                    continue
+                conn_tbl = table_map.get(connected.lower(), {})
+                conn_stem = re.sub(r"s$", "", _stem(connected))
+                conn_name_match = bool(
+                    re.search(rf"\b{re.escape(conn_stem)}\b", sentence, re.I)
+                    or re.search(rf"\b{re.escape(connected)}\b", sentence, re.I)
+                )
+                col_m = any(
+                    bool(
+                        re.search(rf"\b{re.escape(c['target_name'].replace('_', ' '))}\b", sentence, re.I)
+                        or re.search(rf"\b{re.escape(c['target_name'])}\b", sentence, re.I)
+                        or all(w in sentence.lower() for w in c['target_name'].split('_') if len(w) > 2)
+                    )
+                    for c in conn_tbl.get("columns", [])
+                    if c["target_name"] not in {"created_date", "modified_date", "load_date", "is_active", "status"}
+                    and not c["target_name"].endswith("_id")
+                    and c["target_name"] != "id"
+                )
+                if conn_name_match or col_m:
+                    found.append(connected)
+
     elif artifact_type in {"VIEW", "SUMMARY_VIEW"}:
         matches = _match_entity_to_tables(stem, table_map)
         for tbl, _ in matches:
@@ -419,6 +454,9 @@ def _required_columns(
         "INT", "STRING", "AS", "BY", "JOIN", "WHERE", "GROUP", "AND", "OR",
         "NOT", "FOR", "USING", "CREATE", "VIEW", "TABLE", "FUNCTION",
         "READS", "DATA", "LANGUAGE", "SQL", "RETURN", "SELECT", "FROM", "IS",
+        "DATEDIFF", "DAY", "MONTH", "YEAR", "DATE", "TIMESTAMP", "NOW",
+        "CURRENT_TIMESTAMP", "ROUND", "FLOOR", "CEIL", "ABS", "POWER", "SQRT",
+        "CASE", "WHEN", "THEN", "ELSE", "END",
     }
     filtered_tokens = [t for t in tokens if t.upper() not in SQL_KEYWORDS and t.lower() not in param_names and _snake(t) not in param_names]
 
@@ -438,7 +476,12 @@ def _required_columns(
                 if token_snake in table_cols:
                     req_for_table.append(table_cols[token_snake])
                 else:
-                    req_for_table.append(canonical)
+                    other_has = any(
+                        token_snake in {c["target_name"] for c in table_map.get(s.lower(), {}).get("columns", [])}
+                        for s in source_refs if s.lower() != source_ref.lower()
+                    )
+                    if not other_has:
+                        req_for_table.append(canonical)
 
         elif artifact_type == "DIMENSION":
             for c in table.get("columns", []):
@@ -663,26 +706,113 @@ def _build_requests(
                         parts = p.split()
                         params.append({"name": parts[0], "type": parts[1] if len(parts) > 1 else "INT"})
             if not params:
-                params = [{"name": "p_order_id", "type": "INT"}]
+                param_name = None
+                param_type = "INT"
+                nl_param = re.search(r"(?:accepts?|takes?|given|with|for)\s+(?:a|an)?\s*([A-Za-z0-9_]+)\s+id\b", sentence, re.I)
+                if nl_param:
+                    stem_p = _snake(nl_param.group(1).strip())
+                    param_name = f"p_{stem_p}_id" if not stem_p.endswith("_id") else f"p_{stem_p}"
+                else:
+                    nl_entity = re.search(r"(?:for|given)\s+(?:a|an)?\s*([A-Za-z0-9_]+)\b", sentence, re.I)
+                    if nl_entity:
+                        ent_word = _snake(nl_entity.group(1).strip())
+                        ent_match = next((tbl for tbl in table_map.values() if ent_word in _snake(tbl["name"]) or _snake(tbl["name"]) in ent_word), None)
+                        if ent_match:
+                            id_col = next((c for c in ent_match.get("columns", []) if c["target_name"].endswith("_id") or c["target_name"] == "id" or c.get("is_identity")), None)
+                            if id_col:
+                                param_name = f"p_{id_col['target_name']}"
+                                param_type = id_col.get("type", "INT").upper()
+
+                if not param_name and refs:
+                    pri_tbl = table_map.get(refs[0].lower())
+                    if pri_tbl:
+                        id_col = next((c for c in pri_tbl.get("columns", []) if c["target_name"].endswith("_id") or c["target_name"] == "id" or c.get("is_identity")), None)
+                        if id_col:
+                            param_name = f"p_{id_col['target_name']}"
+                            param_type = id_col.get("type", "INT").upper()
+
+                if not param_name:
+                    param_name = "p_id"
+
+                if "INT" in param_type:
+                    param_type = "INT"
+                elif "VARCHAR" in param_type or "STRING" in param_type:
+                    param_type = "STRING"
+                elif "DECIMAL" in param_type or "NUMERIC" in param_type or "FLOAT" in param_type:
+                    param_type = "DECIMAL(18,2)"
+
+                params = [{"name": param_name, "type": param_type}]
 
             first_pname = params[0]["name"].lower()
             is_order_amount = name.lower() == "fn_calculateorderamount"
-            is_table_query = is_order_amount or (len(params) == 1 and (first_pname.endswith("_id") or first_pname == "id"))
+            is_table_query = is_order_amount or (len(params) == 1 and (first_pname.endswith("_id") or first_pname == "p_id" or first_pname == "id"))
 
             if is_table_query:
                 if is_order_amount and any(k in table_map for k in ("orderitems", "order_items")):
                     source_table_ref = next(tbl["name"] for k, tbl in table_map.items() if k in ("orderitems", "order_items"))
+                    refs = [source_table_ref] if source_table_ref.lower() in table_map else refs
+                    calc = "SUM(quantity * unit_price * (1 - discount_percent / 100))"
+                    filt = f"order_id = {params[0]['name']}"
                 else:
-                    source_table_ref = refs[0] if refs else (next(iter(table_map.values()))["name"] if table_map else "source")
-                calc = "SUM(quantity * unit_price * (1 - discount_percent / 100))" if is_order_amount else f"SUM({first_pname.replace('p_', '')})"
-                filt = f"{first_pname.replace('p_', '')} = {params[0]['name']}"
+                    primary_ref = refs[0] if refs else next(iter(table_map.values()))["name"]
+                    pri_tbl = table_map.get(primary_ref.lower(), {})
+                    pri_cols = {c["target_name"]: c["name"] for c in pri_tbl.get("columns", [])}
+
+                    cand_filter_col = first_pname.replace("p_", "")
+                    if cand_filter_col in pri_cols:
+                        filt = f"{cand_filter_col} = {params[0]['name']}"
+                    else:
+                        pk_col = next((c["target_name"] for c in pri_tbl.get("columns", []) if c["target_name"].endswith("_id") or c.get("is_identity")), cand_filter_col)
+                        filt = f"{pk_col} = {params[0]['name']}"
+
+                    formula_match = re.search(r"\b(?:calculates?|computes?|returns?|formula)\b\s*:?\s*(.+?)(?:\s+(?:for|where|given)\b|[.;\n]|$)", sentence, re.I)
+                    if formula_match:
+                        raw_formula = formula_match.group(1).strip()
+                        raw_formula = raw_formula.replace("×", "*").replace("−", "-").replace("÷", "/")
+
+                        all_ref_cols = {}
+                        for r in refs:
+                            tbl = table_map.get(r.lower(), {})
+                            for c in tbl.get("columns", []):
+                                all_ref_cols[c["target_name"]] = (r, c["name"])
+
+                        # 1. Date diff / nights
+                        if re.search(r"\b(?:number of nights|nightly stay|nights|number of days|days|stay duration)\b", raw_formula, re.I):
+                            if "check_in_date" in all_ref_cols and "check_out_date" in all_ref_cols:
+                                raw_formula = re.sub(r"\b(?:number of nights|nightly stay|nights|number of days|days|stay duration)\b", "DATEDIFF(day, check_in_date, check_out_date)", raw_formula, flags=re.I)
+                            elif "start_date" in all_ref_cols and "end_date" in all_ref_cols:
+                                raw_formula = re.sub(r"\b(?:number of nights|nightly stay|nights|number of days|days|stay duration)\b", "DATEDIFF(day, start_date, end_date)", raw_formula, flags=re.I)
+
+                        # 2. Rates / prices
+                        if re.search(r"\b(?:nightly room rate|room rate|nightly rate)\b", raw_formula, re.I):
+                            if "nightly_rate" in all_ref_cols:
+                                raw_formula = re.sub(r"\b(?:nightly room rate|room rate|nightly rate)\b", "nightly_rate", raw_formula, flags=re.I)
+
+                        # 3. Discounts
+                        if re.search(r"\b(?:discount percentage|discount percent|discount)\b", raw_formula, re.I):
+                            if "discount_percent" in all_ref_cols:
+                                raw_formula = re.sub(r"\b(?:discount percentage|discount percent|discount)\b", "COALESCE(discount_percent, 0)", raw_formula, flags=re.I)
+
+                        # 4. Any other col phrase (e.g. unit price -> unit_price)
+                        for c_target in sorted(all_ref_cols.keys(), key=len, reverse=True):
+                            c_spaced = c_target.replace("_", " ")
+                            if " " in c_spaced:
+                                raw_formula = re.sub(rf"\b{re.escape(c_spaced)}\b", c_target, raw_formula, flags=re.I)
+
+                        calc = raw_formula
+                    else:
+                        amt_col = next((c["target_name"] for r in refs for c in table_map.get(r.lower(), {}).get("columns", []) if any(w in c["target_name"] for w in ("amount", "total", "price", "rate", "cost", "balance"))), None)
+                        if amt_col:
+                            calc = f"SUM({amt_col})"
+                        else:
+                            calc = f"SUM({filt.split(' = ')[0]})"
+
                 structured.update({
                     "parameters": params,
                     "returns": "DECIMAL(18,2)",
                     "calculation": calc,
                     "filter": filt,
                 })
-                refs = [source_table_ref] if source_table_ref.lower() in table_map else refs
             else:
                 pnames = [p["name"] for p in params]
                 if len(params) >= 3:
@@ -1270,11 +1400,77 @@ LANGUAGE SQL
 CONTAINS SQL
 RETURN COALESCE({calc_expr}, CAST(0 AS {returns}));"""
 
-    source_table = source_refs[0]
+    table_map = _tables(snapshot)
+    er_graph = _build_er_graph(table_map)
+
+    aliases: dict[str, str] = {}
+    used_aliases: set[str] = set()
+    for ref in source_refs:
+        ref_l = ref.lower()
+        if ref_l in ("orderitems", "order_items"):
+            cand = "oi"
+        else:
+            cand = _snake(ref)[:1]
+            if cand in used_aliases:
+                cand = _snake(ref)[:2]
+            if cand in used_aliases:
+                cand = f"{_snake(ref)[:1]}{len(used_aliases)}"
+        used_aliases.add(cand)
+        aliases[ref_l] = cand
+
+    primary_table = source_refs[0]
+    pri_alias = aliases[primary_table.lower()]
+    from_clause = f"{_fqn(catalog, 'silver', f'vw_{_snake(primary_table)}_clean')} {pri_alias}"
+
+    join_clauses = []
+    joined = {primary_table.lower()}
+    for sec_ref in source_refs[1:]:
+        sec_l = sec_ref.lower()
+        sec_alias = aliases[sec_l]
+        edge = None
+        for j in list(joined):
+            j_name = table_map[j]["name"]
+            for e in er_graph.get(j_name, []):
+                if e["target_table"].lower() == sec_l:
+                    edge = (aliases[j], e["from_column"], sec_alias, e["to_column"])
+                    break
+            if edge:
+                break
+            sec_name = table_map[sec_l]["name"]
+            for e in er_graph.get(sec_name, []):
+                if e["target_table"].lower() == j:
+                    edge = (sec_alias, e["from_column"], aliases[j], e["to_column"])
+                    break
+            if edge:
+                break
+
+        if edge:
+            join_clauses.append(f"JOIN {_fqn(catalog, 'silver', f'vw_{_snake(sec_ref)}_clean')} {edge[2]} ON {edge[0]}.{edge[1]} = {edge[2]}.{edge[3]}")
+        else:
+            pri_cols = {c["target_name"] for c in table_map[primary_table.lower()]["columns"]}
+            sec_cols = {c["target_name"] for c in table_map[sec_l]["columns"]}
+            common = pri_cols & sec_cols
+            key_col = next((k for k in common if k.endswith("_id") or k == "id"), None)
+            if key_col:
+                join_clauses.append(f"JOIN {_fqn(catalog, 'silver', f'vw_{_snake(sec_ref)}_clean')} {sec_alias} ON {sec_alias}.{key_col} = {pri_alias}.{key_col}")
+        joined.add(sec_l)
+
+    col_to_alias = {}
+    for ref in source_refs:
+        tbl = table_map.get(ref.lower())
+        if tbl:
+            for c in tbl.get("columns", []):
+                cname = c["target_name"]
+                if cname not in col_to_alias:
+                    col_to_alias[cname] = aliases[ref.lower()]
+
     calc_aliased = calc
-    for col_term in ("quantity", "unit_price", "discount_percent"):
-        calc_aliased = re.sub(rf"(?i)(?<!oi\.)\b{col_term}\b", f"oi.{col_term}", calc_aliased)
-    filt_aliased = re.sub(r"(?i)(?<!oi\.)\border_id\b", "oi.order_id", filt)
+    filt_aliased = filt
+    for cname, alias in sorted(col_to_alias.items(), key=lambda x: len(x[0]), reverse=True):
+        calc_aliased = re.sub(rf"(?i)(?<![.\w])\b{re.escape(cname)}\b", f"{alias}.{cname}", calc_aliased)
+        filt_aliased = re.sub(rf"(?i)(?<![.\w])\b{re.escape(cname)}\b", f"{alias}.{cname}", filt_aliased)
+
+    joins_sql = ("\n  " + "\n  ".join(join_clauses)) if join_clauses else ""
 
     return f"""CREATE OR REPLACE FUNCTION {_fqn(catalog, 'silver', request['name'])}({", ".join(params_def)})
 RETURNS {returns}
@@ -1282,7 +1478,7 @@ LANGUAGE SQL
 READS SQL DATA
 RETURN COALESCE((
   SELECT {calc_aliased}
-  FROM {_fqn(catalog, 'silver', f'vw_{_snake(source_table)}_clean')} oi
+  FROM {from_clause}{joins_sql}
   WHERE {filt_aliased}
 ), CAST(0 AS {returns}));"""
 
