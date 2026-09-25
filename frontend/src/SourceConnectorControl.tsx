@@ -112,37 +112,22 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
 
           <div style={{ background: "#f4f5f7", borderRadius: 8, padding: 16, margin: "16px 0", border: "1px solid #dfe1e6" }}>
             <div style={{ fontWeight: 600, color: "#172b4d", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-              <span>⭐ Recommended: Standalone Runner (No Python or Git needed)</span>
+              <span>⭐ Recommended: Standalone Agent Executable (.exe)</span>
             </div>
             <p style={{ margin: "0 0 12px 0", fontSize: "0.9rem", color: "#42526e" }}>
-              1. Download <code>migration-agent.exe</code> and the pre-configured <code>agent.env</code> into the same folder.<br />
-              2. Double-click <code>migration-agent.exe</code> to connect!
+              Download and run <code>migration-agent.exe</code> on your SQL Server machine. No Python, VS Code, or repository setup required!
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
               <button
                 type="button"
                 onClick={() => downloadAgent("exe")}
-                style={{ background: "#0052cc", color: "white", border: "none", borderRadius: 4, padding: "8px 14px", fontWeight: 500, cursor: "pointer" }}
+                style={{ background: "#0052cc", color: "white", border: "none", borderRadius: 4, padding: "9px 18px", fontSize: "0.95rem", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
               >
                 ⬇ Download Agent (.exe)
               </button>
-              <button
-                type="button"
-                onClick={downloadEnvFile}
-                style={{ background: "#00875a", color: "white", border: "none", borderRadius: 4, padding: "8px 14px", fontWeight: 500, cursor: "pointer" }}
-              >
-                ⬇ Download Config (agent.env)
-              </button>
-              <button
-                type="button"
-                onClick={() => downloadAgent("zip")}
-                style={{ background: "#e9edf2", color: "#172b4d", border: "1px solid #c1c7d0", borderRadius: 4, padding: "8px 12px", fontSize: "0.85rem", cursor: "pointer" }}
-              >
-                Download Bundle (.zip)
-              </button>
             </div>
-            <p style={{ margin: "10px 0 0 0", fontSize: "0.82rem", color: "#5e6c84" }}>
-              💡 <strong>Switching Databases:</strong> To migrate a different database on this server, simply edit <code>CONNECTOR_DATABASE</code> in <code>agent.env</code> using Notepad or pass <code>--database NewDB</code>. You never need to download the agent again!
+            <p style={{ margin: "12px 0 0 0", fontSize: "0.84rem", color: "#5e6c84" }}>
+              💡 <strong>Configuration:</strong> Double-click <code>migration-agent.exe</code> to enter your parameters interactively, or pass flags like <code>--database {source.database_name}</code>. You can also place an <code>agent.env</code> next to it to connect automatically.
             </p>
           </div>
 

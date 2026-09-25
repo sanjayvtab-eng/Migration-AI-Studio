@@ -229,3 +229,7 @@ def test_connector_config_download_and_bundle_download(client, db, auth_headers)
     assert dl_resp.status_code == 200
     assert "application/zip" in dl_resp.headers.get("content-type", "")
 
+    exe_resp = client.get("/api/connector/download?package_type=exe")
+    assert exe_resp.status_code == 200
+    assert "migration-agent.exe" in exe_resp.headers.get("content-disposition", "")
+
