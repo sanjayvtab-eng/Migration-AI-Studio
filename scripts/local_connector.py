@@ -617,6 +617,9 @@ def main():
                     time.sleep(5)
     except KeyboardInterrupt:
         print("\nConnector stopped by user.")
+    except SystemExit as e:
+        print(f"\n[Connector Stopped] {e}")
+        print("Tip: If you re-registered or replaced registration in Studio, open 'agent.env' in Notepad and update CONNECTOR_TOKEN.")
     except Exception as e:
         print(f"\n[Error] {e}")
     finally:
