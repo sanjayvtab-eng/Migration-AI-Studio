@@ -412,3 +412,111 @@ Validate every identifier and wait for plan approval before generation."""
         assert "MigrationDemo" not in sql
         assert "Employees" not in sql
         assert "Patients" not in sql
+
+
+def test_domain_4_educational_university_full_lifecycle(db, monkeypatch):
+    """
+    Domain 4: Educational University (UniversityDB)
+    Tests full prompt-native lifecycle for educational domain with 6 tables, multi-table progress view,
+    fn_calculate_student_gpa scalar function, procedure, dimensions, fact, and summary view.
+    Verifies that answering clarifications transitions status to PENDING_PLAN_APPROVAL with 0 blockers.
+    """
+    project = ensure_project(db, "University Migration Project")
+    source = add_source(db, project.id, "SQLServer_University", "sql-edu.university.edu", "UniversityDB")
+
+    tables = {
+        "Students": [
+            ("StudentID", "int"), ("StudentNumber", "varchar"), ("StudentName", "varchar"),
+            ("Email", "varchar"), ("CreatedDate", "datetime"),
+        ],
+        "Enrollments": [
+            ("EnrollmentID", "int"), ("StudentID", "int"), ("CourseOfferingID", "int"),
+            ("EnrollmentStatus", "varchar"), ("FinalScore", "decimal"), ("Grade", "varchar"),
+            ("FeePaid", "decimal"), ("CompletionDate", "date"),
+        ],
+        "CourseOfferings": [
+            ("CourseOfferingID", "int"), ("CourseID", "int"), ("InstructorID", "int"),
+            ("AcademicYear", "int"), ("Term", "varchar"),
+        ],
+        "Courses": [
+            ("CourseID", "int"), ("DepartmentID", "int"), ("CourseCode", "varchar"),
+            ("CourseTitle", "varchar"), ("Credits", "int"),
+        ],
+        "Departments": [
+            ("DepartmentID", "int"), ("DepartmentName", "varchar"),
+        ],
+        "Instructors": [
+            ("InstructorID", "int"), ("InstructorName", "varchar"), ("DepartmentID", "int"),
+        ],
+    }
+
+    objects = []
+    for table_name, cols in tables.items():
+        objects.append({
+            "schema": "dbo",
+            "name": table_name,
+            "type": "TABLE",
+            "columns": [{"name": cname, "type": ctype, "nullable": True, "is_identity": cname.endswith("ID")} for cname, ctype in cols],
+        })
+
+    ingest_snapshot(db, project.id, source.id, {"database": "UniversityDB", "objects": objects})
+
+    db.add(MigrationEnvironmentPlan(
+        id=uid("EVP"), project_id=project.id, environment="DEV",
+        catalog_name="university_dev", status="PROVISIONED",
+    ))
+    db.add(MigrationDatabricksConfiguration(
+        id=uid("DBC"), project_id=project.id,
+        workspace_host="dbc-university.cloud.databricks.com", http_path="/sql/1.0/warehouses/edu",
+        token_env_key="DATABRICKS_TOKEN", status="READY",
+    ))
+    monkeypatch.setenv("DATABRICKS_TOKEN", "mock-token")
+    db.commit()
+
+    prompt = """
+Bronze:
+Ingest all discovered source tables, including Students, Enrollments, CourseOfferings, Courses, Departments, and Instructors.
+
+Silver:
+Create clean standardized views for all six source tables.
+Create vw_student_course_progress by joining Students, Enrollments, CourseOfferings, Courses, Departments, and Instructors. Include student number, student name, course code, course title, department, instructor, academic year, term, enrollment status, final score, grade, fee paid, and completion date.
+Create fn_calculate_student_gpa(student_id INT). The function computes student GPA from completed enrollments.
+Create usp_load_student_progress procedure.
+
+Gold:
+Create dim_student, dim_course, dim_instructor.
+Create fact_enrollment.
+Create vw_student_performance_summary.
+"""
+
+    # 1. Submit prompt
+    spec = service.submit(db, project.id, prompt, "dean_of_admissions")
+    assert spec["status"] == "NEEDS_USER_INPUT"
+    assert len(spec["clarifications"]) > 0
+
+    # 2. Answer clarifications
+    answers = {q["key"]: q["recommended_answer"] for q in spec["clarifications"]}
+    plan_version = service.answer_clarifications(db, project.id, spec["id"], answers, "dean_of_admissions")
+
+    # Critical check: status MUST transition to PENDING_PLAN_APPROVAL with ZERO unresolved blockers
+    assert plan_version["status"] == "PENDING_PLAN_APPROVAL", f"Expected PENDING_PLAN_APPROVAL, got {plan_version['status']}"
+    unresolved = [a for a in plan_version["artifacts"] if a["grounding_status"] != "GROUNDED"]
+    assert len(unresolved) == 0, f"Unresolved blockers remain: {unresolved}"
+
+    # 3. Approve plan and generate artifacts
+    service.approve_plan(db, project.id, spec["id"], "dean_of_admissions", "APPROVED", "University plan approved")
+    service.generate(db, project.id, spec["id"], "dean_of_admissions")
+
+    # Verify generated function SQL
+    trace = service.trace(db, project.id, spec["id"])
+    fn_item = next(item for item in trace["requirements"] if "fn_calculate_student_gpa" in item["target_fqn"].lower())
+    fn_ver = db.get(MigrationStageArtifactVersion, fn_item["artifact_version_id"])
+    assert "fn_calculate_student_gpa" in fn_ver.content
+    assert "vw_enrollments_clean" in fn_ver.content
+    assert "p_student_id" in fn_ver.content
+
+    # Target validation with mock execute_sql
+    monkeypatch.setattr(service, "execute_sql", lambda statement, safe_retry=True: [("plan",)])
+    val = service.validate_target(db, project.id, spec["id"])
+    assert val["status"] == "PENDING_ARTIFACT_REVIEW"
+

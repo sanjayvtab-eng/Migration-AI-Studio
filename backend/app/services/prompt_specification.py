@@ -197,6 +197,24 @@ def _tables(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _sentence(prompt: str, token: str) -> str:
+    lines = [line.strip() for line in prompt.splitlines() if line.strip()]
+    blocks: list[str] = []
+    current_block: list[str] = []
+    header_pattern = re.compile(r"^(?:Create\b|Ingest\b|Bronze:|Silver:|Gold:|[-*]\s+)", re.I)
+    for line in lines:
+        if header_pattern.match(line) and current_block:
+            blocks.append(" ".join(current_block))
+            current_block = [line]
+        else:
+            current_block.append(line)
+    if current_block:
+        blocks.append(" ".join(current_block))
+
+    for block in blocks:
+        if token.lower() in block.lower():
+            cleaned_block = re.sub(r"^(?:Bronze|Silver|Gold)\s*:\s*", "", block, flags=re.I).strip()
+            return cleaned_block
+
     paragraphs = [para.strip() for para in re.split(r"(?:\r?\n\s*\r?\n)", prompt) if para.strip()]
     for i, para in enumerate(paragraphs):
         if token.lower() in para.lower():
@@ -477,11 +495,17 @@ def _required_columns(
     for field in ("calculation", "filter"):
         text = structured.get(field, "")
         if text:
-            tokens.update(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", text))
+            cleaned = re.sub(r"'(?:''|[^'])*'", " ", text)
+            cleaned = re.sub(r'"(?:""|[^"])*"', " ", cleaned)
+            tokens.update(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", cleaned))
 
-    param_names = {p.get("name", "").lower() for p in structured.get("parameters", [])}
+    param_names = set()
     for p in structured.get("parameters", []):
-        param_names.add(_snake(p.get("name", "")))
+        pname = p.get("name", "").lower()
+        param_names.add(pname)
+        param_names.add(_snake(pname))
+        if not pname.startswith("p_"):
+            param_names.add(f"p_{_snake(pname)}")
 
     SQL_KEYWORDS = {
         "SUM", "COUNT", "AVG", "MIN", "MAX", "CAST", "COALESCE", "DECIMAL",
@@ -490,7 +514,7 @@ def _required_columns(
         "READS", "DATA", "LANGUAGE", "SQL", "RETURN", "SELECT", "FROM", "IS",
         "DATEDIFF", "DAY", "MONTH", "YEAR", "DATE", "TIMESTAMP", "NOW",
         "CURRENT_TIMESTAMP", "ROUND", "FLOOR", "CEIL", "ABS", "POWER", "SQRT",
-        "CASE", "WHEN", "THEN", "ELSE", "END",
+        "CASE", "WHEN", "THEN", "ELSE", "END", "FIRST", "TRUE", "FALSE",
     }
     filtered_tokens = [t for t in tokens if t.upper() not in SQL_KEYWORDS and t.lower() not in param_names and _snake(t) not in param_names]
 
@@ -795,9 +819,19 @@ def _build_requests(
                     calc = "SUM(quantity * unit_price * (1 - discount_percent / 100))"
                     filt = f"order_id = {params[0]['name']}"
                 else:
-                    primary_ref = refs[0] if refs else next(iter(table_map.values()))["name"]
+                    primary_ref = next(
+                        (r for r in refs if any(any(w in c["target_name"] for w in ("score", "gpa", "point", "amount", "total", "rate", "cost", "price", "fee", "quantity")) for c in table_map.get(r.lower(), {}).get("columns", []))),
+                        refs[0] if refs else next(iter(table_map.values()))["name"]
+                    )
+                    if primary_ref in refs and refs[0] != primary_ref:
+                        refs = [primary_ref] + [r for r in refs if r != primary_ref]
+
                     pri_tbl = table_map.get(primary_ref.lower(), {})
                     pri_cols = {c["target_name"]: c["name"] for c in pri_tbl.get("columns", [])}
+
+                    if not params[0]["name"].startswith("p_"):
+                        params[0]["name"] = f"p_{params[0]['name']}"
+                        first_pname = params[0]["name"].lower()
 
                     cand_filter_col = first_pname.replace("p_", "")
                     if cand_filter_col in pri_cols:
@@ -806,6 +840,7 @@ def _build_requests(
                         pk_col = next((c["target_name"] for c in pri_tbl.get("columns", []) if c["target_name"].endswith("_id") or c.get("is_identity")), cand_filter_col)
                         filt = f"{pk_col} = {params[0]['name']}"
 
+                    has_arithmetic_formula = False
                     formula_match = re.search(r"\b(?:calculates?|computes?|returns?|formula)\b\s*:?\s*(.+?)(?:\s+(?:for|where|given)\b|[.;\n]|$)", sentence, re.I)
                     if formula_match:
                         raw_formula = formula_match.group(1).strip()
@@ -840,13 +875,73 @@ def _build_requests(
                             if " " in c_spaced:
                                 raw_formula = re.sub(rf"\b{re.escape(c_spaced)}\b", c_target, raw_formula, flags=re.I)
 
-                        calc = raw_formula
-                    else:
-                        amt_col = next((c["target_name"] for r in refs for c in table_map.get(r.lower(), {}).get("columns", []) if any(w in c["target_name"] for w in ("amount", "total", "price", "rate", "cost", "balance"))), None)
-                        if amt_col:
-                            calc = f"SUM({amt_col})"
+                        if re.search(r"[-+*/%]", raw_formula) or re.search(r"\b(?:SUM|AVG|MIN|MAX|COUNT|ROUND|COALESCE|DATEDIFF|CASE)\s*\(", raw_formula, re.I):
+                            has_arithmetic_formula = True
+                            calc = raw_formula
+
+                    if not has_arithmetic_formula:
+                        combined_text = f"{name} {sentence}".lower()
+                        if any(w in combined_text for w in ("gpa", "grade", "score", "points", "rating", "average", "avg", "mean", "mark")):
+                            agg = "AVG"
+                        elif any(w in combined_text for w in ("count", "number_of", "num_")):
+                            agg = "COUNT"
                         else:
-                            calc = f"SUM({filt.split(' = ')[0]})"
+                            agg = "SUM"
+
+                        target_col = None
+                        if agg == "AVG":
+                            for r in refs:
+                                tbl = table_map.get(r.lower(), {})
+                                for c in tbl.get("columns", []):
+                                    cname = c["target_name"]
+                                    if any(w in cname for w in ("score", "gpa", "point", "rate", "rating", "mark")):
+                                        target_col = cname
+                                        break
+                                if target_col:
+                                    break
+                        elif agg == "SUM":
+                            for r in refs:
+                                tbl = table_map.get(r.lower(), {})
+                                for c in tbl.get("columns", []):
+                                    cname = c["target_name"]
+                                    if any(w in cname for w in ("amount", "total", "price", "rate", "cost", "fee", "balance", "sales", "qty", "quantity")):
+                                        target_col = cname
+                                        break
+                                if target_col:
+                                    break
+
+                        if not target_col:
+                            for r in refs:
+                                tbl = table_map.get(r.lower(), {})
+                                for c in tbl.get("columns", []):
+                                    ctype = c.get("type", "").upper()
+                                    cname = c["target_name"]
+                                    if not cname.endswith("_id") and cname != "id" and any(t in ctype for t in ("DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "INT")):
+                                        target_col = cname
+                                        break
+                                if target_col:
+                                    break
+
+                        if not target_col:
+                            target_col = filt.split(" = ")[0] if " = " in filt else "id"
+
+                        if agg == "AVG":
+                            calc = f"ROUND(AVG({target_col}), 2)"
+                        elif agg == "COUNT":
+                            calc = f"COUNT({target_col})"
+                        else:
+                            calc = f"SUM({target_col})"
+
+                    for t_lower, table in table_map.items():
+                        entity_stem = re.sub(r"s$", "", t_lower)
+                        ans_key = f"completed_{entity_stem}_value"
+                        if ans_key in answers:
+                            completed_val = answers[ans_key]
+                            if any(r.lower() == t_lower for r in refs):
+                                scol = next((c["target_name"] for c in table.get("columns", []) if "status" in c["target_name"]), None)
+                                if scol and f"{scol} =" not in filt:
+                                    filt = f"{filt} AND {scol} = '{completed_val}'"
+                                    break
 
                 structured.update({
                     "parameters": params,
@@ -1639,7 +1734,7 @@ RETURN COALESCE({calc_expr}, CAST(0 AS {returns}));"""
 
     # Ensure correlated scalar subquery is aggregated as required by Databricks Spark SQL:
     # [UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.MUST_AGGREGATE_CORRELATED_SCALAR_SUBQUERY]
-    is_aggregated = bool(re.match(r"(?is)^\s*(?:SUM|AVG|MIN|MAX|COUNT|FIRST)\s*\(", calc_aliased))
+    is_aggregated = bool(re.match(r"(?is)^\s*(?:SUM|AVG|MIN|MAX|COUNT|FIRST|ROUND)\s*\(", calc_aliased))
     if not is_aggregated:
         if any(t in returns.upper() for t in ("DECIMAL", "INT", "BIGINT", "NUMERIC", "DOUBLE", "FLOAT")):
             calc_aliased = f"CAST(SUM({calc_aliased}) AS {returns})"
