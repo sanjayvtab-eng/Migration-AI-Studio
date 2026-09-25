@@ -53,6 +53,36 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
   const connectorApplicationUrl = new URL(configuredApi, window.location.origin).origin;
   const command = `python scripts/local_connector.py --url ${quote(connectorApplicationUrl)} --source ${quote(source.id)} --server ${quote(source.server_name)} --database ${quote(source.database_name)} --driver ${quote(driver)}${certificateOption}`;
 
+  const downloadEnvFile = () => {
+    if (!registration) return;
+    const content = [
+      "# Databricks Migration AI Studio - Agent Configuration",
+      `# Source: ${source.id} (${source.server_name} / ${source.database_name})`,
+      `CONNECTOR_URL=${connectorApplicationUrl}`,
+      `CONNECTOR_SOURCE=${source.id}`,
+      `CONNECTOR_SERVER=${source.server_name}`,
+      `CONNECTOR_DATABASE=${source.database_name}`,
+      `CONNECTOR_TOKEN=${registration.token}`,
+      `CONNECTOR_DRIVER=${driver}`,
+      `CONNECTOR_TRUST_CERT=${trustCert ? "true" : "false"}`,
+      "# Optional: SQL Authentication (leave blank for Windows Auth)",
+      "CONNECTOR_USERNAME=",
+      "CONNECTOR_PASSWORD=",
+    ].join("\n");
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "agent.env";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadAgent = (pkgType: "exe" | "zip" = "exe") => {
+    const downloadUrl = `${connectorApplicationUrl}/api/connector/download?package_type=${pkgType}`;
+    window.open(downloadUrl, "_blank");
+  };
+
   return <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
     <span>{status === "DIRECT" ? "Direct connection" : `Connector: ${status.toLowerCase()}`}</span>
     <button onClick={() => setOpen(true)}>Manage connector</button>
@@ -64,7 +94,7 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
         <p>Status: <strong>{status}</strong></p>
         {error && <p role="alert">{error}</p>}
         {registration ? <>
-          <p>Registration token is shown once. Enter it at the connector's password prompt.</p>
+          <p>Registration token is shown once. You can copy it or simply download the pre-configured <code>agent.env</code>:</p>
           <textarea aria-label="Registration token" readOnly value={registration.token} rows={3} style={{ width: "100%", boxSizing: "border-box" }} />
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, margin: "14px 0 8px 0" }}>
             <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.9rem" }}>
@@ -79,10 +109,51 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
               <span>Trust Server Certificate (<code>--trust-server-certificate</code>)</span>
             </label>
           </div>
-          <p>From the updated repository folder on the SQL Server machine:</p>
-          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>python -m pip install -r scripts/connector-requirements.txt{"\n"}{command}</pre>
-          <p>Windows Authentication uses the account running this command. For SQL Authentication add <code>--username 'your-sql-login'</code>; the password is prompted locally.</p>
-          <p>Keep the connector running. When its status becomes online, close this panel and select Test. See <code>docs/LOCAL_CONNECTOR.md</code> for certificate setup and recovery.</p>
+
+          <div style={{ background: "#f4f5f7", borderRadius: 8, padding: 16, margin: "16px 0", border: "1px solid #dfe1e6" }}>
+            <div style={{ fontWeight: 600, color: "#172b4d", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              <span>⭐ Recommended: Standalone Runner (No Python or Git needed)</span>
+            </div>
+            <p style={{ margin: "0 0 12px 0", fontSize: "0.9rem", color: "#42526e" }}>
+              1. Download <code>migration-agent.exe</code> and the pre-configured <code>agent.env</code> into the same folder.<br />
+              2. Double-click <code>migration-agent.exe</code> to connect!
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => downloadAgent("exe")}
+                style={{ background: "#0052cc", color: "white", border: "none", borderRadius: 4, padding: "8px 14px", fontWeight: 500, cursor: "pointer" }}
+              >
+                ⬇ Download Agent (.exe)
+              </button>
+              <button
+                type="button"
+                onClick={downloadEnvFile}
+                style={{ background: "#00875a", color: "white", border: "none", borderRadius: 4, padding: "8px 14px", fontWeight: 500, cursor: "pointer" }}
+              >
+                ⬇ Download Config (agent.env)
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadAgent("zip")}
+                style={{ background: "#e9edf2", color: "#172b4d", border: "1px solid #c1c7d0", borderRadius: 4, padding: "8px 12px", fontSize: "0.85rem", cursor: "pointer" }}
+              >
+                Download Bundle (.zip)
+              </button>
+            </div>
+            <p style={{ margin: "10px 0 0 0", fontSize: "0.82rem", color: "#5e6c84" }}>
+              💡 <strong>Switching Databases:</strong> To migrate a different database on this server, simply edit <code>CONNECTOR_DATABASE</code> in <code>agent.env</code> using Notepad or pass <code>--database NewDB</code>. You never need to download the agent again!
+            </p>
+          </div>
+
+          <details style={{ marginTop: 12, fontSize: "0.88rem", color: "#42526e", borderTop: "1px solid #ebecf0", paddingTop: 8 }}>
+            <summary style={{ cursor: "pointer", fontWeight: 500, color: "#0052cc" }}>Advanced / Developer command-line run</summary>
+            <p style={{ margin: "8px 0 4px 0" }}>From the repository folder on the SQL Server machine:</p>
+            <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "#f4f5f7", padding: 10, borderRadius: 4 }}>python -m pip install -r scripts/connector-requirements.txt{"\n"}{command}</pre>
+            <p style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>Windows Authentication uses the account running this command. For SQL Authentication add <code>--username 'your-sql-login'</code>; the password is prompted locally.</p>
+          </details>
+
+          <p style={{ marginTop: 14 }}>Keep the connector running. When its status becomes online, close this panel and select Test. See <code>docs/LOCAL_CONNECTOR.md</code> for certificate setup and recovery.</p>
         </> : <p>Registration switches this source to connector mode. Registering again invalidates the previous token and cancels pending connector tasks.</p>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
           {!registration && <button disabled={busy} onClick={() => void mutate("POST")}>{status === "DIRECT" ? "Register connector" : "Replace registration"}</button>}

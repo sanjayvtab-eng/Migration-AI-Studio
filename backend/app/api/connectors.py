@@ -50,6 +50,108 @@ def register(project_id: str, source_id: str, db: Session = Depends(get_db), _=D
     return {"source_id": source_id, "token": token}
 
 
+@router.get("/projects/{project_id}/sources/{source_id}/connector/config")
+def get_config(
+    project_id: str,
+    source_id: str,
+    token: str = "",
+    driver: str = "ODBC Driver 17 for SQL Server",
+    trust_cert: bool = True,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    _=Depends(auth)
+):
+    src = source(db, project_id, source_id)
+    app_url = ""
+    if request:
+        app_url = str(request.base_url).rstrip("/")
+        if app_url.endswith("/api"):
+            app_url = app_url[:-4]
+
+    content = (
+        f"# Databricks Migration AI Studio - Agent Configuration\n"
+        f"# Generated for Source: {src.profile_name} ({src.id})\n"
+        f"CONNECTOR_URL={app_url}\n"
+        f"CONNECTOR_SOURCE={src.id}\n"
+        f"CONNECTOR_SERVER={src.server_name}\n"
+        f"CONNECTOR_DATABASE={src.database_name}\n"
+        f"CONNECTOR_TOKEN={token}\n"
+        f"CONNECTOR_DRIVER={driver}\n"
+        f"CONNECTOR_TRUST_CERT={'true' if trust_cert else 'false'}\n"
+        f"# Optional SQL Authentication credentials (leave blank for Windows Auth)\n"
+        f"CONNECTOR_USERNAME=\n"
+        f"CONNECTOR_PASSWORD=\n"
+    )
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        content=content,
+        media_type="text/plain",
+        headers={"Content-Disposition": 'attachment; filename="agent.env"'}
+    )
+
+
+@router.get("/connector/download")
+def download_agent(package_type: str = "exe"):
+    """Download the standalone migration agent executable or bundle."""
+    from fastapi.responses import FileResponse, StreamingResponse
+    from pathlib import Path
+    import io
+    import zipfile
+
+    repo_root = Path(__file__).resolve().parents[3]
+    exe_path = repo_root / "dist" / "migration-agent.exe"
+    bundle_zip_path = repo_root / "dist" / "migration-agent-bundle.zip"
+
+    if package_type == "exe" and exe_path.is_file():
+        return FileResponse(
+            str(exe_path),
+            media_type="application/octet-stream",
+            filename="migration-agent.exe"
+        )
+    if package_type == "zip" and bundle_zip_path.is_file():
+        return FileResponse(
+            str(bundle_zip_path),
+            media_type="application/zip",
+            filename="migration-agent-bundle.zip"
+        )
+
+    scripts_dir = repo_root / "scripts"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        if exe_path.is_file():
+            z.write(exe_path, "migration-agent.exe")
+        connector_py = scripts_dir / "local_connector.py"
+        if connector_py.is_file():
+            z.write(connector_py, "local_connector.py")
+        run_bat = scripts_dir / "run_agent.bat"
+        if run_bat.is_file():
+            z.write(run_bat, "run_agent.bat")
+        env_example = scripts_dir / "agent.env.example"
+        if env_example.is_file():
+            z.write(env_example, "agent.env.example")
+            z.write(env_example, "agent.env")
+        reqs = scripts_dir / "connector-requirements.txt"
+        if reqs.is_file():
+            z.write(reqs, "requirements.txt")
+        readme = (
+            "======================================================================\n"
+            "   Databricks Migration AI Studio - Standalone Local Agent\n"
+            "======================================================================\n\n"
+            "Quick Start (Windows):\n"
+            "----------------------\n"
+            "1. Open 'agent.env' in Notepad and enter your CONNECTOR_TOKEN from Studio UI.\n"
+            "2. Double-click 'migration-agent.exe' (or 'run_agent.bat').\n"
+            "3. The agent connects outward over HTTPS to Migration AI Studio.\n"
+        )
+        z.writestr("README.txt", readme)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="migration-agent-bundle.zip"'}
+    )
+
+
 @router.delete("/projects/{project_id}/sources/{source_id}/connector")
 def revoke(project_id: str, source_id: str, db: Session = Depends(get_db), _=Depends(admin)):
     source(db, project_id, source_id)
