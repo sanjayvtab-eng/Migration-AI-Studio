@@ -215,3 +215,17 @@ def test_diagnostics_do_not_expose_raw_credentials(message, code):
     result = connection_diagnostic(Exception(message))
     assert result.startswith(code)
     assert "secret" not in result
+
+
+def test_connector_config_download_and_bundle_download(client, db, auth_headers):
+    path, _, token = registered(client, db, auth_headers)
+    config_resp = client.get(f"{path}/config?token={token}", headers=auth_headers)
+    assert config_resp.status_code == 200
+    assert "CONNECTOR_TOKEN=" + token in config_resp.text
+    assert "CONNECTOR_SOURCE=SRC" in config_resp.text
+    assert "CONNECTOR_SERVER=PC\\SQLEXPRESS" in config_resp.text
+
+    dl_resp = client.get("/api/connector/download?package_type=zip")
+    assert dl_resp.status_code == 200
+    assert "application/zip" in dl_resp.headers.get("content-type", "")
+
