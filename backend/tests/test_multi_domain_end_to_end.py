@@ -479,14 +479,14 @@ Ingest all discovered source tables, including Students, Enrollments, CourseOffe
 
 Silver:
 Create clean standardized views for all six source tables.
-Create vw_student_course_progress by joining Students, Enrollments, CourseOfferings, Courses, Departments, and Instructors. Include student number, student name, course code, course title, department, instructor, academic year, term, enrollment status, final score, grade, fee paid, and completion date.
-Create fn_calculate_student_gpa(student_id INT). The function computes student GPA from completed enrollments.
-Create usp_load_student_progress procedure.
+Create vw_student_course_progress by joining Students, Enrollments, CourseOfferings, Courses, Departments, and Instructors. Include student_number, student_name, course_code, course_title, department, instructor, academic_year, term, enrollment_status, final_score, grade, fee_paid, and completion_date.
+Create fn_calculate_student_gpa(student_id INT). The function must calculate a credit-hour weighted GPA using only completed enrollments. Do not invent the grade-to-point mapping; ask for it if it is not provided.
+Create usp_load_course_completion_summary as an idempotent loader or governed Databricks workflow. It must summarize completed course outcomes by offering and include enrollment count, pass count, fail count, average final score, collected fees, and load timestamp. Clarify the passing rule and loading strategy before generation.
 
 Gold:
 Create dim_student, dim_course, dim_instructor.
 Create fact_enrollment.
-Create vw_student_performance_summary.
+Create vw_course_completion_summary.
 """
 
     # 1. Submit prompt

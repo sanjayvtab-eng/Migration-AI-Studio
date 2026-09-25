@@ -875,7 +875,10 @@ def _build_requests(
                             if " " in c_spaced:
                                 raw_formula = re.sub(rf"\b{re.escape(c_spaced)}\b", c_target, raw_formula, flags=re.I)
 
-                        if re.search(r"[-+*/%]", raw_formula) or re.search(r"\b(?:SUM|AVG|MIN|MAX|COUNT|ROUND|COALESCE|DATEDIFF|CASE)\s*\(", raw_formula, re.I):
+                        math_str = re.sub(r"\b[A-Za-z]+-[A-Za-z]+\b", " ", raw_formula)
+                        is_math_op = bool(re.search(r"[-+*/%]", math_str) or re.search(r"\b(?:SUM|AVG|MIN|MAX|COUNT|ROUND|COALESCE|DATEDIFF|CASE)\s*\(", math_str, re.I))
+                        has_prose_stopwords = bool(re.search(r"\b(?:using|only|completed|must|should|calculate|computes?|based|ask|provided|invent)\b", raw_formula, re.I))
+                        if is_math_op and not has_prose_stopwords:
                             has_arithmetic_formula = True
                             calc = raw_formula
 
