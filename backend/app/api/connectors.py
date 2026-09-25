@@ -92,43 +92,48 @@ def get_config(
 
 @router.get("/connector/download")
 def download_agent(package_type: str = "exe"):
-    """Download the standalone migration agent executable or bundle."""
+    """Download the standalone migration agent executable."""
     from fastapi.responses import FileResponse, StreamingResponse
     from pathlib import Path
     import io
     import zipfile
 
-    repo_root = Path(__file__).resolve().parents[3]
+    current_dir = Path(__file__).resolve().parent  # app/api
+    app_dir = current_dir.parent  # app
+    repo_root = app_dir.parent.parent if len(app_dir.parents) >= 2 else app_dir.parent
+
     candidate_exe_paths = [
+        app_dir / "bin" / "migration-agent.exe",
+        Path.cwd() / "backend" / "app" / "bin" / "migration-agent.exe",
+        Path.cwd() / "app" / "bin" / "migration-agent.exe",
+        Path("/app/app/bin/migration-agent.exe"),
+        Path("/app/scripts/bin/migration-agent.exe"),
         repo_root / "scripts" / "bin" / "migration-agent.exe",
         repo_root / "dist" / "migration-agent.exe",
-        Path("/app/scripts/bin/migration-agent.exe"),
+        Path.cwd() / "scripts" / "bin" / "migration-agent.exe",
+        Path.cwd() / "dist" / "migration-agent.exe",
     ]
     exe_path = None
     for p in candidate_exe_paths:
-        if p.is_file():
-            exe_path = p
-            break
+        try:
+            if p.is_file() and p.stat().st_size > 0:
+                exe_path = p
+                break
+        except Exception:
+            continue
 
     if package_type == "exe" and exe_path:
         return FileResponse(
             str(exe_path),
             media_type="application/vnd.microsoft.portable-executable",
-            filename="migration-agent.exe"
-        )
-    bundle_zip_path = repo_root / "dist" / "migration-agent-bundle.zip"
-    if package_type == "zip" and bundle_zip_path.is_file():
-        return FileResponse(
-            str(bundle_zip_path),
-            media_type="application/zip",
-            filename="migration-agent-bundle.zip"
+            filename="migration-agent.exe",
+            headers={"Content-Disposition": 'attachment; filename="migration-agent.exe"'}
         )
 
-    scripts_dir = repo_root / "scripts"
+    # Fallback to universal zip bundle if exe not present
+    scripts_dir = repo_root / "scripts" if (repo_root / "scripts").is_dir() else Path("/app/scripts")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        if exe_path.is_file():
-            z.write(exe_path, "migration-agent.exe")
         connector_py = scripts_dir / "local_connector.py"
         if connector_py.is_file():
             z.write(connector_py, "local_connector.py")
@@ -148,9 +153,8 @@ def download_agent(package_type: str = "exe"):
             "======================================================================\n\n"
             "Quick Start (Windows):\n"
             "----------------------\n"
-            "1. Open 'agent.env' in Notepad and enter your CONNECTOR_TOKEN from Studio UI.\n"
-            "2. Double-click 'migration-agent.exe' (or 'run_agent.bat').\n"
-            "3. The agent connects outward over HTTPS to Migration AI Studio.\n"
+            "1. Run 'migration-agent.exe' (or 'run_agent.bat') and enter parameters.\n"
+            "2. The agent connects outward over HTTPS to Migration AI Studio.\n"
         )
         z.writestr("README.txt", readme)
     buf.seek(0)
