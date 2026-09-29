@@ -1,12 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { Settings } from "lucide-react";
 
 type Props = {
   projectId: string;
   source: { id: string; server_name: string; database_name: string };
+  onlyStatus?: boolean;
+  onlyButton?: boolean;
 };
 
-export default function SourceConnectorControl({ projectId, source }: Props) {
+export default function SourceConnectorControl({
+  projectId,
+  source,
+  onlyStatus,
+  onlyButton,
+}: Props) {
   const [status, setStatus] = useState("Loading");
   const [registration, setRegistration] = useState<{ token: string } | null>(null);
   const [error, setError] = useState("");
@@ -83,71 +91,334 @@ export default function SourceConnectorControl({ projectId, source }: Props) {
     window.open(downloadUrl, "_blank");
   };
 
-  return <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-    <span>{status === "DIRECT" ? "Direct connection" : `Connector: ${status.toLowerCase()}`}</span>
-    <button onClick={() => setOpen(true)}>Manage connector</button>
-    {open && <dialog ref={dialog} aria-label="Local SQL Server connector" onCancel={() => { setOpen(false); setRegistration(null); setError(""); }}
-      style={{ border: "1px solid #d6dce5", borderRadius: 8, padding: 0, width: "min(680px, 90vw)", maxHeight: "85vh" }}>
-      <div style={{ background: "white", color: "#172b4d", padding: 24, overflowY: "auto", whiteSpace: "normal" }}>
+  const isOnline = status === "DIRECT" || status === "ONLINE";
+  const isBlocked = status === "REVOKED" || status === "UNAVAILABLE";
+  const pillClass = isOnline ? "active" : isBlocked ? "blocked" : "review";
+  const statusText =
+    status === "DIRECT"
+      ? "Direct Connection (Healthy)"
+      : status === "ONLINE"
+      ? "Connector Online (Ready)"
+      : status === "OFFLINE"
+      ? "Connector Offline (Standby)"
+      : `Connector: ${status.toLowerCase()}`;
+
+  const statusPill = (
+    <span className={`status-pill ${pillClass}`}>
+      <span className="status-dot" />
+      {statusText}
+    </span>
+  );
+
+  const dialogElement = open && (
+    <dialog
+      ref={dialog}
+      aria-label="Local SQL Server connector"
+      onCancel={() => {
+        setOpen(false);
+        setRegistration(null);
+        setError("");
+      }}
+      style={{
+        border: "1px solid #d6dce5",
+        borderRadius: 12,
+        padding: 0,
+        width: "min(680px, 90vw)",
+        maxHeight: "85vh",
+      }}
+    >
+      <div
+        style={{
+          background: "white",
+          color: "#172b4d",
+          padding: 24,
+          overflowY: "auto",
+          whiteSpace: "normal",
+        }}
+      >
         <h2>Local SQL Server connector</h2>
-        <p>Run the connector on a machine that can access {source.server_name}. It connects outward over HTTPS in hosted environments; loopback HTTP is allowed only for local development. SQL credentials remain local.</p>
-        <p>Status: <strong>{status}</strong></p>
+        <p>
+          Run the connector on a machine that can access {source.server_name}. It
+          connects outward over HTTPS in hosted environments; loopback HTTP is
+          allowed only for local development. SQL credentials remain local.
+        </p>
+        <p>
+          Status: <strong>{status}</strong>
+        </p>
         {error && <p role="alert">{error}</p>}
-        {registration ? <>
-          <p>Registration token is shown once. You can copy it or simply download the pre-configured <code>agent.env</code>:</p>
-          <textarea aria-label="Registration token" readOnly value={registration.token} rows={3} style={{ width: "100%", boxSizing: "border-box" }} />
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, margin: "14px 0 8px 0" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.9rem" }}>
-              <span><strong>ODBC Driver:</strong></span>
-              <select value={driver} onChange={(e) => setDriver(e.target.value)} style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid #c1c7d0" }}>
-                <option value="ODBC Driver 17 for SQL Server">ODBC Driver 17 for SQL Server (Recommended)</option>
-                <option value="ODBC Driver 18 for SQL Server">ODBC Driver 18 for SQL Server</option>
-              </select>
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.9rem", cursor: "pointer" }}>
-              <input type="checkbox" checked={trustCert} onChange={(e) => setTrustCert(e.target.checked)} />
-              <span>Trust Server Certificate (<code>--trust-server-certificate</code>)</span>
-            </label>
-          </div>
-
-          <div style={{ background: "#f4f5f7", borderRadius: 8, padding: 16, margin: "16px 0", border: "1px solid #dfe1e6" }}>
-            <div style={{ fontWeight: 600, color: "#172b4d", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-              <span>⭐ Recommended: Standalone Agent Executable (.exe)</span>
-            </div>
-            <p style={{ margin: "0 0 12px 0", fontSize: "0.9rem", color: "#42526e" }}>
-              Download and run <code>migration-agent.exe</code> on your SQL Server machine. No Python, VS Code, or repository setup required!
+        {registration ? (
+          <>
+            <p>
+              Registration token is shown once. You can copy it or simply
+              download the pre-configured <code>agent.env</code>:
             </p>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-              <button
-                type="button"
-                onClick={() => downloadAgent("exe")}
-                style={{ background: "#0052cc", color: "white", border: "none", borderRadius: 4, padding: "9px 18px", fontSize: "0.95rem", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+            <textarea
+              aria-label="Registration token"
+              readOnly
+              value={registration.token}
+              rows={3}
+              style={{ width: "100%", boxSizing: "border-box" }}
+            />
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 16,
+                margin: "14px 0 8px 0",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: "0.9rem",
+                }}
               >
-                ⬇ Download Agent (.exe)
-              </button>
+                <span>
+                  <strong>ODBC Driver:</strong>
+                </span>
+                <select
+                  value={driver}
+                  onChange={(e) => setDriver(e.target.value)}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: 4,
+                    border: "1px solid #c1c7d0",
+                  }}
+                >
+                  <option value="ODBC Driver 17 for SQL Server">
+                    ODBC Driver 17 for SQL Server (Recommended)
+                  </option>
+                  <option value="ODBC Driver 18 for SQL Server">
+                    ODBC Driver 18 for SQL Server
+                  </option>
+                </select>
+              </label>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontSize: "0.9rem",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={trustCert}
+                  onChange={(e) => setTrustCert(e.target.checked)}
+                />
+                <span>
+                  Trust Server Certificate (
+                  <code>--trust-server-certificate</code>)
+                </span>
+              </label>
             </div>
-            <p style={{ margin: "12px 0 0 0", fontSize: "0.84rem", color: "#5e6c84" }}>
-              💡 <strong>Configuration:</strong> Double-click <code>migration-agent.exe</code> to enter your parameters interactively, or pass flags like <code>--database {source.database_name}</code>. You can also place an <code>agent.env</code> next to it to connect automatically.
+
+            <div
+              style={{
+                background: "#f4f5f7",
+                borderRadius: 8,
+                padding: 16,
+                margin: "16px 0",
+                border: "1px solid #dfe1e6",
+              }}
+            >
+              <div
+                style={{
+                  fontWeight: 600,
+                  color: "#172b4d",
+                  marginBottom: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span>⭐ Recommended: Standalone Agent Executable (.exe)</span>
+              </div>
+              <p
+                style={{
+                  margin: "0 0 12px 0",
+                  fontSize: "0.9rem",
+                  color: "#42526e",
+                }}
+              >
+                Download and run <code>migration-agent.exe</code> on your SQL Server
+                machine. No Python, VS Code, or repository setup required!
+              </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => downloadAgent("exe")}
+                  style={{
+                    background: "#0052cc",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "9px 18px",
+                    fontSize: "0.95rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  ⬇ Download Agent (.exe)
+                </button>
+              </div>
+              <p
+                style={{
+                  margin: "12px 0 0 0",
+                  fontSize: "0.84rem",
+                  color: "#5e6c84",
+                }}
+              >
+                💡 <strong>Configuration:</strong> Double-click{" "}
+                <code>migration-agent.exe</code> to enter your parameters
+                interactively, or pass flags like{" "}
+                <code>--database {source.database_name}</code>. You can also place
+                an <code>agent.env</code> next to it to connect automatically.
+              </p>
+            </div>
+
+            <details
+              style={{
+                marginTop: 12,
+                fontSize: "0.88rem",
+                color: "#42526e",
+                borderTop: "1px solid #ebecf0",
+                paddingTop: 8,
+              }}
+            >
+              <summary
+                style={{
+                  cursor: "pointer",
+                  fontWeight: 500,
+                  color: "#0052cc",
+                }}
+              >
+                Advanced / Developer command-line run
+              </summary>
+              <p style={{ margin: "8px 0 4px 0" }}>
+                From the repository folder on the SQL Server machine:
+              </p>
+              <pre
+                style={{
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                  background: "#f4f5f7",
+                  padding: 10,
+                  borderRadius: 4,
+                }}
+              >
+                python -m pip install -r scripts/connector-requirements.txt{"\n"}
+                {command}
+              </pre>
+              <p style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>
+                Windows Authentication uses the account running this command.
+                For SQL Authentication add <code>--username 'your-sql-login'</code>
+                ; the password is prompted locally.
+              </p>
+            </details>
+
+            <p style={{ marginTop: 14 }}>
+              Keep the connector running. When its status becomes online, close
+              this panel and select Test. See <code>docs/LOCAL_CONNECTOR.md</code>{" "}
+              for certificate setup and recovery.
             </p>
-          </div>
-
-          <details style={{ marginTop: 12, fontSize: "0.88rem", color: "#42526e", borderTop: "1px solid #ebecf0", paddingTop: 8 }}>
-            <summary style={{ cursor: "pointer", fontWeight: 500, color: "#0052cc" }}>Advanced / Developer command-line run</summary>
-            <p style={{ margin: "8px 0 4px 0" }}>From the repository folder on the SQL Server machine:</p>
-            <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "#f4f5f7", padding: 10, borderRadius: 4 }}>python -m pip install -r scripts/connector-requirements.txt{"\n"}{command}</pre>
-            <p style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>Windows Authentication uses the account running this command. For SQL Authentication add <code>--username 'your-sql-login'</code>; the password is prompted locally.</p>
-          </details>
-
-          <p style={{ marginTop: 14 }}>Keep the connector running. When its status becomes online, close this panel and select Test. See <code>docs/LOCAL_CONNECTOR.md</code> for certificate setup and recovery.</p>
-        </> : <p>Registration switches this source to connector mode. Registering again invalidates the previous token and cancels pending connector tasks.</p>}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16 }}>
-          {!registration && <button disabled={busy} onClick={() => void mutate("POST")}>{status === "DIRECT" ? "Register connector" : "Replace registration"}</button>}
-          {status !== "DIRECT" && status !== "REVOKED" && <button disabled={busy} onClick={() => {
-            if (window.confirm("Revoke this connector and cancel its pending tasks?")) void mutate("DELETE");
-          }}>Revoke connector</button>}
-          <button disabled={busy} onClick={() => { setOpen(false); setRegistration(null); setError(""); }}>Close</button>
+          </>
+        ) : (
+          <p>
+            Registration switches this source to connector mode. Registering
+            again invalidates the previous token and cancels pending connector
+            tasks.
+          </p>
+        )}
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 8,
+            marginTop: 16,
+          }}
+        >
+          {!registration && (
+            <button disabled={busy} onClick={() => void mutate("POST")}>
+              {status === "DIRECT"
+                ? "Register connector"
+                : "Replace registration"}
+            </button>
+          )}
+          {status !== "DIRECT" && status !== "REVOKED" && (
+            <button
+              disabled={busy}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Revoke this connector and cancel its pending tasks?",
+                  )
+                )
+                  void mutate("DELETE");
+              }}
+            >
+              Revoke connector
+            </button>
+          )}
+          <button
+            disabled={busy}
+            onClick={() => {
+              setOpen(false);
+              setRegistration(null);
+              setError("");
+            }}
+          >
+            Close
+          </button>
         </div>
       </div>
-    </dialog>}
-  </div>;
+    </dialog>
+  );
+
+  const manageButton = (
+    <button
+      className="btn-secondary"
+      onClick={() => setOpen(true)}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 12px",
+      }}
+    >
+      <Settings size={13} />
+      Manage
+    </button>
+  );
+
+  if (onlyStatus) return statusPill;
+  if (onlyButton)
+    return (
+      <>
+        {manageButton}
+        {dialogElement}
+      </>
+    );
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      {statusPill}
+      {manageButton}
+      {dialogElement}
+    </div>
+  );
 }
