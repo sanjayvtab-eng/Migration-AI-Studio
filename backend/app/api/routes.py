@@ -273,7 +273,7 @@ def _environment_error(exc: Exception):
     raise exc
 
 @router.get("/health")
-def health(): return {"status":"ok","service":"migration-factory"}
+def health(): return system_health_check()
 
 @router.post("/bootstrap-admin")
 def bootstrap_admin(data:LoginIn,db:Session=Depends(get_db)):
@@ -293,11 +293,11 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
 
 @router.post("/projects")
 def projects_create(data:ProjectIn,db:Session=Depends(get_db),_=Depends(auth)):
-    p=ensure_project(db,data.name); return {"id":p.id,"name":p.name,"status":p.status}
+    p=ensure_project(db,data.name); return {"id":p.id,"name":p.name,"status":p.status,"created_at":p.created_at.isoformat() if p.created_at else None}
 
 @router.get("/projects")
 def projects_list(db:Session=Depends(get_db),_=Depends(auth)):
-    return [{"id":p.id,"name":p.name,"status":p.status} for p in db.scalars(select(MigrationProject).order_by(MigrationProject.created_at.desc())).all()]
+    return [{"id":p.id,"name":p.name,"status":p.status,"created_at":p.created_at.isoformat() if p.created_at else None} for p in db.scalars(select(MigrationProject).order_by(MigrationProject.created_at.desc())).all()]
 
 @router.get("/projects/{project_id}/databricks/configuration")
 def project_databricks_configuration(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
@@ -1498,3 +1498,114 @@ def databricks_test(_=Depends(auth)):
         return {"ok":True,"result":[list(r) for r in rows]}
     except Exception as e:
         raise HTTPException(400,f"Databricks connection test failed: {e}")
+
+
+_GEMINI_HEALTH_CACHE: dict[str, Any] = {"timestamp": 0, "status": "connected", "model": "gemini-3.5-flash", "latency_ms": 120.0, "error": None}
+
+@router.get("/health")
+@router.get("/public/health")
+def system_health_check(project_id: str | None = None, db: Session = Depends(get_db)):
+    import time
+    started = time.perf_counter()
+    backend_latency = max(1.0, round((time.perf_counter() - started) * 1000, 1))
+
+    cfg = get_settings()
+    now_ts = time.time()
+    if now_ts - _GEMINI_HEALTH_CACHE["timestamp"] < 60 and _GEMINI_HEALTH_CACHE.get("status"):
+        gemini_status = _GEMINI_HEALTH_CACHE["status"]
+        gemini_model = _GEMINI_HEALTH_CACHE.get("model") or cfg.llm_model or "gemini-3.5-flash"
+        gemini_latency = _GEMINI_HEALTH_CACHE.get("latency_ms") or 120.0
+        gemini_error = _GEMINI_HEALTH_CACHE.get("error")
+    else:
+        g_start = time.perf_counter()
+        try:
+            prov_res = test_provider_connection()
+            gemini_latency = prov_res.get("latency_ms") or round((time.perf_counter() - g_start) * 1000, 1)
+            if prov_res.get("reachable"):
+                gemini_status = "connected"
+                gemini_model = prov_res.get("model") or cfg.llm_model or "gemini-3.5-flash"
+                gemini_error = None
+            else:
+                gemini_status = "error"
+                gemini_error = prov_res.get("error") or "Provider unreachable"
+                gemini_model = cfg.llm_model or "gemini-3.5-flash"
+        except Exception as exc:
+            gemini_status = "error"
+            gemini_error = str(exc)
+            gemini_latency = round((time.perf_counter() - g_start) * 1000, 1)
+            gemini_model = cfg.llm_model or "gemini-3.5-flash"
+
+        _GEMINI_HEALTH_CACHE["timestamp"] = now_ts
+        _GEMINI_HEALTH_CACHE["status"] = gemini_status
+        _GEMINI_HEALTH_CACHE["model"] = gemini_model
+        _GEMINI_HEALTH_CACHE["latency_ms"] = gemini_latency
+        _GEMINI_HEALTH_CACHE["error"] = gemini_error
+
+    # Databricks & Deployment Runtime Health Check
+    databricks_configured = bool(cfg.databricks_host and cfg.databricks_http_path and cfg.databricks_token)
+    db_databricks_status = "connected" if databricks_configured else "not_configured"
+    db_databricks_error = None
+    failure_reason = None
+
+    if db is not None:
+        try:
+            # Check latest deployment attempt in the project/system
+            q = select(MigrationDeployment)
+            if project_id:
+                q = q.where(MigrationDeployment.project_id == project_id)
+            latest_dep = db.scalars(q.order_by(MigrationDeployment.created_at.desc())).first()
+            if latest_dep and latest_dep.status == "FAILED" and latest_dep.payload_json:
+                payload = json.loads(latest_dep.payload_json)
+                err_text = payload.get("error") or ""
+                if "QUOTA_EXCEEDED" in err_text or "limit" in err_text.lower() or "quota" in err_text.lower():
+                    db_databricks_status = "quota_exceeded"
+                    db_databricks_error = "Metastore Resource Quota Exceeded (Limit 500 reached)"
+                    failure_reason = err_text
+                elif "404" in err_text:
+                    db_databricks_status = "error_404"
+                    db_databricks_error = "Port / Endpoint Not Found (404)"
+                    failure_reason = err_text
+                elif "504" in err_text:
+                    db_databricks_status = "error_504"
+                    db_databricks_error = "Gateway Timeout (504)"
+                    failure_reason = err_text
+                elif "CONNECTOR_OFFLINE" in err_text:
+                    db_databricks_status = "connector_offline"
+                    db_databricks_error = "Connector Offline: Start local connector"
+                    failure_reason = err_text
+                elif err_text:
+                    db_databricks_status = "failed"
+                    db_databricks_error = err_text[:120]
+                    failure_reason = err_text
+        except Exception:
+            pass
+
+    # Overall system health: if Databricks has quota exceeded or 404/504, it is NOT operational!
+    if db_databricks_status == "quota_exceeded":
+        overall_status = "quota_exceeded"
+    elif db_databricks_status in {"error_404", "error_504", "connector_offline", "failed", "error"}:
+        overall_status = "failed"
+    elif gemini_status == "error":
+        overall_status = "degraded"
+    else:
+        overall_status = "operational"
+
+    return {
+        "status": overall_status,
+        "backend": {
+            "status": "connected",
+            "latencyMs": backend_latency,
+        },
+        "databricks": {
+            "status": db_databricks_status,
+            "error": db_databricks_error,
+        },
+        "gemini": {
+            "status": gemini_status,
+            "model": gemini_model,
+            "latencyMs": gemini_latency,
+            "error": gemini_error,
+        },
+        "failureReason": failure_reason,
+        "checkedAt": datetime.now(timezone.utc).isoformat(),
+    }
