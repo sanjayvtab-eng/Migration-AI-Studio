@@ -302,24 +302,30 @@ export default function SourceConnectorControl({
               >
                 Advanced / Developer command-line run
               </summary>
-              <p style={{ margin: "8px 0 4px 0" }}>
+              <p style={{ margin: "8px 0 6px 0", color: "#334155", fontWeight: 500 }}>
                 From the repository folder on the SQL Server machine:
               </p>
               <pre
                 style={{
                   whiteSpace: "pre-wrap",
                   overflowWrap: "anywhere",
-                  background: "#f4f5f7",
-                  padding: 10,
-                  borderRadius: 4,
+                  background: "#f1f5f9",
+                  color: "#0f172a",
+                  border: "1px solid #cbd5e1",
+                  padding: "12px 14px",
+                  borderRadius: "6px",
+                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                  fontSize: "12px",
+                  lineHeight: "1.55",
+                  fontWeight: 600,
                 }}
               >
                 python -m pip install -r scripts/connector-requirements.txt{"\n"}
                 {command}
               </pre>
-              <p style={{ margin: "4px 0 0 0", fontSize: "0.82rem" }}>
+              <p style={{ margin: "6px 0 0 0", fontSize: "0.82rem", color: "#475569" }}>
                 Windows Authentication uses the account running this command.
-                For SQL Authentication add <code>--username 'your-sql-login'</code>
+                For SQL Authentication add <code style={{ color: "#0f172a", background: "#e2e8f0", padding: "1px 4px", borderRadius: 3 }}>--username 'your-sql-login'</code>
                 ; the password is prompted locally.
               </p>
             </details>

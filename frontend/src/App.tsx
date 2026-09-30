@@ -79,6 +79,9 @@ type Inv = {
   schema: string;
   name: string;
   type: string;
+  column_count?: number;
+  row_count?: number | null;
+  columns?: any[];
 };
 type ClassRow = {
   object_id: string;
@@ -1815,18 +1818,23 @@ export default function App() {
     [inventory, search],
   );
 
-  // Canonical object metrics to guarantee exact consistency between Discovery and Inventory pages
+  // Canonical object metrics reflecting real SQL Server table stats from backend
   const getObjectMetrics = useCallback(
     (x: any) => {
-      const globalIdx = inventory.findIndex(
+      const target = inventory.find(
         (item) => (item.id && item.id === x.id) || (item.name === x.name && item.database === x.database),
-      );
-      const idx = globalIdx >= 0 ? globalIdx : 0;
-      const rawRows = (((idx + 5) * 2311) % 65000) + 4200;
-      const colCount = ((idx * 5) % 8) + 6;
+      ) || x;
+
+      const hasRowCount = typeof target.row_count === "number" && !isNaN(target.row_count);
+      const rawRows = hasRowCount ? target.row_count : 0;
+      const estRows = hasRowCount ? target.row_count.toLocaleString() : "-";
+      const colCount = typeof target.column_count === "number" && target.column_count > 0
+        ? target.column_count
+        : (target.columns ? target.columns.length : 0);
+
       return {
         rawRows,
-        estRows: rawRows.toLocaleString(),
+        estRows,
         colCount,
       };
     },
@@ -1834,9 +1842,9 @@ export default function App() {
   );
 
   const totalInventoryRowVolume = useMemo(() => {
-    if (!inventory || inventory.length === 0) return 142500;
-    return inventory.reduce((acc, item) => acc + getObjectMetrics(item).rawRows, 0);
-  }, [inventory, getObjectMetrics]);
+    if (!inventory || inventory.length === 0) return 0;
+    return inventory.reduce((acc, item) => acc + (typeof item.row_count === "number" ? item.row_count : 0), 0);
+  }, [inventory]);
 
   // Unified multi-environment deployment attempts
   const attemptItems = useMemo(() => {
@@ -3575,19 +3583,6 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-
-                <div className="projects-toolbar-right">
-                  <button
-                    className="btn-primary-blue"
-                    onClick={() => {
-                      setNewProjectName("");
-                      setNewProjectModalOpen(true);
-                    }}
-                  >
-                    <Plus size={15} />
-                    New Project
-                  </button>
-                </div>
               </div>
 
               {/* Project List Table */}
@@ -3692,17 +3687,6 @@ export default function App() {
                               </td>
                               <td>
                                 <div className="actions-cell" style={{ justifyContent: "flex-end" }}>
-                                  <button
-                                    className="continue-btn"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setPid(p.id);
-                                      setPage("Migration Workflow");
-                                    }}
-                                  >
-                                    Continue
-                                    <ArrowRight size={13} />
-                                  </button>
                                   <div style={{ position: "relative" }}>
                                     <button
                                       className="menu-trigger-btn"
@@ -4638,9 +4622,8 @@ export default function App() {
                           <th>Database</th>
                           <th>Object Type</th>
                           <th>Column Count</th>
-                          <th>Est. Volume</th>
-                          <th>Target Recommendation</th>
-                          <th style={{ textAlign: "right" }}>Action</th>
+                          <th>Row Count</th>
+                          <th style={{ textAlign: "right" }}>Target Recommendation</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -4692,23 +4675,13 @@ export default function App() {
                                 </td>
                                 <td>
                                   <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#334155" }}>
-                                    ~{estRows} rows
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className="layer-badge bronze">
-                                    🥉 Bronze Medallion
+                                    {estRows !== "-" ? `${estRows} rows` : "-"}
                                   </span>
                                 </td>
                                 <td style={{ textAlign: "right" }}>
-                                  <button
-                                    className="btn-secondary"
-                                    style={{ padding: "4px 8px", fontSize: 11 }}
-                                    onClick={() => setInventoryInspectingObject(x)}
-                                  >
-                                    <Eye size={12} />
-                                    View Schema
-                                  </button>
+                                  <span className="layer-badge bronze">
+                                    🥉 Bronze Medallion
+                                  </span>
                                 </td>
                               </tr>
                             );
@@ -4866,7 +4839,7 @@ export default function App() {
                           </th>
                           <th>Source Object</th>
                           <th>Type</th>
-                          <th>Estimated Rows</th>
+                          <th>Row Count</th>
                           <th>Columns</th>
                           <th>Constraints</th>
                           <th>Stage Mapping</th>
@@ -4885,7 +4858,7 @@ export default function App() {
                             const isSelected = inventorySelectedIds.includes(x.id);
                             const { rawRows, estRows, colCount } = getObjectMetrics(x);
                             const pkName = `${x.name.replace(/s$/, "")}ID`;
-                            const fkCount = ((idx + 2) % 3) + 1;
+                            const fkCount = deps.filter((d: any) => d.object_id === x.id || d.object_name === x.name).length;
                             const targetBronze = `bronze.${(x.schema || "dbo").toLowerCase()}_${x.name.toLowerCase()}`;
 
                             return (
@@ -4917,14 +4890,16 @@ export default function App() {
                                 <td>
                                   <div className="row-count-cell">
                                     <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 12, fontWeight: 600, color: "#1e293b" }}>
-                                      {rawRows.toLocaleString()} rows
+                                      {estRows !== "-" ? `${estRows} rows` : "-"}
                                     </span>
-                                    <div className="row-count-bar-bg">
-                                      <div
-                                        className="row-count-bar-fill"
-                                        style={{ width: `${Math.min(100, Math.max(15, (rawRows / 70000) * 100))}%` }}
-                                      />
-                                    </div>
+                                    {estRows !== "-" && rawRows > 0 && (
+                                      <div className="row-count-bar-bg">
+                                        <div
+                                          className="row-count-bar-fill"
+                                          style={{ width: `${Math.min(100, Math.max(15, (rawRows / Math.max(1, totalInventoryRowVolume)) * 100))}%` }}
+                                        />
+                                      </div>
+                                    )}
                                   </div>
                                 </td>
                                 <td>
@@ -9240,123 +9215,6 @@ export default function App() {
                       </button>
                     </div>
                   </>
-                )}
-              </div>
-
-              {/* Card 3: Release 2 · SQL Server to DEV Bronze ingestion */}
-              <div className="card" style={{ padding: "24px 26px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 10 }}>
-                  <div className="env-section-tag" style={{ margin: 0 }}>
-                    <Database size={15} color="#2563eb" />
-                    SQL Server to DEV Bronze Ingestion
-                  </div>
-                  <button
-                    className="btn-secondary"
-                    disabled={!pid || busy || environmentPlan?.status !== "PROVISIONED"}
-                    onClick={runBronzePreflight}
-                  >
-                    <Stethoscope size={15} /> Run Ingestion Preflight
-                  </button>
-                </div>
-
-                <p className="section-caption">
-                  Stream discovered SQL Server tables into <code>{environmentPlan?.catalog_name || "migration_dev"}.bronze</code> using the project-scoped Databricks connection.
-                </p>
-
-                <div className="deploy-config">
-                  <label>
-                    Load mode
-                    <select value={bronzeLoadMode} onChange={(event) => setBronzeLoadMode(event.target.value)}>
-                      <option>FULL_LOAD</option>
-                      <option>APPEND</option>
-                    </select>
-                  </label>
-                  <label>
-                    Batch size
-                    <input
-                      type="number"
-                      min="1"
-                      max="10000"
-                      value={bronzeBatchSize}
-                      onChange={(event) => setBronzeBatchSize(Math.min(10000, Math.max(1, Number(event.target.value) || 1)))}
-                    />
-                  </label>
-                  <label>
-                    Max rows (test only)
-                    <input
-                      type="number"
-                      min="1"
-                      value={bronzeMaxRows}
-                      onChange={(event) => setBronzeMaxRows(event.target.value)}
-                      placeholder="Unlimited"
-                    />
-                  </label>
-                  <button
-                    className="btn-primary-blue"
-                    disabled={busy || environmentPlan?.status !== "PROVISIONED" || bronzePreflight?.status !== "PASSED"}
-                    onClick={runBronzeIngestion}
-                  >
-                    <Play size={15} /> Start DEV Bronze Ingestion
-                  </button>
-                </div>
-
-                {environmentPlan?.status !== "PROVISIONED" && (
-                  <div className="notice" style={{ marginTop: 12 }}>
-                    Provision the governed DEV environment before running ingestion.
-                  </div>
-                )}
-
-                {bronzePreflight && (
-                  <div className="subsection">
-                    <h4>Latest Ingestion Preflight</h4>
-                    <div className="deployment-summary">
-                      <div className="summary-stat"><span>Status</span><Badge s={bronzePreflight.status} /></div>
-                      <div className="summary-stat"><span>Tables</span><b>{bronzePreflight.table_count || 0}</b></div>
-                      <div className="summary-stat"><span>Catalog</span><b>{bronzePreflight.catalog || "-"}</b></div>
-                      <div className="summary-stat"><span>Blockers</span><b>{bronzePreflight.blockers?.length || 0}</b></div>
-                    </div>
-                    {bronzePreflight.blockers?.length > 0 && (
-                      <div className="notice">{bronzePreflight.blockers.join(" · ")}</div>
-                    )}
-                  </div>
-                )}
-
-                {bronzeRun?.run_id && (
-                  <div className="subsection">
-                    <h4>Latest Bronze Ingestion Run</h4>
-                    <div className="deployment-summary">
-                      <div className="summary-stat"><span>Status</span><Badge s={bronzeRun.status} /></div>
-                      <div className="summary-stat"><span>Run ID</span><b>{bronzeRun.run_id}</b></div>
-                      <div className="summary-stat"><span>Passed</span><b>{bronzeRun.passed || 0}</b></div>
-                      <div className="summary-stat"><span>Failed</span><b>{bronzeRun.failed || 0}</b></div>
-                    </div>
-                    {bronzeRun.results?.length > 0 && (
-                      <div className="projects-table-wrapper" style={{ border: "1px solid #e2e8f0", marginTop: 12 }}>
-                        <table className="projects-table">
-                          <thead>
-                            <tr>
-                              <th>Source</th>
-                              <th>Target</th>
-                              <th>Status</th>
-                              <th>Rows</th>
-                              <th>Details</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {bronzeRun.results.map((item: any, index: number) => (
-                              <tr key={`${item.object_id || index}-${index}`}>
-                                <td>{item.source || "-"}</td>
-                                <td><code>{item.target_fqn || "-"}</code></td>
-                                <td><Badge s={item.status} /></td>
-                                <td>{item.rows_loaded ?? "-"}</td>
-                                <td>{item.error || item.load_mode || "-"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
                 )}
               </div>
             </div>

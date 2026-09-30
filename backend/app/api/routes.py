@@ -805,7 +805,30 @@ def inventory(project_id:str,offset:int=0,limit:int=100,object_type:str|None=Non
     q=select(MigrationObject).where(MigrationObject.project_id==project_id)
     if object_type:q=q.where(MigrationObject.object_type==object_type.upper())
     objs=db.scalars(q.order_by(MigrationObject.schema_name,MigrationObject.object_name).offset(offset).limit(min(limit,500))).all()
-    return [{"id":o.id,"database":o.database_name,"schema":o.schema_name,"name":o.object_name,"type":o.object_type} for o in objs]
+    stats_records = db.scalars(select(CanonicalRecord).where(
+        CanonicalRecord.project_id == project_id,
+        CanonicalRecord.record_type == "TABLE_STATS"
+    )).all()
+    stats_map = {}
+    for r in stats_records:
+        try:
+            stats_map[r.object_id] = json.loads(r.payload_json or "{}").get("approx_row_count")
+        except Exception:
+            pass
+    col_counts = dict(db.execute(
+        select(MigrationColumn.object_id, func.count(MigrationColumn.id))
+        .where(MigrationColumn.project_id == project_id)
+        .group_by(MigrationColumn.object_id)
+    ).all())
+    return [{
+        "id": o.id,
+        "database": o.database_name,
+        "schema": o.schema_name,
+        "name": o.object_name,
+        "type": o.object_type,
+        "column_count": col_counts.get(o.id, 0),
+        "row_count": stats_map.get(o.id),
+    } for o in objs]
 
 @router.post("/projects/{project_id}/classification")
 def classify(project_id:str,db:Session=Depends(get_db),_=Depends(auth)): return {"classified":classify_project(db,project_id)}
