@@ -40,6 +40,7 @@ from app.services.discovery import test_sqlserver_connection
 from app.services.source_connector import connector_info, request as connector_request, TableStream
 from app.services.type_compatibility import (
     classify_execution_error,
+    format_sql_literal,
     normalize_row,
     source_select_expression,
     target_parameter_expression,
@@ -459,22 +460,42 @@ def load_bronze_table(db: Session, project_id: str, obj: MigrationObject, mappin
     contract = transport_contract(cols)
     summary = transport_summary(cols)
     rows_loaded = 0
-    with _source_rows(src, obj, cols, sql_text, max_rows) as scur, databricks_connection() as target_conn:
+    with databricks_connection() as target_conn:
         tcur = target_conn.cursor()
-        while True:
-            batch = scur.fetchmany(batch_size)
-            if not batch:
-                break
-            payload = []
-            batch_start = rows_loaded + 1
-            for offset, source_row in enumerate(batch):
-                # Normalize every value before any target write. This makes runtime type
-                # failures deterministic, column-aware and safe to resume because the
-                # bad batch is rejected before executemany is invoked.
-                normalized = normalize_row(cols, tuple(source_row), row_index=batch_start + offset)
-                payload.append(normalized + (f"{src.server_name}/{src.database_name}",))
-            tcur.executemany(insert_sql, payload)
-            rows_loaded += len(payload)
+        with _source_rows(src, obj, cols, sql_text, max_rows) as scur:
+            while True:
+                batch = scur.fetchmany(batch_size)
+                if not batch:
+                    break
+                payload = []
+                batch_start = rows_loaded + 1
+                for offset, source_row in enumerate(batch):
+                    # Normalize every value before any target write. This makes runtime type
+                    # failures deterministic, column-aware and safe to resume because the
+                    # bad batch is rejected before executemany is invoked.
+                    normalized = normalize_row(cols, tuple(source_row), row_index=batch_start + offset)
+                    payload.append(normalized + (f"{src.server_name}/{src.database_name}",))
+                CHUNK_SIZE = 500
+                if hasattr(tcur, "execute") and callable(tcur.execute):
+                    for c_idx in range(0, len(payload), CHUNK_SIZE):
+                        sub_batch = payload[c_idx:c_idx + CHUNK_SIZE]
+                        row_sql_items = []
+                        for row_tuple in sub_batch:
+                            col_lits = [
+                                format_sql_literal(val, col)
+                                for val, col in zip(row_tuple[:-1], cols)
+                            ]
+                            col_lits.append(format_sql_literal(row_tuple[-1]))
+                            row_sql_items.append(f"({', '.join(col_lits)}, current_timestamp())")
+                        multi_insert_sql = (
+                            f"INSERT INTO {mapping.target_fqn} ({target_cols}, `_migration_ingested_at`) "
+                            f"VALUES {','.join(row_sql_items)}"
+                        )
+                        tcur.execute(multi_insert_sql)
+                else:
+                    for c_idx in range(0, len(payload), CHUNK_SIZE):
+                        tcur.executemany(insert_sql, payload[c_idx:c_idx + CHUNK_SIZE])
+                rows_loaded += len(payload)
     _record_step(
         db, project_id, run_id, "BRONZE_LOAD", "PASSED", obj.id,
         rows_loaded=rows_loaded, target=mapping.target_fqn, transport=summary,
@@ -1153,8 +1174,12 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
             if not node or not version:
                 raise RuntimeError(f"DEV manifest metadata missing for {source_fqn}")
             if node.layer == "BRONZE" and node.node_type == "DELTA_TABLE":
-                execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
-                action = "DEEP_CLONE_DEV"
+                try:
+                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} SHALLOW CLONE {source_fqn}", safe_retry=False)
+                    action = "SHALLOW_CLONE_DEV"
+                except Exception:
+                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
+                    action = "DEEP_CLONE_DEV"
             else:
                 _execute_promoted_sql(_replace_catalog(version.content, dev_catalog, test_catalog), safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
@@ -1316,8 +1341,12 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
             if not node or not version:
                 raise RuntimeError(f"TEST manifest metadata missing for {source_fqn}")
             if node.layer == "BRONZE" and node.node_type == "DELTA_TABLE":
-                execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
-                action = "DEEP_CLONE_TEST"
+                try:
+                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} SHALLOW CLONE {source_fqn}", safe_retry=False)
+                    action = "SHALLOW_CLONE_TEST"
+                except Exception:
+                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
+                    action = "DEEP_CLONE_TEST"
             else:
                 promoted_sql = _replace_catalog(version.content, dev_catalog, uat_catalog)
                 promoted_sql = _replace_catalog(promoted_sql, test_catalog, uat_catalog)

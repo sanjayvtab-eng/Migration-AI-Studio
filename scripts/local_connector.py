@@ -305,12 +305,13 @@ class LocalAgent:
             raise
 
     def cleanup(self, all_streams: bool = False):
+        timeout = int(os.environ.get("CONNECTOR_STREAM_TIMEOUT_SECONDS", "3600"))
         for key, item in list(self.streams.items()):
-            if all_streams or time.monotonic() - item[2] > 150:
+            if all_streams or time.monotonic() - item[2] > timeout:
                 try:
                     item[0].close()
                 finally:
-                    del self.streams[key]
+                    self.streams.pop(key, None)
 
     def handle(self, task: dict[str, Any]) -> dict[str, Any]:
         if (task.get("source_id"), task.get("server"), task.get("database")) != (
@@ -336,7 +337,7 @@ class LocalAgent:
             if not stream:
                 raise ValueError("Source stream expired; restart the deployment after reviewing partial target data")
             stream[2] = time.monotonic()
-            size = min(max(int(data.get("size", 1000)), 1), 1000)
+            size = min(max(int(data.get("size", 5000)), 1), 5000)
             rows, byte_count = [], 0
             for _ in range(size):
                 row = stream[3] if stream[3] is not None else stream[1].fetchone()
@@ -357,8 +358,17 @@ class LocalAgent:
             raise ValueError("Unsupported operation")
         schema, table = data.get("schema"), data.get("table")
         table_sql = quoted(schema) + "." + quoted(table)
-        if len(self.streams) >= 4 and op == "open":
-            raise ValueError("Connector stream capacity reached")
+        table_key = f"{schema}.{table}"
+        if op == "open":
+            # Smart auto-eviction: if an old stream exists for this same table, close it immediately
+            for existing_id, existing_item in list(self.streams.items()):
+                if len(existing_item) > 4 and existing_item[4] == table_key:
+                    try:
+                        existing_item[0].close()
+                    finally:
+                        self.streams.pop(existing_id, None)
+            if len(self.streams) >= 32:
+                raise ValueError("Connector stream capacity reached")
         conn = self.connect()
         try:
             cur = conn.cursor()
@@ -383,7 +393,7 @@ class LocalAgent:
             projection = ",".join(source_select_expression(columns[name]) for name in requested)
             cur.execute("SELECT " + top + projection + " FROM " + table_sql)
             stream_id = secrets.token_hex(24)
-            self.streams[stream_id] = [conn, cur, time.monotonic(), None]
+            self.streams[stream_id] = [conn, cur, time.monotonic(), None, table_key]
             conn = None
             return {"stream_id": stream_id}
         finally:

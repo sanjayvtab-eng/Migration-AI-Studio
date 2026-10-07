@@ -198,7 +198,7 @@ def claim_instance(db, connector, instance):
         SourceConnector.enabled == "ENABLED",
         SourceConnector.token_hash == connector.token_hash,
         (SourceConnector.instance_id == None) | (SourceConnector.instance_id == instance) |
-        (SourceConnector.last_seen < now - timedelta(seconds=45)),
+        (SourceConnector.last_seen < now - timedelta(seconds=300)),
     ).values(instance_id=instance, last_seen=now))
     if not changed.rowcount:
         raise HTTPException(409, "Another connector instance is online for this source")

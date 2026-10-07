@@ -499,6 +499,37 @@ def transport_summary(columns: Iterable[Any]) -> dict[str, Any]:
     }
 
 
+def format_sql_literal(value: Any, column: Any = None) -> str:
+    """Format a normalized value into a safe Databricks SQL literal."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, Decimal)):
+        return str(value)
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return "NULL"
+        return str(value)
+    if isinstance(value, datetime):
+        return f"TIMESTAMP '{value.isoformat(sep=' ')}'"
+    if isinstance(value, date):
+        return f"DATE '{value.isoformat()}'"
+    if isinstance(value, time):
+        return f"'{value.isoformat()}'"
+    if isinstance(value, (bytes, bytearray)):
+        return f"unhex('{value.hex()}')"
+    if column is not None:
+        src_type = normalize_source_type(getattr(column, "data_type", ""))
+        if src_type in BINARY_SOURCE_TYPES:
+            clean = str(value).strip().lower()
+            if clean.startswith("0x"):
+                clean = clean[2:]
+            return f"unhex('{clean}')"
+    s = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{s}'"
+
+
 def compatibility_catalog() -> list[dict[str, Any]]:
     """Expose the deterministic adapter registry for diagnostics/UI documentation."""
     rows = []

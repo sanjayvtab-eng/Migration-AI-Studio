@@ -24,6 +24,7 @@ from app.services import environment_provisioning
 from app.services.engine import uid
 from app.services.source_connector import TableStream, connector_info, request as connector_request
 from app.services.type_compatibility import (
+    format_sql_literal,
     normalize_row,
     source_select_expression,
     target_parameter_expression,
@@ -383,9 +384,9 @@ def _load_table(
     )
     rows_loaded = 0
     try:
-        with _source_rows(source, table, columns, max_rows) as source_cursor:
-            with environment_provisioning.project_connection(db, project_id) as target_connection:
-                target_cursor = target_connection.cursor()
+        with environment_provisioning.project_connection(db, project_id) as target_connection:
+            target_cursor = target_connection.cursor()
+            with _source_rows(source, table, columns, max_rows) as source_cursor:
                 while True:
                     batch = source_cursor.fetchmany(batch_size)
                     if not batch:
@@ -400,7 +401,26 @@ def _load_table(
                             normalized
                             + (f"{source.server_name}/{source.database_name}",)
                         )
-                    target_cursor.executemany(insert_sql, payload)
+                    CHUNK_SIZE = 500
+                    if hasattr(target_cursor, "execute") and callable(target_cursor.execute):
+                        for c_idx in range(0, len(payload), CHUNK_SIZE):
+                            sub_batch = payload[c_idx:c_idx + CHUNK_SIZE]
+                            row_sql_items = []
+                            for row_tuple in sub_batch:
+                                col_lits = [
+                                    format_sql_literal(val, col)
+                                    for val, col in zip(row_tuple[:-1], columns)
+                                ]
+                                col_lits.append(format_sql_literal(row_tuple[-1]))
+                                row_sql_items.append(f"({', '.join(col_lits)}, current_timestamp())")
+                            multi_insert_sql = (
+                                f"INSERT INTO {write_target} ({target_columns}, `_migration_ingested_at`) "
+                                f"VALUES {','.join(row_sql_items)}"
+                            )
+                            target_cursor.execute(multi_insert_sql)
+                    else:
+                        for c_idx in range(0, len(payload), CHUNK_SIZE):
+                            target_cursor.executemany(insert_sql, payload[c_idx:c_idx + CHUNK_SIZE])
                     rows_loaded += len(payload)
         if load_mode == "FULL_LOAD":
             verb = "CREATE OR REPLACE" if existing_count is not None else "CREATE"

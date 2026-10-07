@@ -104,7 +104,7 @@ class TableStream:
 
     def fetchmany(self, size):
         result = request(self.source_id, "fetch", {"stream_id": self.stream_id,
-                                                 "size": min(max(int(size), 1), 1000)})
+                                                 "size": min(max(int(size), 1), 5000)})
         return [tuple(decode_value(v) for v in row) for row in result["rows"]]
 
     def __exit__(self, *args):
