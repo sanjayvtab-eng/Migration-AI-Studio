@@ -2619,3 +2619,15 @@ def trace(db: Session, project_id: str, specification_id: str) -> dict[str, Any]
         "prompt_checksum": version.checksum, "metadata_snapshot_id": version.metadata_snapshot_id,
         "requirements": result,
     }
+
+
+def latest(db: Session, project_id: str) -> dict[str, Any] | None:
+    spec = db.scalars(
+        select(PromptSpecification)
+        .where(PromptSpecification.project_id == project_id)
+        .order_by(PromptSpecification.created_at.desc())
+    ).first()
+    if not spec:
+        return None
+    return detail(db, project_id, spec.id)
+

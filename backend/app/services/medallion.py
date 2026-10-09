@@ -2114,6 +2114,49 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
     checkpoint_rejections = {
         item["object_id"]: item for item in (checkpoint or {}).get("rejections", [])
     }
+    bronze_targets_to_load = []
+    if config is not None:
+        for item in artifacts:
+            node = node_by_id[item["node_id"]]
+            obj = object_by_id.get(node.source_object_id)
+            if node.layer == "BRONZE" and obj and obj.object_type == "TABLE" and obj.id not in reusable:
+                plan, _ = bronze_ingestion._requirements(db, project_id)
+                approved_target = bronze_ingestion.validate_approved_bronze_target(
+                    node.target_fqn, expected_catalog=plan.catalog_name
+                )
+                bronze_targets_to_load.append((obj.id, approved_target))
+
+    loaded_bronze_results = {}
+    if len(bronze_targets_to_load) > 1:
+        import concurrent.futures
+        from app.core.database import SessionLocal
+
+        def _worker_bronze_load(obj_id: str, target_fqn: str):
+            worker_db = SessionLocal()
+            try:
+                worker_obj = worker_db.get(MigrationObject, obj_id)
+                worker_plan, _ = bronze_ingestion._requirements(worker_db, project_id)
+                res = bronze_ingestion._load_table(
+                    worker_db, project_id, run_id, worker_plan, worker_obj,
+                    batch_size=batch_size, max_rows=max_rows, load_mode="FULL_LOAD",
+                    replace_existing_data=replace_existing_data or allow_destructive,
+                    target_fqn=target_fqn,
+                )
+                return (obj_id, res, None)
+            except Exception as exc:
+                return (obj_id, None, exc)
+            finally:
+                worker_db.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(bronze_targets_to_load), 4)) as executor:
+            future_map = {
+                executor.submit(_worker_bronze_load, obj_id, target_fqn): obj_id
+                for obj_id, target_fqn in bronze_targets_to_load
+            }
+            for fut in concurrent.futures.as_completed(future_map):
+                oid, res, err = fut.result()
+                loaded_bronze_results[oid] = (res, err)
+
     deployed = []
     for item in artifacts:
         node = node_by_id[item["node_id"]]
@@ -2136,12 +2179,17 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                     approved_target = bronze_ingestion.validate_approved_bronze_target(
                         node.target_fqn, expected_catalog=plan.catalog_name
                     )
-                    load = bronze_ingestion._load_table(
-                        db, project_id, run_id, plan, obj, batch_size=batch_size,
-                        max_rows=max_rows, load_mode="FULL_LOAD",
-                        replace_existing_data=replace_existing_data or allow_destructive,
-                        target_fqn=approved_target,
-                    )
+                    if obj.id in loaded_bronze_results:
+                        load, load_exc = loaded_bronze_results[obj.id]
+                        if load_exc:
+                            raise load_exc
+                    else:
+                        load = bronze_ingestion._load_table(
+                            db, project_id, run_id, plan, obj, batch_size=batch_size,
+                            max_rows=max_rows, load_mode="FULL_LOAD",
+                            replace_existing_data=replace_existing_data or allow_destructive,
+                            target_fqn=approved_target,
+                        )
                     rejection = checkpoint_rejections.get(obj.id)
                     detail = {
                         "action": "LOAD_BRONZE", "load": load,

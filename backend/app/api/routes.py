@@ -396,10 +396,17 @@ def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Ses
     except Exception as e: _environment_error(e)
 
 
+@router.get("/projects/{project_id}/prompt-specifications/latest")
+def prompt_specification_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    try: return prompt_specification.latest(db,project_id)
+    except Exception as e: _environment_error(e)
+
+
 @router.get("/projects/{project_id}/prompt-specifications/{specification_id}")
 def prompt_specification_get(project_id:str,specification_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     try: return prompt_specification.detail(db,project_id,specification_id)
     except Exception as e: _environment_error(e)
+
 
 
 @router.post("/projects/{project_id}/prompt-specifications/{specification_id}/clarifications")

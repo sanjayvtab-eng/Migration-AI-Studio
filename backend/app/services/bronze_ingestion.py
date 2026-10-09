@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import logging
+import os
+import tempfile
+from urllib.parse import quote
 import re
 import time
 from contextlib import contextmanager
@@ -11,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.database import SessionLocal
 from app.models.entities import (
     CanonicalRecord,
     MigrationColumn,
@@ -33,6 +39,9 @@ from app.services.type_compatibility import (
 from app.services.rules import map_sqlserver_type
 from app.services.databricks_client import TRANSIENT
 
+
+BULK_THRESHOLD = 5000
+logger = logging.getLogger(__name__)
 
 LOAD_MODES = {"FULL_LOAD", "APPEND"}
 MISSING_TARGET_MARKERS = (
@@ -317,6 +326,159 @@ def _ddl(columns: list[MigrationColumn]) -> str:
     return ", ".join(definitions)
 
 
+def _load_via_direct_batch_insert(db, project_id, source, table, columns, write_target,
+                                *, batch_size, max_rows):
+    target_columns = ",".join(
+        [_qident(column.column_name) for column in columns]
+        + ["`_migration_source_system`"]
+    )
+    placeholders = ",".join(
+        [target_parameter_expression(column) for column in columns] + ["?"]
+    )
+    insert_sql = (
+        f"INSERT INTO {write_target} ({target_columns}, `_migration_ingested_at`) "
+        f"VALUES ({placeholders}, current_timestamp())"
+    )
+    rows_loaded = 0
+    with environment_provisioning.project_connection(db, project_id) as target_connection:
+        target_cursor = target_connection.cursor()
+        with _source_rows(source, table, columns, max_rows) as source_cursor:
+            while True:
+                batch = source_cursor.fetchmany(batch_size)
+                if not batch:
+                    break
+                payload = []
+                first_row = rows_loaded + 1
+                for offset, row in enumerate(batch):
+                    normalized = normalize_row(
+                        columns, tuple(row), row_index=first_row + offset
+                    )
+                    payload.append(
+                        normalized
+                        + (f"{source.server_name}/{source.database_name}",)
+                    )
+                CHUNK_SIZE = 500
+                if hasattr(target_cursor, "execute") and callable(target_cursor.execute):
+                    for c_idx in range(0, len(payload), CHUNK_SIZE):
+                        sub_batch = payload[c_idx:c_idx + CHUNK_SIZE]
+                        row_sql_items = []
+                        for row_tuple in sub_batch:
+                            col_lits = [
+                                format_sql_literal(val, col)
+                                for val, col in zip(row_tuple[:-1], columns)
+                            ]
+                            col_lits.append(format_sql_literal(row_tuple[-1]))
+                            row_sql_items.append(f"({', '.join(col_lits)}, current_timestamp())")
+                        multi_insert_sql = (
+                            f"INSERT INTO {write_target} ({target_columns}, `_migration_ingested_at`) "
+                            f"VALUES {','.join(row_sql_items)}"
+                        )
+                        target_cursor.execute(multi_insert_sql)
+                else:
+                    for c_idx in range(0, len(payload), CHUNK_SIZE):
+                        target_cursor.executemany(insert_sql, payload[c_idx:c_idx + CHUNK_SIZE])
+                rows_loaded += len(payload)
+    return rows_loaded
+
+
+def _export_table_to_parquet(source, table, columns, max_rows=None):
+    """Stream canonical transport values to Parquet; COPY restores target types."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    handle = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+    path = handle.name
+    handle.close()
+    count = 0
+    schema = pa.schema([(column.column_name, pa.string()) for column in columns])
+    try:
+        with pq.ParquetWriter(path, schema, compression="snappy") as writer:
+            with _source_rows(source, table, columns, max_rows) as cursor:
+                while True:
+                    batch = cursor.fetchmany(10000)
+                    if not batch:
+                        break
+                    rows = [normalize_row(columns, tuple(row), row_index=count + i + 1)
+                            for i, row in enumerate(batch)]
+                    data = {column.column_name: [None if row[i] is None else str(row[i])
+                                                for row in rows]
+                            for i, column in enumerate(columns)}
+                    writer.write_table(pa.Table.from_pydict(data, schema=schema))
+                    count += len(rows)
+        return path, count
+    except Exception:
+        os.unlink(path)
+        raise
+
+
+def _volume_file_request(db, project_id, method, volume_path, *, local_path=None):
+    import httpx
+
+    config = environment_provisioning.get_configuration(db, project_id)
+    if not config or config.status != "READY":
+        raise RuntimeError("A tested project Databricks configuration is required")
+    token = environment_provisioning._token(config)
+    if not token:
+        raise RuntimeError("Project Databricks token is not configured")
+    url = f"https://{config.workspace_host}/api/2.0/fs/files{quote(volume_path, safe='/')}"
+    # Do not include provider responses or credentials in load evidence.
+    with httpx.Client(timeout=httpx.Timeout(600, connect=30), follow_redirects=False) as client:
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"}
+        if local_path:
+            size = os.path.getsize(local_path)
+            if size > 5 * 1024 ** 3:
+                raise RuntimeError("Staging file exceeds the Files API upload limit")
+            headers["Content-Length"] = str(size)
+            with open(local_path, "rb") as stream:
+                response = client.request(method, url, headers=headers, content=stream)
+        else:
+            response = client.request(method, url, headers=headers)
+        if response.status_code >= 300:
+            raise RuntimeError(f"Staging file {method} failed (HTTP {response.status_code})")
+
+
+def _upload_to_uc_volume(db, project_id, local_path, volume_path):
+    _volume_file_request(db, project_id, "PUT", volume_path, local_path=local_path)
+    return volume_path
+
+
+def _load_table_via_parquet_copy_into(db, project_id, source, table, columns, write_target,
+                                    *, max_rows, expected_rows):
+    catalog, _, _ = _parse_fqn(write_target)
+    path = None
+    volume_path = f"/Volumes/{catalog}/bronze/_migration_staging/{uid('bulk')}.parquet"
+    try:
+        path, count = _export_table_to_parquet(source, table, columns, max_rows)
+        if count != expected_rows:
+            raise RuntimeError("Source row count changed during Parquet extraction")
+        _upload_to_uc_volume(db, project_id, path, volume_path)
+        projection = []
+        for column in columns:
+            name = _qident(column.column_name)
+            expression = target_parameter_expression(column).replace("?", name)
+            target_type = map_sqlserver_type(column.data_type, column.precision, column.scale)
+            projection.append(f"CAST({expression} AS {target_type}) AS {name}")
+        projection += [f"{format_sql_literal(source.server_name + '/' + source.database_name)} AS `_migration_source_system`",
+                       "current_timestamp() AS `_migration_ingested_at`"]
+        sql = (f"COPY INTO {write_target} FROM (SELECT {', '.join(projection)} "
+               f"FROM {format_sql_literal(volume_path)}) FILEFORMAT = PARQUET")
+        # A unique path and private stage isolate retries from live target data.
+        environment_provisioning.project_execute(db, project_id, sql, safe_retry=True)
+        if _target_count(db, project_id, write_target) != count:
+            raise RuntimeError("Bulk staging row-count validation failed")
+        return count
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                logger.warning("Could not remove local migration staging file")
+        try:
+            _volume_file_request(db, project_id, "DELETE", volume_path)
+        except Exception:
+            logger.warning("Could not remove temporary migration staging file")
+
+
 def _load_table(
     db: Session,
     project_id: str,
@@ -355,15 +517,16 @@ def _load_table(
 
     suffix = re.sub(r"[^A-Za-z0-9_]", "_", run_id[-16:])
     stage = _fqn(target_catalog, target_schema, f"__mf_stage_{suffix}_{table.id[-8:]}")
-    write_target = stage if load_mode == "FULL_LOAD" else target
-    if load_mode == "FULL_LOAD":
+    bulk_candidate = expected_rows >= BULK_THRESHOLD
+    write_target = stage if load_mode == "FULL_LOAD" or bulk_candidate else target
+    if write_target == stage:
         environment_provisioning.project_execute(
             db, project_id, f"DROP TABLE IF EXISTS {stage}", safe_retry=True
         )
         environment_provisioning.project_execute(
             db, project_id, f"CREATE TABLE {stage} ({_ddl(columns)}) USING DELTA", safe_retry=False
         )
-    elif existing_count is None:
+    if load_mode == "APPEND" and existing_count is None:
         environment_provisioning.project_execute(
             db,
             project_id,
@@ -371,57 +534,34 @@ def _load_table(
             safe_retry=True,
         )
 
-    target_columns = ",".join(
-        [_qident(column.column_name) for column in columns]
-        + ["`_migration_source_system`"]
-    )
-    placeholders = ",".join(
-        [target_parameter_expression(column) for column in columns] + ["?"]
-    )
-    insert_sql = (
-        f"INSERT INTO {write_target} ({target_columns}, `_migration_ingested_at`) "
-        f"VALUES ({placeholders}, current_timestamp())"
-    )
     rows_loaded = 0
     try:
-        with environment_provisioning.project_connection(db, project_id) as target_connection:
-            target_cursor = target_connection.cursor()
-            with _source_rows(source, table, columns, max_rows) as source_cursor:
-                while True:
-                    batch = source_cursor.fetchmany(batch_size)
-                    if not batch:
-                        break
-                    payload = []
-                    first_row = rows_loaded + 1
-                    for offset, row in enumerate(batch):
-                        normalized = normalize_row(
-                            columns, tuple(row), row_index=first_row + offset
-                        )
-                        payload.append(
-                            normalized
-                            + (f"{source.server_name}/{source.database_name}",)
-                        )
-                    CHUNK_SIZE = 500
-                    if hasattr(target_cursor, "execute") and callable(target_cursor.execute):
-                        for c_idx in range(0, len(payload), CHUNK_SIZE):
-                            sub_batch = payload[c_idx:c_idx + CHUNK_SIZE]
-                            row_sql_items = []
-                            for row_tuple in sub_batch:
-                                col_lits = [
-                                    format_sql_literal(val, col)
-                                    for val, col in zip(row_tuple[:-1], columns)
-                                ]
-                                col_lits.append(format_sql_literal(row_tuple[-1]))
-                                row_sql_items.append(f"({', '.join(col_lits)}, current_timestamp())")
-                            multi_insert_sql = (
-                                f"INSERT INTO {write_target} ({target_columns}, `_migration_ingested_at`) "
-                                f"VALUES {','.join(row_sql_items)}"
-                            )
-                            target_cursor.execute(multi_insert_sql)
-                    else:
-                        for c_idx in range(0, len(payload), CHUNK_SIZE):
-                            target_cursor.executemany(insert_sql, payload[c_idx:c_idx + CHUNK_SIZE])
-                    rows_loaded += len(payload)
+        if bulk_candidate:
+            try:
+                environment_provisioning.ensure_staging_volume(db, project_id, target_catalog)
+                rows_loaded = _load_table_via_parquet_copy_into(
+                    db, project_id, source, table, columns, write_target,
+                    max_rows=max_rows, expected_rows=expected_rows,
+                )
+            except Exception:
+                logger.warning("Bulk staging failed; restarting with batch inserts")
+                # COPY may have committed before a connection failure. Reset only
+                # our private stage before fallback, never the live APPEND table.
+                environment_provisioning.project_execute(
+                    db, project_id, f"DROP TABLE IF EXISTS {stage}", safe_retry=True)
+                environment_provisioning.project_execute(
+                    db, project_id, f"CREATE TABLE {stage} ({_ddl(columns)}) USING DELTA", safe_retry=False)
+                rows_loaded = _load_via_direct_batch_insert(
+                    db, project_id, source, table, columns, write_target,
+                    batch_size=batch_size, max_rows=max_rows)
+        else:
+            rows_loaded = _load_via_direct_batch_insert(
+                db, project_id, source, table, columns, write_target,
+                batch_size=batch_size, max_rows=max_rows)
+        if rows_loaded != expected_rows:
+            raise RuntimeError(f"Source row-count validation failed: expected {expected_rows}, extracted {rows_loaded}")
+        if bulk_candidate and _target_count(db, project_id, stage) != rows_loaded:
+            raise RuntimeError("Staging row-count validation failed before publication")
         if load_mode == "FULL_LOAD":
             verb = "CREATE OR REPLACE" if existing_count is not None else "CREATE"
             environment_provisioning.project_execute(
@@ -430,8 +570,16 @@ def _load_table(
                 f"{verb} TABLE {target} USING DELTA AS SELECT * FROM {stage}",
                 safe_retry=False,
             )
+        elif bulk_candidate:
+            publication_columns = ",".join(
+                [_qident(column.column_name) for column in columns]
+                + ["`_migration_ingested_at`", "`_migration_source_system`"])
+            environment_provisioning.project_execute(
+                db, project_id,
+                f"INSERT INTO {target} ({publication_columns}) SELECT {publication_columns} FROM {stage}",
+                safe_retry=False)
     finally:
-        if load_mode == "FULL_LOAD":
+        if write_target == stage:
             try:
                 environment_provisioning.project_execute(
                     db, project_id, f"DROP TABLE IF EXISTS {stage}", safe_retry=True
@@ -513,71 +661,142 @@ def run(
         table_count=len(tables),
     )
     results = []
-    for table in tables:
-        result = None
-        failure = None
-        attempt_limit = 2 if mode == "FULL_LOAD" else 1
-        for attempt in range(1, attempt_limit + 1):
-            try:
-                result = _load_table(
-                    db,
-                    project_id,
-                    migration_run.id,
-                    plan,
-                    table,
-                    batch_size=batch_size,
-                    max_rows=max_rows,
-                    load_mode=mode,
-                    replace_existing_data=replace_existing_data,
-                )
-                break
-            except Exception as exc:
-                transient = any(marker in str(exc).lower() for marker in TRANSIENT)
-                if attempt < attempt_limit and transient:
-                    _record(
+    if len(tables) <= 1:
+        for table in tables:
+            result = None
+            failure = None
+            attempt_limit = 3 if mode == "FULL_LOAD" else 1
+            for attempt in range(1, attempt_limit + 1):
+                try:
+                    result = _load_table(
                         db,
                         project_id,
-                        status="RETRYING",
-                        run_id=migration_run.id,
-                        object_id=table.id,
-                        action="TABLE_INGESTION_RETRY",
-                        source=f"{table.schema_name}.{table.object_name}",
-                        attempt=attempt,
+                        migration_run.id,
+                        plan,
+                        table,
+                        batch_size=batch_size,
+                        max_rows=max_rows,
+                        load_mode=mode,
+                        replace_existing_data=replace_existing_data,
                     )
-                    time.sleep(2)
-                    continue
-                failure = exc
-                break
-        if result is not None:
-            results.append(result)
-            evidence = {key: value for key, value in result.items() if key not in {"object_id", "status"}}
-            _record(
-                db,
-                project_id,
-                status="PASSED",
-                run_id=migration_run.id,
-                object_id=table.id,
-                action="TABLE_INGESTED",
-                **evidence,
-            )
-        else:
-            failure = {
-                "object_id": table.id,
-                "source": f"{table.schema_name}.{table.object_name}",
-                "status": "FAILED",
-                "error": str(failure),
-            }
-            results.append(failure)
-            _record(
-                db,
-                project_id,
-                status="FAILED",
-                run_id=migration_run.id,
-                object_id=table.id,
-                action="TABLE_INGESTION_FAILED",
-                source=failure["source"],
-                error=failure["error"],
-            )
+                    break
+                except Exception as exc:
+                    transient = any(marker in str(exc).lower() for marker in TRANSIENT)
+                    if attempt < attempt_limit and transient:
+                        _record(
+                            db,
+                            project_id,
+                            status="RETRYING",
+                            run_id=migration_run.id,
+                            object_id=table.id,
+                            action="TABLE_INGESTION_RETRY",
+                            source=f"{table.schema_name}.{table.object_name}",
+                            attempt=attempt,
+                        )
+                        time.sleep(2 * attempt)
+                        continue
+                    failure = exc
+                    break
+            if result is not None:
+                results.append(result)
+                evidence = {key: value for key, value in result.items() if key not in {"object_id", "status"}}
+                _record(
+                    db,
+                    project_id,
+                    status="PASSED",
+                    run_id=migration_run.id,
+                    object_id=table.id,
+                    action="TABLE_INGESTED",
+                    **evidence,
+                )
+            else:
+                failure_dict = {
+                    "object_id": table.id,
+                    "source": f"{table.schema_name}.{table.object_name}",
+                    "status": "FAILED",
+                    "error": str(failure),
+                }
+                results.append(failure_dict)
+                _record(
+                    db,
+                    project_id,
+                    status="FAILED",
+                    run_id=migration_run.id,
+                    object_id=table.id,
+                    action="TABLE_INGESTION_FAILED",
+                    source=failure_dict["source"],
+                    error=failure_dict["error"],
+                )
+    else:
+        def _worker_ingest(table_id: str):
+            worker_db = SessionLocal()
+            try:
+                worker_table = worker_db.get(MigrationObject, table_id)
+                worker_plan, _ = _requirements(worker_db, project_id)
+                attempt_limit = 3 if mode == "FULL_LOAD" else 1
+                for attempt in range(1, attempt_limit + 1):
+                    try:
+                        res = _load_table(
+                            worker_db,
+                            project_id,
+                            migration_run.id,
+                            worker_plan,
+                            worker_table,
+                            batch_size=batch_size,
+                            max_rows=max_rows,
+                            load_mode=mode,
+                            replace_existing_data=replace_existing_data,
+                        )
+                        return (table_id, res, None)
+                    except Exception as exc:
+                        transient = any(marker in str(exc).lower() for marker in TRANSIENT)
+                        if attempt < attempt_limit and transient:
+                            time.sleep(2 * attempt)
+                            continue
+                        return (table_id, None, exc)
+                return (table_id, None, RuntimeError("Unknown ingestion failure"))
+            finally:
+                worker_db.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(tables), 4)) as executor:
+            future_to_id = {executor.submit(_worker_ingest, table.id): table.id for table in tables}
+            table_outcomes = {}
+            for future in concurrent.futures.as_completed(future_to_id):
+                t_id, res, err = future.result()
+                table_outcomes[t_id] = (res, err)
+
+        for table in tables:
+            result, failure = table_outcomes.get(table.id, (None, RuntimeError("Missing worker outcome")))
+            if result is not None:
+                results.append(result)
+                evidence = {key: value for key, value in result.items() if key not in {"object_id", "status"}}
+                _record(
+                    db,
+                    project_id,
+                    status="PASSED",
+                    run_id=migration_run.id,
+                    object_id=table.id,
+                    action="TABLE_INGESTED",
+                    **evidence,
+                )
+            else:
+                failure_dict = {
+                    "object_id": table.id,
+                    "source": f"{table.schema_name}.{table.object_name}",
+                    "status": "FAILED",
+                    "error": str(failure),
+                }
+                results.append(failure_dict)
+                _record(
+                    db,
+                    project_id,
+                    status="FAILED",
+                    run_id=migration_run.id,
+                    object_id=table.id,
+                    action="TABLE_INGESTION_FAILED",
+                    source=failure_dict["source"],
+                    error=failure_dict["error"],
+                )
     passed = sum(1 for item in results if item["status"] == "PASSED")
     failed = len(results) - passed
     status = "PASSED" if not failed else "PARTIAL" if passed else "FAILED"

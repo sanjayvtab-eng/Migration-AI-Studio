@@ -621,7 +621,7 @@ export default function App() {
         .catch(() => setAutoPromotionStatus(null));
 
       if (page === "Migration Workflow" && id) {
-        const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData, masterData]: any = await Promise.all([
+        const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData, masterData, latestSpec]: any = await Promise.all([
           api(`/projects/${id}/compatibility/summary`),
           api(`/projects/${id}/medallion/plan?environment=DEV`),
           api(`/projects/${id}/semantics`),
@@ -631,6 +631,7 @@ export default function App() {
           api(`/projects/${id}/module/decommission`),
           api(`/projects/${id}/prompt-migration/latest`).catch(() => ({ plan: null, execution: null })),
           api(`/projects/${id}/master-migration/latest`).catch(() => ({ plan: null, execution: null })),
+          api(`/projects/${id}/prompt-specifications/latest`).catch(() => null),
         ]);
         setCompat(compatibility);
         setMedallion(mp);
@@ -642,6 +643,15 @@ export default function App() {
         if (promptData?.execution) setPromptExecution(promptData.execution);
         setMasterPlan(masterData?.plan || null);
         setMasterExecution(masterData?.execution || null);
+        if (latestSpec?.id) {
+          setPromptSpec(latestSpec);
+          const [specPlan, specTrace] = await Promise.all([
+            api(`/projects/${id}/prompt-specifications/${latestSpec.id}/plan`).catch(() => null),
+            api(`/projects/${id}/prompt-specifications/${latestSpec.id}/trace`).catch(() => null),
+          ]);
+          if (specPlan) setPromptSpecPlan(specPlan);
+          if (specTrace) setPromptSpecTrace(specTrace);
+        }
       }
       if (page === "Users") setUsers(await api("/users"));
       if (page === "Administration") setDiag(await api("/system/diagnostics"));
@@ -679,6 +689,17 @@ export default function App() {
   }, []);
   useEffect(() => {
     refresh();
+  }, [ready, pid, page]);
+
+  // Live auto-polling on Migration Workflow, Deployment, Deployments, and Waves pages
+  useEffect(() => {
+    if (!ready || !pid) return;
+    if (["Migration Workflow", "Deployments", "Deployment", "Waves"].includes(page)) {
+      const pollTimer = setInterval(() => {
+        refresh();
+      }, 3000);
+      return () => clearInterval(pollTimer);
+    }
   }, [ready, pid, page]);
 
   useEffect(() => {
@@ -1133,6 +1154,12 @@ export default function App() {
     try {
       await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/generate`, { method: "POST" });
       await loadPromptSpecification(promptSpec.id);
+      const [ma, mp] = await Promise.all([
+        api(`/projects/${pid}/medallion/artifacts?environment=DEV`).catch(() => []),
+        api(`/projects/${pid}/medallion/plan?environment=DEV`).catch(() => null),
+      ]);
+      setMedArts(ma as any[]);
+      if (mp) setMedallion(mp);
       setMsg("Artifacts generated with deterministic checks. Run Databricks target validation before review.");
     } catch (e: any) {
       setMsg(e.message);
@@ -1146,6 +1173,14 @@ export default function App() {
     try {
       const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/validate`, { method: "POST" });
       await loadPromptSpecification(promptSpec.id);
+      const [ma, mp, validation] = await Promise.all([
+        api(`/projects/${pid}/medallion/artifacts?environment=DEV`).catch(() => []),
+        api(`/projects/${pid}/medallion/plan?environment=DEV`).catch(() => null),
+        api(`/projects/${pid}/medallion/validation-report?environment=DEV`).catch(() => null),
+      ]);
+      setMedArts(ma as any[]);
+      if (mp) setMedallion(mp);
+      if (validation) setMedValidation(validation);
       setMsg(result.status === "PENDING_ARTIFACT_REVIEW" ? "Target validation passed. Review each current artifact version." : "Target validation found blocking errors.");
     } catch (e: any) {
       setMsg(e.message);
@@ -1166,6 +1201,12 @@ export default function App() {
         }
       }
       await loadPromptSpecification(promptSpec.id);
+      const [ma, rv] = await Promise.all([
+        api(`/projects/${pid}/medallion/artifacts?environment=DEV`).catch(() => []),
+        api(`/projects/${pid}/reviews`).catch(() => []),
+      ]);
+      setMedArts(ma as any[]);
+      setReviews(rv as any[]);
       setMsg("All current validated artifact versions are approved for DEV deployment.");
     } catch (e: any) {
       setMsg(e.message);
@@ -8671,14 +8712,20 @@ export default function App() {
                               <td className="col-action">
                                 {isFailed ? (
                                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                                    <span className="deploy-error-pill" title={item.error || "Deployment failed"}>
+                                    <span
+                                      className="deploy-error-pill"
+                                      title={item.error || "Deployment failed (Click to view full error)"}
+                                      style={{ cursor: "pointer", maxWidth: 380, whiteSpace: "normal", wordBreak: "break-word" }}
+                                      onClick={() => alert(`Environment: ${item.env}\nTarget: ${item.target}\n\nError Details:\n${item.error || "Execution error"}`)}
+                                    >
                                       {item.error || "Execution error"}
                                     </span>
                                     <span
                                       className="deploy-inspect-link"
                                       onClick={() => {
                                         setDeployTerminalOpen(true);
-                                        setDeployTerminalFilter(item.target.replace(/[`'"]/g, ""));
+                                        const cleanFilter = (!item.target || item.target === "-") ? "" : item.target.replace(/[`'"]/g, "");
+                                        setDeployTerminalFilter(cleanFilter);
                                         setInspectedTarget(item.target);
                                         const term = document.getElementById("deploy-terminal-console");
                                         if (term) term.scrollIntoView({ behavior: "smooth" });

@@ -79,12 +79,13 @@ def test_dev_plan_requires_preflight_approval_and_is_idempotent(client,auth_head
     provisioned=client.post(f"/api/projects/{project_id}/environments/dev/provision",headers=auth_headers)
     assert provisioned.status_code==200
     assert provisioned.json()["status"]=="PROVISIONED"
-    assert provisioned.json()["executed"]==4
+    assert provisioned.json()["executed"]==5
     assert calls==[
         "CREATE CATALOG IF NOT EXISTS `client_a_migration_dev`",
         "CREATE SCHEMA IF NOT EXISTS `client_a_migration_dev`.`bronze`",
         "CREATE SCHEMA IF NOT EXISTS `client_a_migration_dev`.`silver`",
         "CREATE SCHEMA IF NOT EXISTS `client_a_migration_dev`.`gold`",
+        "CREATE VOLUME IF NOT EXISTS `client_a_migration_dev`.`bronze`.`_migration_staging`",
     ]
 
     calls.clear()

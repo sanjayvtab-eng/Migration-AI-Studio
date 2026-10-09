@@ -9,3 +9,4 @@ pytest==9.0.2
 pytest-cov==7.0.0
 pyodbc==5.2.0
 databricks-sql-connector==4.2.3
+pyarrow==25.0.1

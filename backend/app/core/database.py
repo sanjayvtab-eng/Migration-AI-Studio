@@ -6,7 +6,7 @@ from .config import get_settings
 class Base(DeclarativeBase): pass
 
 settings = get_settings()
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False, "timeout": 60} if settings.database_url.startswith("sqlite") else {}
 engine_options = {"future": True, "connect_args": connect_args}
 if settings.database_url in {"sqlite://", "sqlite:///:memory:"}:
     engine_options["poolclass"] = StaticPool

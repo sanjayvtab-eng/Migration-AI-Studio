@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 import re
 from datetime import datetime
 from contextlib import contextmanager
@@ -783,11 +784,50 @@ def _reconcile_medallion_run(
 ) -> dict[str, Any]:
     details: list[dict[str, Any]] = []
     passed = failed = 0
-    for evidence, deployed in sorted(
+    ordered_manifest = sorted(
         manifest,
         key=lambda item: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(str(item[1].get("layer")), 9),
                           str(item[1].get("target_fqn") or "").lower()),
-    ):
+    )
+    count_queries = {}
+    for index, (evidence, deployed) in enumerate(ordered_manifest):
+        node = db.get(MigrationMedallionNode, deployed.get("medallion_node_id"))
+        obj = db.get(MigrationObject, node.source_object_id) if node and node.source_object_id else None
+        node_type = str(node.node_type if node else "UNKNOWN").upper()
+        source_type = str(obj.object_type if obj else "").upper()
+        target = str(deployed.get("target_fqn") or (node.target_fqn if node else ""))
+        if node_type in {"SQL_FUNCTION", "FUNCTION_PLAN", "SQL_PROCEDURE", "ROUTINE_PLAN"} or source_type in {"FUNCTION", "PROCEDURE"}:
+            continue
+        if node_type == "WORKFLOW_SQL":
+            version = db.get(MigrationStageArtifactVersion, deployed.get("artifact_version_id"))
+            ident = r"(?:`(?:``|[^`])+`|[A-Za-z_]\w*)"
+            qualified = rf"{ident}\s*\.\s*{ident}\s*\.\s*{ident}"
+            content = version.content if version else ""
+            match = re.search(rf"(?is)\bMERGE\s+INTO\s+({qualified})", content) or re.search(
+                rf"(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({qualified})", content)
+            if not match:
+                continue
+            target = match.group(1).strip()
+        count_queries[index] = f"SELECT COUNT(*) FROM {target}"
+    count_results = {}
+    if count_queries:
+        with ThreadPoolExecutor(max_workers=min(len(count_queries), 6)) as executor:
+            pending = {index: executor.submit(_isolated_execute, db.get_bind(), project_id,
+                                              query, safe_retry=True)
+                       for index, query in count_queries.items()}
+            for index, future in pending.items():
+                try:
+                    count_results[index] = future.result()
+                except Exception as exc:
+                    count_results[index] = exc
+
+    def target_rows_for(index):
+        result = count_results[index]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    for index, (evidence, deployed) in enumerate(ordered_manifest):
         node = db.get(MigrationMedallionNode, deployed.get("medallion_node_id"))
         version = db.get(MigrationStageArtifactVersion, deployed.get("artifact_version_id"))
         obj = db.get(MigrationObject, node.source_object_id) if node and node.source_object_id else None
@@ -814,12 +854,12 @@ def _reconcile_medallion_run(
                                re.search(rf"(?is)\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({qualified})", content)
                 if target_match:
                     workflow_target = target_match.group(1).strip()
-                    target_rows = execute_sql(f"SELECT COUNT(*) FROM {workflow_target}", safe_retry=True)
+                    target_rows = target_rows_for(index)
                     target_count = int(target_rows[0][0]) if target_rows else 0
                 else:
                     target_count = None
             else:
-                target_rows = execute_sql(f"SELECT COUNT(*) FROM {target_fqn}", safe_retry=True)
+                target_rows = target_rows_for(index)
                 target_count = int(target_rows[0][0]) if target_rows else 0
                 if node and node.layer == "BRONZE" and obj and source_type == "TABLE":
                     check_type = "ROW_COUNT"
@@ -1134,6 +1174,38 @@ def _promoted_manifest_order(
 
 
 @with_project_databricks
+def _worker_execute(db, project_id, statement, *, safe_retry):
+    return execute_sql(statement, safe_retry=safe_retry)
+
+
+def _isolated_execute(bind, project_id, statement, *, safe_retry):
+    # ContextVars do not propagate to executor threads. Bind a new session to
+    # this project's workspace explicitly; never share the caller's session.
+    with Session(bind=bind) as worker_db:
+        return _worker_execute(worker_db, project_id, statement, safe_retry=safe_retry)
+
+
+def _parallel_bronze_clones(db, project_id, prepared):
+    bronze = [item for item in prepared if item[4].layer == "BRONZE"
+              and item[4].node_type == "DELTA_TABLE"]
+    results = {}
+    if not bronze:
+        return results
+    with ThreadPoolExecutor(max_workers=min(len(bronze), 4)) as executor:
+        pending = [(item[3], executor.submit(
+            _isolated_execute, db.get_bind(), project_id,
+            f"CREATE OR REPLACE TABLE {item[3]} DEEP CLONE {item[2]}", safe_retry=False))
+            for item in bronze]
+        for target, future in pending:
+            try:
+                future.result()
+                results[target] = None
+            except Exception as exc:
+                results[target] = exc
+    return results
+
+
+@with_project_databricks
 def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
     """Promote the immutable, gate-approved DEV Medallion manifest into TEST."""
     precheck = test_promotion_precheck(db, project_id, test_databricks=True)
@@ -1154,6 +1226,8 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
     try:
         dev_catalog, test_catalog, uat_catalog, prod_catalog = _project_catalogs(db, project_id)
         ensured_catalogs: set[str] = set()
+        ensured_schemas: set[tuple[str, str]] = set()
+        prepared = []
         for evidence, payload in _promoted_manifest_order(db, project_id, manifest[1]):
             source_fqn = str(payload.get("target_fqn") or "")
             target_fqn = _replace_catalog(source_fqn, dev_catalog, test_catalog)
@@ -1162,7 +1236,9 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
             if catalog not in ensured_catalogs:
                 execute_sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`", safe_retry=False)
                 ensured_catalogs.add(catalog)
-            execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
+            if (catalog, schema) not in ensured_schemas:
+                execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
+                ensured_schemas.add((catalog, schema))
             owner = _target_owner_collision(db, project_id, target_fqn)
             if owner:
                 raise RuntimeError(
@@ -1173,13 +1249,17 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
             version = db.get(MigrationStageArtifactVersion, payload.get("artifact_version_id"))
             if not node or not version:
                 raise RuntimeError(f"DEV manifest metadata missing for {source_fqn}")
+            prepared.append((evidence, payload, source_fqn, target_fqn, node, version))
+        clone_results = _parallel_bronze_clones(db, project_id, prepared)
+        # Bronze is independent. Artifacts retain their original DAG ordering.
+        ordered = [item for item in prepared if item[3] in clone_results]
+        ordered += [item for item in prepared if item[3] not in clone_results]
+        for evidence, payload, source_fqn, target_fqn, node, version in ordered:
+            failed_target = target_fqn
             if node.layer == "BRONZE" and node.node_type == "DELTA_TABLE":
-                try:
-                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} SHALLOW CLONE {source_fqn}", safe_retry=False)
-                    action = "SHALLOW_CLONE_DEV"
-                except Exception:
-                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
-                    action = "DEEP_CLONE_DEV"
+                if clone_results[target_fqn] is not None:
+                    raise clone_results[target_fqn]
+                action = "DEEP_CLONE_DEV"
             else:
                 _execute_promoted_sql(_replace_catalog(version.content, dev_catalog, test_catalog), safe_retry=False)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
@@ -1321,6 +1401,8 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
     try:
         dev_catalog, test_catalog, uat_catalog, prod_catalog = _project_catalogs(db, project_id)
         ensured_catalogs: set[str] = set()
+        ensured_schemas: set[tuple[str, str]] = set()
+        prepared = []
         for evidence, payload in _promoted_manifest_order(db, project_id, manifest[1]):
             source_fqn = str(payload.get("target_fqn") or "")
             target_fqn = _replace_catalog(source_fqn, test_catalog, uat_catalog)
@@ -1329,7 +1411,9 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
             if catalog not in ensured_catalogs:
                 execute_sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`", safe_retry=False)
                 ensured_catalogs.add(catalog)
-            execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
+            if (catalog, schema) not in ensured_schemas:
+                execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
+                ensured_schemas.add((catalog, schema))
             owner = _target_owner_collision(db, project_id, target_fqn)
             if owner:
                 raise RuntimeError(
@@ -1340,13 +1424,17 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
             version = db.get(MigrationStageArtifactVersion, payload.get("artifact_version_id"))
             if not node or not version:
                 raise RuntimeError(f"TEST manifest metadata missing for {source_fqn}")
+            prepared.append((evidence, payload, source_fqn, target_fqn, node, version))
+        clone_results = _parallel_bronze_clones(db, project_id, prepared)
+        # Bronze is independent. Artifacts retain their original DAG ordering.
+        ordered = [item for item in prepared if item[3] in clone_results]
+        ordered += [item for item in prepared if item[3] not in clone_results]
+        for evidence, payload, source_fqn, target_fqn, node, version in ordered:
+            failed_target = target_fqn
             if node.layer == "BRONZE" and node.node_type == "DELTA_TABLE":
-                try:
-                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} SHALLOW CLONE {source_fqn}", safe_retry=False)
-                    action = "SHALLOW_CLONE_TEST"
-                except Exception:
-                    execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
-                    action = "DEEP_CLONE_TEST"
+                if clone_results[target_fqn] is not None:
+                    raise clone_results[target_fqn]
+                action = "DEEP_CLONE_TEST"
             else:
                 promoted_sql = _replace_catalog(version.content, dev_catalog, uat_catalog)
                 promoted_sql = _replace_catalog(promoted_sql, test_catalog, uat_catalog)
@@ -1490,6 +1578,8 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
     try:
         dev_catalog, test_catalog, uat_catalog, prod_catalog = _project_catalogs(db, project_id)
         ensured_catalogs: set[str] = set()
+        ensured_schemas: set[tuple[str, str]] = set()
+        prepared = []
         for evidence, payload in _promoted_manifest_order(db, project_id, manifest[1]):
             source_fqn = str(payload.get("target_fqn") or "")
             target_fqn = _replace_catalog(source_fqn, uat_catalog, prod_catalog)
@@ -1498,7 +1588,9 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
             if catalog not in ensured_catalogs:
                 execute_sql(f"CREATE CATALOG IF NOT EXISTS `{catalog}`", safe_retry=False)
                 ensured_catalogs.add(catalog)
-            execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
+            if (catalog, schema) not in ensured_schemas:
+                execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`", safe_retry=False)
+                ensured_schemas.add((catalog, schema))
             owner = _target_owner_collision(db, project_id, target_fqn)
             if owner:
                 raise RuntimeError(
@@ -1509,8 +1601,16 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
             version = db.get(MigrationStageArtifactVersion, payload.get("artifact_version_id"))
             if not node or not version:
                 raise RuntimeError(f"UAT manifest metadata missing for {source_fqn}")
+            prepared.append((evidence, payload, source_fqn, target_fqn, node, version))
+        clone_results = _parallel_bronze_clones(db, project_id, prepared)
+        # Bronze is independent. Artifacts retain their original DAG ordering.
+        ordered = [item for item in prepared if item[3] in clone_results]
+        ordered += [item for item in prepared if item[3] not in clone_results]
+        for evidence, payload, source_fqn, target_fqn, node, version in ordered:
+            failed_target = target_fqn
             if node.layer == "BRONZE" and node.node_type == "DELTA_TABLE":
-                execute_sql(f"CREATE OR REPLACE TABLE {target_fqn} DEEP CLONE {source_fqn}", safe_retry=False)
+                if clone_results[target_fqn] is not None:
+                    raise clone_results[target_fqn]
                 action = "DEEP_CLONE_UAT"
             else:
                 promoted_sql = version.content

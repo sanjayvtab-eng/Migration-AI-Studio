@@ -274,6 +274,14 @@ def approve_dev_plan(db: Session, project_id: str, actor: str) -> MigrationEnvir
     return plan
 
 
+def ensure_staging_volume(db: Session, project_id: str, catalog: str) -> None:
+    """Optional bulk-ingestion capability, also usable for already provisioned DEV."""
+    catalog = _identifier(catalog, "catalog")
+    project_execute(db, project_id,
+                    f"CREATE VOLUME IF NOT EXISTS `{catalog}`.`bronze`.`_migration_staging`",
+                    safe_retry=True)
+
+
 def provision_dev(db: Session, project_id: str, actor: str) -> dict:
     if not feature_enabled():
         raise PermissionError("Databricks environment provisioning is disabled by feature flag")
@@ -288,7 +296,15 @@ def provision_dev(db: Session, project_id: str, actor: str) -> dict:
     statements += [f"CREATE SCHEMA IF NOT EXISTS `{plan.catalog_name}`.`{s}`" for s in json.loads(plan.schemas_json)]
     for statement in statements:
         _execute(cfg,statement,safe_retry=True)
+    # Volume privileges are optional: their absence must not block INSERT loads.
+    volume_created = False
+    try:
+        ensure_staging_volume(db, project_id, plan.catalog_name)
+        volume_created = True
+    except Exception:
+        pass
     plan.status="PROVISIONED"; plan.provisioned_at=datetime.utcnow()
-    _audit(db,project_id,"DEV_ENVIRONMENT_PROVISIONED",actor,{"environment":"DEV","status":"PROVISIONED","executed":len(statements)})
+    executed = len(statements) + int(volume_created)
+    _audit(db,project_id,"DEV_ENVIRONMENT_PROVISIONED",actor,{"environment":"DEV","status":"PROVISIONED","executed":executed})
     db.commit(); db.refresh(plan)
-    return {**plan_view(plan),"reused":False,"executed":len(statements)}
+    return {**plan_view(plan),"reused":False,"executed":executed}

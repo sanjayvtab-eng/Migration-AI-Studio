@@ -104,7 +104,8 @@ def test_medallion_reuses_bronze_and_reconciles_with_saved_project_connection(db
     statements = []
 
     def execute(session, project_id, statement, **kw):
-        assert session is db and project_id == project.id
+        # Concurrent COUNT workers use their own session, bound to this project's database.
+        assert session.get_bind() is db.get_bind() and project_id == project.id
         statements.append(statement)
         return SCHEMA if statement.startswith("DESCRIBE") else [(5,)] if statement.startswith("SELECT COUNT") else []
 

@@ -32,7 +32,25 @@ def workspace_host():
     row = _project_configuration()
     return row.workspace_host if row else get_settings().databricks_host
 
-TRANSIENT = ("warehouse is starting","connection reset","temporary service unavailable","gateway timeout","rate limit","deadlock")
+TRANSIENT = (
+    "warehouse is starting",
+    "connection reset",
+    "temporary service unavailable",
+    "gateway timeout",
+    "rate limit",
+    "deadlock",
+    "has no attribute 'request'",
+    "nonetype' object has no attribute",
+    "connection closed",
+    "connection refused",
+    "broken pipe",
+    "socket",
+    "session expired",
+    "stream closed",
+    "thrift_transport_error",
+    "handshake",
+    "source stream expired",
+)
 
 def execute_sql(statement: str, safe_retry: bool=True):
     if _project_configuration() is not None:
@@ -42,7 +60,7 @@ def execute_sql(statement: str, safe_retry: bool=True):
     s=get_settings()
     if not all([s.databricks_host,s.databricks_http_path,s.databricks_token]): raise RuntimeError("Databricks connection is not configured")
     from databricks import sql
-    delays=[2,4,8,16]
+    delays=[2,4,8,16,32]
     for attempt in range(len(delays)+1):
         try:
             with sql.connect(server_hostname=s.databricks_host,http_path=s.databricks_http_path,access_token=s.databricks_token) as conn:
@@ -66,7 +84,7 @@ def execute_sql_with_credentials(
 ):
     """Execute project-scoped SQL without changing the legacy global connector."""
     from databricks import sql
-    delays=[2,4,8,16]
+    delays=[2,4,8,16,32]
     for attempt in range(len(delays)+1):
         try:
             with sql.connect(server_hostname=server_hostname,http_path=http_path,access_token=access_token) as conn:
