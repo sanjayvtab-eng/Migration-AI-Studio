@@ -12,10 +12,12 @@ from app.api.connectors import router as connector_router
 from app.models.entities import User
 from app.models import canonical
 from app.services.engine import uid
+from app.core.schema_upgrade import ensure_source_columns
 from sqlalchemy import func, select
 
 s=get_settings()
 Base.metadata.create_all(engine)
+ensure_source_columns(engine)
 if s.bootstrap_admin_username and s.bootstrap_admin_password:
     if len(s.bootstrap_admin_password) < 12:
         raise RuntimeError("BOOTSTRAP_ADMIN_PASSWORD must contain at least 12 characters")
@@ -28,7 +30,16 @@ if s.bootstrap_admin_username and s.bootstrap_admin_password:
                 role="ADMIN",
             ))
             db.commit()
-app=FastAPI(title=s.app_name,version="2.4.1")
+from contextlib import asynccontextmanager
+from app.services.scheduler_service import start_scheduler, stop_scheduler
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+app=FastAPI(title=s.app_name,version="2.5.0",lifespan=lifespan)
 app.add_middleware(CORSMiddleware,allow_origins=s.origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 class SecurityHeaders(BaseHTTPMiddleware):

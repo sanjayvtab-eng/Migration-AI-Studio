@@ -38,6 +38,7 @@ from app.services.type_compatibility import (
 )
 from app.services.rules import map_sqlserver_type
 from app.services.databricks_client import TRANSIENT
+from app.services.source_adapters import adapter_for_source
 
 
 BULK_THRESHOLD = 5000
@@ -159,7 +160,7 @@ def _requirements(db: Session, project_id: str) -> tuple[MigrationEnvironmentPla
         ).all()
     )
     if not tables:
-        raise ValueError("Run SQL Server discovery before Bronze ingestion")
+        raise ValueError("Run source discovery before Bronze ingestion")
     return plan, tables
 
 
@@ -168,7 +169,7 @@ def _selected_tables(
 ) -> list[MigrationObject]:
     selected = [table for table in tables if not source_id or table.source_id == source_id]
     if source_id and not selected:
-        raise ValueError("The selected source has no discovered SQL Server tables")
+        raise ValueError("The selected source has no discovered tables")
     names: dict[str, list[str]] = {}
     for table in selected:
         names.setdefault(table.object_name.lower(), []).append(
@@ -178,7 +179,7 @@ def _selected_tables(
     if collisions:
         values = ", ".join(" / ".join(items) for items in collisions)
         raise ValueError(
-            "Bronze target-name collision across SQL Server schemas: " + values
+            "Bronze target-name collision across source schemas: " + values
         )
     return selected
 
@@ -235,17 +236,8 @@ def _source_rows(
         with TableStream(source.id, table, columns, max_rows) as stream:
             yield stream
         return
-    import pyodbc
-
-    projection = ",".join(source_select_expression(column) for column in columns)
-    table_name = (
-        f"[{table.schema_name.replace(']', ']]')}]."
-        f"[{table.object_name.replace(']', ']]')}]"
-    )
-    top = f"TOP ({int(max_rows)}) " if max_rows else ""
-    with pyodbc.connect(_source_connection_string(source), timeout=30) as connection:
-        cursor = connection.cursor()
-        cursor.execute(f"SELECT {top}{projection} FROM {table_name}")
+    adapter = adapter_for_source(source)
+    with adapter.open_table_cursor(table, columns, batch_size=get_settings().batch_size, max_rows=max_rows) as cursor:
         yield cursor
 
 
@@ -258,14 +250,7 @@ def _source_count(source: MigrationSource, table: MigrationObject) -> int:
                 {"schema": table.schema_name, "table": table.object_name},
             )["count"]
         )
-    import pyodbc
-
-    table_name = (
-        f"[{table.schema_name.replace(']', ']]')}]."
-        f"[{table.object_name.replace(']', ']]')}]"
-    )
-    with pyodbc.connect(_source_connection_string(source), timeout=30) as connection:
-        return int(connection.cursor().execute(f"SELECT COUNT_BIG(*) FROM {table_name}").fetchone()[0])
+    return adapter_for_source(source).count_rows(table)
 
 
 def preflight(

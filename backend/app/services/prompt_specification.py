@@ -196,6 +196,32 @@ def _tables(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def _resolve_clean_view_name(table_map: dict[str, Any], aliases: list[str], fallback: str) -> str:
+    for alias in aliases:
+        norm = alias.lower().replace("_", "")
+        for key, tbl in table_map.items():
+            if key.replace("_", "") == norm:
+                return f"vw_{_snake(tbl['name'])}_clean"
+    return fallback
+
+
+def _resolve_col_name(table_map: dict[str, Any], table_name: str, aliases: list[str], fallback: str) -> str:
+    tbl = None
+    t_norm = table_name.lower().replace("_", "")
+    for k, v in table_map.items():
+        if k.replace("_", "") == t_norm:
+            tbl = v
+            break
+    if not tbl:
+        return fallback
+    for alias in aliases:
+        norm = alias.lower().replace("_", "")
+        for col in tbl.get("columns", []):
+            if col["name"].lower().replace("_", "") == norm or col["target_name"].lower().replace("_", "") == norm:
+                return col["target_name"]
+    return fallback
+
+
 def _sentence(prompt: str, token: str) -> str:
     # First check for a specific clause containing the token (split by semicolon, newline, or sentence period)
     clauses = [c.strip() for c in re.split(r"[;\n]|\.\s+(?=[A-Z])", prompt) if c.strip()]
@@ -258,11 +284,24 @@ def _canonical_column(table: dict[str, Any], requested: str) -> tuple[str | None
     exact = [column for column in table["columns"] if column["name"] == requested or column["target_name"] == requested]
     if len(exact) == 1:
         return exact[0]["target_name"], "EXACT"
+    req_l = requested.lower()
+    case_exact = [column for column in table["columns"] if column["name"].lower() == req_l or column["target_name"].lower() == req_l]
+    if len(case_exact) == 1:
+        return case_exact[0]["target_name"], "EXACT"
     canonical = _snake(requested)
-    candidates = [column for column in table["columns"] if _snake(column["name"]) == canonical]
+    candidates = [column for column in table["columns"] if _snake(column["name"]) == canonical or column["target_name"] == canonical]
     if len(candidates) == 1:
         return candidates[0]["target_name"], "CANONICAL"
-    return None, "AMBIGUOUS" if len(candidates) > 1 else "UNKNOWN"
+    norm_req = req_l.replace("_", "")
+    norm_candidates = [
+        column for column in table["columns"]
+        if column["name"].lower().replace("_", "") == norm_req or column["target_name"].lower().replace("_", "") == norm_req
+    ]
+    if len(norm_candidates) == 1:
+        return norm_candidates[0]["target_name"], "CANONICAL"
+    if len(candidates) > 1 or len(norm_candidates) > 1 or len(case_exact) > 1:
+        return None, "AMBIGUOUS"
+    return None, "UNKNOWN"
 
 
 def _build_er_graph(table_map: dict[str, dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -839,11 +878,15 @@ def _build_requests(
             is_table_query = is_order_amount or (len(params) == 1 and (first_pname.endswith("_id") or first_pname == "p_id" or first_pname == "id"))
 
             if is_table_query:
-                if is_order_amount and any(k in table_map for k in ("orderitems", "order_items")):
-                    source_table_ref = next(tbl["name"] for k, tbl in table_map.items() if k in ("orderitems", "order_items"))
+                if is_order_amount and any(k.replace("_", "") in ("orderitems", "order_items") for k in table_map):
+                    source_table_ref = next(tbl["name"] for k, tbl in table_map.items() if k.replace("_", "") in ("orderitems", "order_items"))
                     refs = [source_table_ref] if source_table_ref.lower() in table_map else refs
-                    calc = "SUM(quantity * unit_price * (1 - discount_percent / 100))"
-                    filt = f"order_id = {params[0]['name']}"
+                    oi_qty = _resolve_col_name(table_map, source_table_ref, ["quantity"], "quantity")
+                    oi_price = _resolve_col_name(table_map, source_table_ref, ["unit_price", "unitprice"], "unit_price")
+                    oi_disc = _resolve_col_name(table_map, source_table_ref, ["discount_percent", "discountpercent"], "discount_percent")
+                    oi_oid = _resolve_col_name(table_map, source_table_ref, ["order_id", "orderid"], "order_id")
+                    calc = f"SUM({oi_qty} * {oi_price} * (1 - {oi_disc} / 100))"
+                    filt = f"{oi_oid} = {params[0]['name']}"
                 else:
                     primary_ref = next(
                         (r for r in refs if any(any(w in c["target_name"] for w in ("score", "gpa", "point", "amount", "total", "rate", "cost", "price", "fee", "quantity")) for c in table_map.get(r.lower(), {}).get("columns", []))),
@@ -1809,32 +1852,53 @@ def _generate_procedure_or_workflow_sql(
 
     # Build select query from sources
     source_refs = request["source_refs"]
+    cust_view = _resolve_clean_view_name(table_map, ["customers", "customer"], "vw_customers_clean")
+    ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+    oi_view = _resolve_clean_view_name(table_map, ["order_items", "orderitems"], "vw_order_items_clean")
+
     if "customersales" in stem or "customer_sales" in stem or "order_count" in statement:
         completed = str(answers.get("completed_order_value", "COMPLETED"))
+        c_cid = _resolve_col_name(table_map, "customers", ["customer_id", "customerid"], "customer_id")
+        c_name = _resolve_col_name(table_map, "customers", ["customer_name", "customername"], "customer_name")
+        c_country = _resolve_col_name(table_map, "customers", ["country"], "country")
+        o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+        o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+        o_status = _resolve_col_name(table_map, "orders", ["order_status", "orderstatus"], "order_status")
+        oi_oid = _resolve_col_name(table_map, "orderitems", ["order_id", "orderid"], "order_id")
+        oi_qty = _resolve_col_name(table_map, "orderitems", ["quantity"], "quantity")
+        oi_price = _resolve_col_name(table_map, "orderitems", ["unit_price", "unitprice"], "unit_price")
+        oi_disc = _resolve_col_name(table_map, "orderitems", ["discount_percent", "discountpercent"], "discount_percent")
         select_sql = f"""SELECT
-  c.customer_id,
-  c.customer_name,
-  c.country,
-  COUNT(DISTINCT o.order_id) AS order_count,
-  CAST(SUM(oi.quantity * oi.unit_price * (1 - oi.discount_percent / 100)) AS DECIMAL(18,2)) AS total_sales,
+  c.{c_cid} AS customer_id,
+  c.{c_name} AS customer_name,
+  c.{c_country} AS country,
+  COUNT(DISTINCT o.{o_oid}) AS order_count,
+  CAST(SUM(oi.{oi_qty} * oi.{oi_price} * (1 - oi.{oi_disc} / 100)) AS DECIMAL(18,2)) AS total_sales,
   current_timestamp() AS load_date
-FROM {_fqn(catalog, 'silver', 'vw_customers_clean')} c
-JOIN {_fqn(catalog, 'silver', 'vw_orders_clean')} o ON o.customer_id = c.customer_id
-JOIN {_fqn(catalog, 'silver', 'vw_order_items_clean')} oi ON oi.order_id = o.order_id
-WHERE o.order_status = '{completed.replace("'", "''")}'
-GROUP BY c.customer_id, c.customer_name, c.country"""
+FROM {_fqn(catalog, 'silver', cust_view)} c
+JOIN {_fqn(catalog, 'silver', ord_view)} o ON o.{o_cid} = c.{c_cid}
+JOIN {_fqn(catalog, 'silver', oi_view)} oi ON oi.{oi_oid} = o.{o_oid}
+WHERE o.{o_status} = '{completed.replace("'", "''")}'
+GROUP BY c.{c_cid}, c.{c_name}, c.{c_country}"""
         keys = ["customer_id"]
         columns = ["customer_id", "customer_name", "country", "order_count", "total_sales", "load_date"]
     elif "ordersummary" in stem or "order_summary" in stem:
+        o_id = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+        o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+        o_date = _resolve_col_name(table_map, "orders", ["order_date", "orderdate"], "order_date")
+        oi_oid = _resolve_col_name(table_map, "orderitems", ["order_id", "orderid"], "order_id")
+        oi_qty = _resolve_col_name(table_map, "orderitems", ["quantity"], "quantity")
+        oi_price = _resolve_col_name(table_map, "orderitems", ["unit_price", "unitprice"], "unit_price")
+        oi_disc = _resolve_col_name(table_map, "orderitems", ["discount_percent", "discountpercent"], "discount_percent")
         select_sql = f"""SELECT
-  o.order_id,
-  o.customer_id,
-  CAST(o.order_date AS DATE) AS order_date,
-  CAST(SUM(oi.quantity * oi.unit_price * (1 - oi.discount_percent / 100)) AS DECIMAL(18,2)) AS order_amount,
+  o.{o_id} AS order_id,
+  o.{o_cid} AS customer_id,
+  CAST(o.{o_date} AS DATE) AS order_date,
+  CAST(SUM(oi.{oi_qty} * oi.{oi_price} * (1 - oi.{oi_disc} / 100)) AS DECIMAL(18,2)) AS order_amount,
   current_timestamp() AS load_date
-FROM {_fqn(catalog, 'silver', 'vw_orders_clean')} o
-JOIN {_fqn(catalog, 'silver', 'vw_order_items_clean')} oi ON oi.order_id = o.order_id
-GROUP BY o.order_id, o.customer_id, CAST(o.order_date AS DATE)"""
+FROM {_fqn(catalog, 'silver', ord_view)} o
+JOIN {_fqn(catalog, 'silver', oi_view)} oi ON oi.{oi_oid} = o.{o_id}
+GROUP BY o.{o_id}, o.{o_cid}, CAST(o.{o_date} AS DATE)"""
         keys = ["order_id"]
         columns = ["order_id", "customer_id", "order_date", "order_amount", "load_date"]
     else:
@@ -2036,20 +2100,32 @@ def _generate_generic_fact_sql(
             raise ValueError(f"Fact artifact {request['name']} has no grounded source tables")
 
     # If MigrationDemo domain, generate exact fact view
-    if set(s.lower() for s in source_refs) >= {"orders", "orderitems"}:
+    norm_refs = {s.lower().replace("_", "") for s in source_refs}
+    if norm_refs >= {"orders", "orderitems"}:
+        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        oi_view = _resolve_clean_view_name(table_map, ["order_items", "orderitems"], "vw_order_items_clean")
+        o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+        o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+        o_date = _resolve_col_name(table_map, "orders", ["order_date", "orderdate"], "order_date")
+        oi_oid = _resolve_col_name(table_map, "orderitems", ["order_id", "orderid"], "order_id")
+        oi_itemid = _resolve_col_name(table_map, "orderitems", ["order_item_id", "orderitemid"], "order_item_id")
+        oi_pid = _resolve_col_name(table_map, "orderitems", ["product_id", "productid"], "product_id")
+        oi_qty = _resolve_col_name(table_map, "orderitems", ["quantity"], "quantity")
+        oi_price = _resolve_col_name(table_map, "orderitems", ["unit_price", "unitprice"], "unit_price")
+        oi_disc = _resolve_col_name(table_map, "orderitems", ["discount_percent", "discountpercent"], "discount_percent")
         sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
-  oi.order_item_id,
-  o.order_id,
-  o.customer_id,
-  oi.product_id,
-  CAST(o.order_date AS DATE) AS order_date,
-  oi.quantity,
-  oi.unit_price,
-  oi.discount_percent,
-  CAST(oi.quantity * oi.unit_price * (1 - oi.discount_percent / 100) AS DECIMAL(18,2)) AS sales_amount
-FROM {_fqn(catalog, 'silver', 'vw_orders_clean')} o
-JOIN {_fqn(catalog, 'silver', 'vw_order_items_clean')} oi ON oi.order_id = o.order_id;"""
+  oi.{oi_itemid} AS order_item_id,
+  o.{o_oid} AS order_id,
+  o.{o_cid} AS customer_id,
+  oi.{oi_pid} AS product_id,
+  CAST(o.{o_date} AS DATE) AS order_date,
+  oi.{oi_qty} AS quantity,
+  oi.{oi_price} AS unit_price,
+  oi.{oi_disc} AS discount_percent,
+  CAST(oi.{oi_qty} * oi.{oi_price} * (1 - oi.{oi_disc} / 100) AS DECIMAL(18,2)) AS sales_amount
+FROM {_fqn(catalog, 'silver', ord_view)} o
+JOIN {_fqn(catalog, 'silver', oi_view)} oi ON oi.{oi_oid} = o.{o_oid};"""
         return sql, "SEMANTIC_MODEL"
 
     # Dynamic multi-table fact generator

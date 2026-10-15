@@ -72,7 +72,18 @@ type Source = {
   profile_name: string;
   server_name: string;
   database_name: string;
+  engine: "SQLSERVER" | "POSTGRESQL" | "MYSQL" | "ORACLE";
+  port?: number;
+  schema_name?: string;
+  username?: string;
 };
+
+const SOURCE_ENGINES = {
+  SQLSERVER: { label: "SQL Server", port: 1433, schema: "", color: "#2563eb" },
+  POSTGRESQL: { label: "PostgreSQL", port: 5432, schema: "public", color: "#336791" },
+  MYSQL: { label: "MySQL", port: 3306, schema: "", color: "#00758f" },
+  ORACLE: { label: "Oracle", port: 1521, schema: "", color: "#c74634" },
+} as const;
 type Inv = {
   id: string;
   database: string;
@@ -236,11 +247,21 @@ const moduleMap: any = {
 const BUILD_VERSION = "2.4.1 BRONZE_TARGET_CONSISTENCY";
 
 function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
-  const [u, setU] = useState("admin"),
-    [p, setP] = useState(""),
-    [err, setErr] = useState("");
-  async function go() {
+  const [mode, setMode] = useState<"login" | "register_email" | "verify_otp" | "set_password">("login");
+  const [u, setU] = useState("admin");
+  const [p, setP] = useState("");
+  const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [info, setInfo] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin() {
     setErr("");
+    setInfo("");
+    setLoading(true);
     try {
       const r: any = await api("/login", {
         method: "POST",
@@ -250,31 +271,236 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
       done();
     } catch (e: any) {
       setErr(e.message);
+    } finally {
+      setLoading(false);
     }
   }
+
+  async function handleRequestOtp() {
+    setErr("");
+    setInfo("");
+    if (!email || !email.includes("@")) {
+      setErr("Please enter a valid email address.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const r: any = await api("/register/request-otp", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      setInfo(r.message || "A 6-digit verification code has been sent to your email.");
+      setMode("verify_otp");
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerifyOtp() {
+    setErr("");
+    setInfo("");
+    if (!otp || otp.trim().length !== 6) {
+      setErr("Please enter the 6-digit OTP code.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const r: any = await api("/register/verify-otp", {
+        method: "POST",
+        body: JSON.stringify({ email, otp: otp.trim() }),
+      });
+      setInfo(r.message || "Email verified! Please set your new password.");
+      setMode("set_password");
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSetPassword() {
+    setErr("");
+    setInfo("");
+    if (newPassword.length < 6) {
+      setErr("Password must be at least 6 characters long.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setErr("Passwords do not match.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const r: any = await api("/register/set-password", {
+        method: "POST",
+        body: JSON.stringify({ email, password: newPassword }),
+      });
+      localStorage.setItem("mf_token", r.access_token);
+      done();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="login">
       <div className="login-card">
         <div className="brandmark">MF</div>
         <h1>Migration Factory</h1>
         <p>Enterprise SQL Server → Databricks Control Plane</p>
-        <input
-          value={u}
-          onChange={(e) => setU(e.target.value)}
-          placeholder="Username"
-        />
-        <input
-          value={p}
-          type="password"
-          onChange={(e) => setP(e.target.value)}
-          placeholder="Password"
-          onKeyDown={(e) => e.key === "Enter" && go()}
-        />
-        <button onClick={go}>Sign in</button>
+
+        {mode === "login" && (
+          <>
+            <input
+              value={u}
+              onChange={(e) => setU(e.target.value)}
+              placeholder="Username or Email"
+              disabled={loading}
+            />
+            <input
+              value={p}
+              type="password"
+              onChange={(e) => setP(e.target.value)}
+              placeholder="Password"
+              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+              disabled={loading}
+            />
+            <button onClick={handleLogin} disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
+            </button>
+            <div style={{ marginTop: 16, textAlign: "center" }}>
+              <span style={{ fontSize: 13, color: "#94a3b8" }}>New user? </span>
+              <a
+                href="#register"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setErr("");
+                  setInfo("");
+                  setMode("register_email");
+                }}
+                style={{ fontSize: 13, color: "#38bdf8", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}
+              >
+                Register New User
+              </a>
+            </div>
+          </>
+        )}
+
+        {mode === "register_email" && (
+          <>
+            <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+              Enter your email to receive a 6-digit registration code via Brevo.
+            </div>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Enter your email address"
+              onKeyDown={(e) => e.key === "Enter" && handleRequestOtp()}
+              disabled={loading}
+              autoFocus
+            />
+            <button onClick={handleRequestOtp} disabled={loading}>
+              {loading ? "Sending code..." : "Send Verification Code"}
+            </button>
+            <div style={{ marginTop: 14, textAlign: "center" }}>
+              <a
+                href="#login"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setErr("");
+                  setInfo("");
+                  setMode("login");
+                }}
+                style={{ fontSize: 13, color: "#38bdf8", fontWeight: 500, textDecoration: "none", cursor: "pointer" }}
+              >
+                ← Back to Sign in
+              </a>
+            </div>
+          </>
+        )}
+
+        {mode === "verify_otp" && (
+          <>
+            <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+              A 6-digit code was sent to <strong style={{ color: "#38bdf8" }}>{email}</strong>
+            </div>
+            <input
+              type="text"
+              maxLength={6}
+              value={otp}
+              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+              placeholder="Enter 6-digit OTP code"
+              style={{ textAlign: "center", fontSize: 20, letterSpacing: 6, fontWeight: 700 }}
+              onKeyDown={(e) => e.key === "Enter" && handleVerifyOtp()}
+              disabled={loading}
+              autoFocus
+            />
+            <button onClick={handleVerifyOtp} disabled={loading}>
+              {loading ? "Verifying..." : "Verify & Continue"}
+            </button>
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+              <a
+                href="#resend"
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleRequestOtp();
+                }}
+                style={{ color: "#38bdf8", textDecoration: "none", cursor: "pointer" }}
+              >
+                Resend Code
+              </a>
+              <a
+                href="#change_email"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setErr("");
+                  setInfo("");
+                  setMode("register_email");
+                }}
+                style={{ color: "#94a3b8", textDecoration: "none", cursor: "pointer" }}
+              >
+                Change Email
+              </a>
+            </div>
+          </>
+        )}
+
+        {mode === "set_password" && (
+          <>
+            <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+              Create a secure password for <strong style={{ color: "#38bdf8" }}>{email}</strong>
+            </div>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Create Password (min. 6 characters)"
+              disabled={loading}
+              autoFocus
+            />
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm Password"
+              onKeyDown={(e) => e.key === "Enter" && handleSetPassword()}
+              disabled={loading}
+            />
+            <button onClick={handleSetPassword} disabled={loading}>
+              {loading ? "Saving Password..." : "Set Password & Sign In"}
+            </button>
+          </>
+        )}
+
+        {info && <div style={{ background: "rgba(16, 185, 129, 0.15)", border: "1px solid #10b981", color: "#34d399", padding: "8px 12px", borderRadius: 6, fontSize: 12, marginTop: 12 }}>{info}</div>}
         {err && <div className="error">{err}</div>}
         <small>
-          Use the administrator created by scripts/bootstrap_admin.py. · Build{" "}
-          {BUILD_VERSION}
+          {mode === "login" ? "Use the administrator created by scripts/bootstrap_admin.py or register a new user." : "Brevo Transactional Email Verification"} · Build {BUILD_VERSION}
         </small>
       </div>
     </div>
@@ -313,8 +539,43 @@ function Empty({ text }: { text: string }) {
   );
 }
 
+function getUserFromToken(): { username: string; role: string; initials: string } {
+  try {
+    const token = localStorage.getItem("mf_token");
+    if (!token) return { username: "Admin", role: "Enterprise Admin", initials: "AD" };
+    const base64Url = token.split(".")[1];
+    if (!base64Url) return { username: "Admin", role: "Enterprise Admin", initials: "AD" };
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    const parsed = JSON.parse(jsonPayload);
+    const sub: string = parsed.sub || parsed.username || "Admin";
+    const role: string = parsed.role === "ADMIN" ? "Enterprise Admin" : (parsed.role || "Enterprise Admin");
+    const namePart = sub.includes("@") ? sub.split("@")[0] : sub;
+    let initials = "AD";
+    const parts = namePart.split(/[._-]/);
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      initials = (parts[0][0] + parts[1][0]).toUpperCase();
+    } else if (namePart.toLowerCase().startsWith("sanjaykumar")) {
+      initials = "SK";
+    } else if (namePart.length >= 2) {
+      initials = namePart.slice(0, 2).toUpperCase();
+    } else if (namePart.length === 1) {
+      initials = namePart.toUpperCase();
+    }
+    return { username: sub, role, initials };
+  } catch {
+    return { username: "Admin", role: "Enterprise Admin", initials: "AD" };
+  }
+}
+
 export default function App() {
   const [ready, setReady] = useState(!!localStorage.getItem("mf_token"));
+  const currentUserInfo = useMemo(() => getUserFromToken(), [ready]);
   const [showLogin, setShowLogin] = useState(false);
   const [page, setPage] = useState("Projects");
   const [deploymentTab, setDeploymentTab] = useState<"dev" | "waves">("dev");
@@ -330,9 +591,22 @@ export default function App() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [newSourceModalOpen, setNewSourceModalOpen] = useState(false);
   const [newSourceForm, setNewSourceForm] = useState({
+    engine: "SQLSERVER" as keyof typeof SOURCE_ENGINES,
     profile_name: "SQLServer1",
     server_name: "localhost",
     database_name: "",
+    port: 1433,
+    schema_name: "",
+    username: "",
+    password: "",
+    ssl_mode: "prefer",
+    charset: "utf8mb4",
+    service_name: "",
+    oracle_connection_type: "SERVICE",
+    oracle_mode: "NORMAL",
+    sid: "",
+    driver: "ODBC Driver 18 for SQL Server",
+    auth_mode: "WINDOWS",
   });
   const [testedSource, setTestedSource] = useState<Source | null>(null);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -413,6 +687,13 @@ export default function App() {
   const [medDeployment, setMedDeployment] = useState<any>(null),
     [medLogs, setMedLogs] = useState<any[]>([]),
     [medLogFilter, setMedLogFilter] = useState("ALL");
+  const [scheduleConfig, setScheduleConfig] = useState<any>(null);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleFreq, setScheduleFreq] = useState("DAILY");
+  const [scheduleTime, setScheduleTime] = useState("02:00");
+  const [scheduleEmail, setScheduleEmail] = useState("");
+  const [scheduleSyncing, setScheduleSyncing] = useState(false);
   const [medValidation, setMedValidation] = useState<any>(null),
     [artifactInspector, setArtifactInspector] = useState<any>(null);
   const [aiCandidate, setAiCandidate] = useState<any>(null),
@@ -594,6 +875,17 @@ export default function App() {
         }
         api(`/projects/${id}/deployments/dev/logs?limit=1000`)
           .then((l: any) => setLogView(l.logs || []))
+          .catch(() => {});
+        api(`/projects/${id}/schedule`)
+          .then((data: any) => {
+            setScheduleConfig(data);
+            if (data?.schedule) {
+              setScheduleEnabled(data.schedule.is_enabled || false);
+              setScheduleFreq(data.schedule.frequency || "DAILY");
+              setScheduleTime(data.schedule.scheduled_time || "02:00");
+              setScheduleEmail(data.schedule.notification_email || "");
+            }
+          })
           .catch(() => {});
       }
       if ((page === "Waves" || page === "Deployment" || page === "Deployments") && id) {
@@ -882,13 +1174,38 @@ export default function App() {
           profile_name: profile_name.trim(),
           server_name: server_name.trim(),
           database_name: database_name.trim(),
+          engine: newSourceForm.engine,
+          port: Number(newSourceForm.port),
+          schema_name: newSourceForm.schema_name.trim() || undefined,
+          username: newSourceForm.username.trim() || undefined,
+          password: newSourceForm.password || undefined,
+          ssl_mode: newSourceForm.engine === "POSTGRESQL" ? newSourceForm.ssl_mode : undefined,
+          charset: newSourceForm.engine === "MYSQL" ? newSourceForm.charset : undefined,
+          service_name: newSourceForm.engine === "ORACLE" ? newSourceForm.service_name.trim() || database_name.trim() : undefined,
+          sid: newSourceForm.engine === "ORACLE" && newSourceForm.oracle_connection_type === "SID" ? newSourceForm.sid.trim() : undefined,
+          connection_mode: newSourceForm.engine === "ORACLE" ? newSourceForm.oracle_mode : undefined,
+          auth_mode: newSourceForm.engine === "SQLSERVER" ? newSourceForm.auth_mode : undefined,
+          driver: newSourceForm.engine === "SQLSERVER" ? newSourceForm.driver : undefined,
         }),
       })
     );
     setNewSourceForm({
+      engine: "SQLSERVER",
       profile_name: "SQLServer1",
       server_name: "localhost",
       database_name: "",
+      port: 1433,
+      schema_name: "",
+      username: "",
+      password: "",
+      ssl_mode: "prefer",
+      charset: "utf8mb4",
+      service_name: "",
+      oracle_connection_type: "SERVICE",
+      oracle_mode: "NORMAL",
+      sid: "",
+      driver: "ODBC Driver 18 for SQL Server",
+      auth_mode: "WINDOWS",
     });
     setNewSourceModalOpen(false);
   }
@@ -1372,6 +1689,47 @@ export default function App() {
       setBusy(false);
     }
   }
+
+  async function saveScheduleConfig() {
+    if (!pid) return;
+    setScheduleLoading(true);
+    try {
+      await api(`/projects/${pid}/schedule`, {
+        method: "PUT",
+        body: JSON.stringify({
+          frequency: scheduleFreq,
+          scheduled_time: scheduleTime,
+          is_enabled: scheduleEnabled,
+          notification_email: scheduleEmail || null,
+        }),
+      });
+      setMsg("Migration schedule updated successfully");
+      const updated: any = await api(`/projects/${pid}/schedule`);
+      setScheduleConfig(updated);
+    } catch (err: any) {
+      setMsg(err.message || "Failed to update schedule");
+    } finally {
+      setScheduleLoading(false);
+    }
+  }
+
+  async function triggerScheduleNow() {
+    if (!pid) return;
+    setScheduleSyncing(true);
+    setMsg("Running incremental data refresh...");
+    try {
+      const res: any = await api(`/projects/${pid}/schedule/trigger-now`, {
+        method: "POST",
+      });
+      setMsg(`Incremental sync complete: ${res.total_delta_rows || 0} delta rows processed`);
+      const updated: any = await api(`/projects/${pid}/schedule`);
+      setScheduleConfig(updated);
+    } catch (err: any) {
+      setMsg(err.message || "Incremental sync failed");
+    } finally {
+      setScheduleSyncing(false);
+    }
+  }
   async function analyzeWithAi(a: Artifact) {
     if (!pid) return;
     setAiObject(a);
@@ -1844,8 +2202,6 @@ export default function App() {
       return r;
     });
   }
-  if (!ready && !showLogin) return <LandingPage onLaunch={() => setShowLogin(true)} />;
-  if (!ready && showLogin) return <Login onBack={() => setShowLogin(false)} done={() => setReady(true)} />;
   const current = projects.find((x) => x.id === pid);
   const layers = dash.layers || {},
     types = dash.types || {};
@@ -2432,6 +2788,9 @@ export default function App() {
     return name;
   };
 
+  if (!ready && !showLogin) return <LandingPage onLaunch={() => setShowLogin(true)} />;
+  if (!ready && showLogin) return <Login onBack={() => setShowLogin(false)} done={() => setReady(true)} />;
+
   return (
     <div className="shell full-width">
       <main className="main-full">
@@ -2538,19 +2897,19 @@ export default function App() {
                 type="button"
                 className="top-user-avatar-btn"
                 onClick={() => setProfileMenuOpen(!profileMenuOpen)}
-                title="Admin Profile & Settings"
+                title={`${currentUserInfo.username} (${currentUserInfo.role})`}
               >
-                AD
+                {currentUserInfo.initials}
               </button>
 
               {profileMenuOpen && (
                 <div className="profile-dropdown-menu">
                   {/* Section 1: User Profile Details */}
                   <div className="profile-dropdown-header">
-                    <div className="profile-dropdown-avatar">AD</div>
+                    <div className="profile-dropdown-avatar">{currentUserInfo.initials}</div>
                     <div className="profile-dropdown-user-info">
-                      <b className="profile-name">Admin</b>
-                      <span className="profile-role">Enterprise Admin</span>
+                      <b className="profile-name" title={currentUserInfo.username}>{currentUserInfo.username}</b>
+                      <span className="profile-role">{currentUserInfo.role}</span>
                       <span className="profile-scope" title={current?.name || "Release 7 Prompt Native"}>
                         Project: {current?.name || "Release 7 Prompt Native"}
                       </span>
@@ -3977,9 +4336,9 @@ export default function App() {
                                   <Database size={18} />
                                 </div>
                                 <div className="source-identity-text">
-                                  <span className="source-server-title">{s.server_name}</span>
+                                  <span className="source-server-title">{s.server_name}:{s.port || SOURCE_ENGINES[s.engine || "SQLSERVER"].port}</span>
                                   <span className="source-db-sub">
-                                    Database: <b>{s.database_name}</b> · ID: {s.id.slice(0, 8)}...
+                                    {SOURCE_ENGINES[s.engine || "SQLSERVER"].label} · Database: <b>{s.database_name}</b> · ID: {s.id.slice(0, 8)}...
                                   </span>
                                 </div>
                               </div>
@@ -4024,7 +4383,7 @@ export default function App() {
                       <Database size={24} />
                     </div>
                     <h4>No data sources connected</h4>
-                    <p>Add a SQL Server source connection profile to begin discovery and schema analysis.</p>
+                    <p>Add a SQL Server, PostgreSQL, MySQL, or Oracle source to begin discovery.</p>
                     <button
                       className="btn-primary-blue"
                       disabled={!pid}
@@ -4286,8 +4645,8 @@ export default function App() {
                   >
                     <div className="project-modal-header">
                       <div>
-                        <h3>Add SQL Server Source</h3>
-                        <p>Configure a source SQL Server database profile for discovery and migration.</p>
+                        <h3>Add Database Source</h3>
+                        <p>Select an engine and configure its connection profile. Stages 2–8 remain unchanged.</p>
                       </div>
                       <button
                         className="project-modal-close"
@@ -4300,6 +4659,28 @@ export default function App() {
                     <form onSubmit={handleCreateSource}>
                       <div className="project-modal-body">
                         <div className="project-form-group">
+                          <label>Database Engine *</label>
+                          <div className="source-engine-grid">
+                            {(Object.keys(SOURCE_ENGINES) as Array<keyof typeof SOURCE_ENGINES>).map((engine) => {
+                              const item = SOURCE_ENGINES[engine];
+                              return (
+                                <button key={engine} type="button"
+                                  className={`source-engine-tile ${newSourceForm.engine === engine ? "active" : ""}`}
+                                  style={{ "--engine-color": item.color } as React.CSSProperties}
+                                  onClick={() => setNewSourceForm({
+                                    ...newSourceForm, engine, port: item.port, schema_name: item.schema,
+                                    profile_name: engine === "SQLSERVER" ? "SQLServer1" : `${item.label}1`,
+                                    auth_mode: engine === "SQLSERVER" ? "WINDOWS" : "PASSWORD",
+                                  })}>
+                                  <Database size={18} />
+                                  <b>{item.label}</b>
+                                  <span>Port {item.port}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="project-form-group">
                           <label>Profile Name *</label>
                           <input
                             type="text"
@@ -4311,7 +4692,7 @@ export default function App() {
                         </div>
 
                         <div className="project-form-group">
-                          <label>SQL Server / Instance Host *</label>
+                          <label>{newSourceForm.engine === "SQLSERVER" ? "Server / Instance Host" : "Host / IP"} *</label>
                           <input
                             type="text"
                             placeholder="e.g. localhost or 10.0.0.4\\INSTANCE"
@@ -4320,6 +4701,87 @@ export default function App() {
                             required
                           />
                         </div>
+
+                        <div className="source-form-row">
+                          <div className="project-form-group">
+                            <label>Port *</label>
+                            <input type="number" min="1" max="65535" value={newSourceForm.port}
+                              onChange={(e) => setNewSourceForm({ ...newSourceForm, port: Number(e.target.value) })} required />
+                          </div>
+                          {(newSourceForm.engine === "POSTGRESQL" || newSourceForm.engine === "ORACLE") && (
+                            <div className="project-form-group">
+                              <label>{newSourceForm.engine === "ORACLE" ? "Schema / Owner" : "Target Schema"} *</label>
+                              <input value={newSourceForm.schema_name} placeholder={newSourceForm.engine === "POSTGRESQL" ? "public" : "HR"}
+                                onChange={(e) => setNewSourceForm({ ...newSourceForm, schema_name: e.target.value })} required />
+                            </div>
+                          )}
+                        </div>
+
+                        {newSourceForm.engine === "ORACLE" && (
+                          <div className="source-form-row">
+                            <div className="project-form-group"><label>Oracle Address Type</label>
+                              <select value={newSourceForm.oracle_connection_type} onChange={(e) => setNewSourceForm({ ...newSourceForm, oracle_connection_type: e.target.value })}>
+                                <option value="SERVICE">Service Name</option><option value="SID">SID</option>
+                              </select>
+                            </div>
+                            <div className="project-form-group">
+                              <label>{newSourceForm.oracle_connection_type === "SID" ? "SID" : "Service Name"} *</label>
+                              <input value={newSourceForm.oracle_connection_type === "SID" ? newSourceForm.sid : newSourceForm.service_name} placeholder="ORCLPDB1"
+                                onChange={(e) => newSourceForm.oracle_connection_type === "SID"
+                                  ? setNewSourceForm({ ...newSourceForm, sid: e.target.value })
+                                  : setNewSourceForm({ ...newSourceForm, service_name: e.target.value })} required />
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="source-form-row">
+                          <div className="project-form-group">
+                            <label>Username {newSourceForm.engine === "SQLSERVER" && newSourceForm.auth_mode === "WINDOWS" ? "(optional)" : "*"}</label>
+                            <input value={newSourceForm.username} autoComplete="username"
+                              onChange={(e) => setNewSourceForm({ ...newSourceForm, username: e.target.value })}
+                              required={newSourceForm.engine !== "SQLSERVER" || newSourceForm.auth_mode !== "WINDOWS"} />
+                          </div>
+                          <div className="project-form-group">
+                            <label>Password {newSourceForm.engine === "SQLSERVER" && newSourceForm.auth_mode === "WINDOWS" ? "(optional)" : "*"}</label>
+                            <input type="password" value={newSourceForm.password} autoComplete="new-password"
+                              onChange={(e) => setNewSourceForm({ ...newSourceForm, password: e.target.value })}
+                              required={newSourceForm.engine !== "SQLSERVER" || newSourceForm.auth_mode !== "WINDOWS"} />
+                          </div>
+                        </div>
+
+                        {newSourceForm.engine === "SQLSERVER" && (
+                          <div className="source-form-row">
+                            <div className="project-form-group"><label>Authentication Mode</label>
+                              <select value={newSourceForm.auth_mode} onChange={(e) => setNewSourceForm({ ...newSourceForm, auth_mode: e.target.value })}>
+                                <option value="WINDOWS">Windows Trusted</option><option value="SQL">SQL Username / Password</option>
+                              </select>
+                            </div>
+                            <div className="project-form-group"><label>ODBC Driver</label>
+                              <select value={newSourceForm.driver} onChange={(e) => setNewSourceForm({ ...newSourceForm, driver: e.target.value })}>
+                                <option>ODBC Driver 18 for SQL Server</option><option>ODBC Driver 17 for SQL Server</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                        {newSourceForm.engine === "POSTGRESQL" && (
+                          <div className="project-form-group"><label>SSL Mode</label>
+                            <select value={newSourceForm.ssl_mode} onChange={(e) => setNewSourceForm({ ...newSourceForm, ssl_mode: e.target.value })}>
+                              <option value="disable">disable</option><option value="prefer">prefer</option><option value="require">require</option>
+                            </select>
+                          </div>
+                        )}
+                        {newSourceForm.engine === "MYSQL" && (
+                          <div className="project-form-group"><label>Charset</label>
+                            <input value={newSourceForm.charset} onChange={(e) => setNewSourceForm({ ...newSourceForm, charset: e.target.value })} />
+                          </div>
+                        )}
+                        {newSourceForm.engine === "ORACLE" && (
+                          <div className="project-form-group"><label>Connection Mode</label>
+                            <select value={newSourceForm.oracle_mode} onChange={(e) => setNewSourceForm({ ...newSourceForm, oracle_mode: e.target.value })}>
+                              <option value="NORMAL">Normal</option><option value="SYSDBA">SYSDBA</option>
+                            </select>
+                          </div>
+                        )}
 
                         <div className="project-form-group">
                           <label>Database Name *</label>
@@ -4333,7 +4795,7 @@ export default function App() {
                         </div>
 
                         <div className="project-form-hint">
-                          Connection parameters will be saved securely. Local connector agents can also run on-premise without exposing SQL Server directly.
+                          Passwords are encrypted before storage. The local outbound connector remains available for SQL Server sources.
                         </div>
                       </div>
 
@@ -7608,69 +8070,194 @@ export default function App() {
             <>
               {(page === "Deployment" || page === "Deployments") && (
                 <>
-                  <Panel title="DEV deployment and validation">
-                <p className="section-caption">
-                  Complete these three steps in order. This is the only DEV
-                  promotion workspace required after artifact approval.
-                </p>
-                <div className="dev-stage-flow">
-                  <div className="dev-stage-card">
-                    <div className="dev-stage-number">1</div>
-                    <div>
-                      <span>DEPLOY</span>
-                      <h4>Deploy Medallion to DEV</h4>
-                      <p>Deploy approved Bronze, Silver and Gold artifacts.</p>
-                    </div>
+                  <Panel
+                title="Scheduled Incremental Data Refresh (Delta Sync)"
+                actions={
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <button
                       className="primary-action"
-                      disabled={!pid || busy}
-                      title="Open the approved Medallion plan and deploy its data products to DEV"
-                      onClick={() => setPage("Medallion Design")}
+                      disabled={!pid || busy || scheduleSyncing}
+                      onClick={triggerScheduleNow}
+                      style={{ background: "#2563eb", color: "#fff", display: "flex", alignItems: "center", gap: 6 }}
                     >
-                      <Layers3 size={15} /> Deploy approved data products to DEV
+                      <RefreshCw size={14} className={scheduleSyncing ? "spinning" : ""} />
+                      {scheduleSyncing ? "Syncing Delta Records..." : "Run Incremental Sync Now"}
                     </button>
                   </div>
-                  <div className="dev-stage-card">
-                    <div className="dev-stage-number">2</div>
-                    <div>
-                      <span>VALIDATE</span>
-                      <h4>Run DEV reconciliation</h4>
-                      <p>Compare deployed targets with the source evidence.</p>
+                }
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  {/* Status Banner */}
+                  <div style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "14px 18px",
+                    background: scheduleEnabled ? "rgba(16, 185, 129, 0.08)" : "rgba(100, 116, 139, 0.08)",
+                    border: `1px solid ${scheduleEnabled ? "rgba(16, 185, 129, 0.3)" : "rgba(100, 116, 139, 0.3)"}`,
+                    borderRadius: 8
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{
+                        padding: "4px 10px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        background: scheduleEnabled ? "#10b981" : "#64748b",
+                        color: "#fff"
+                      }}>
+                        {scheduleEnabled ? "ACTIVE SCHEDULE" : "SCHEDULE PAUSED"}
+                      </span>
+                      <span style={{ fontSize: 13, color: "#334155", fontWeight: 600 }}>
+                        {scheduleEnabled
+                          ? `Next automated run: ${scheduleConfig?.schedule?.next_run_at ? new Date(scheduleConfig.schedule.next_run_at).toUTCString() : "Pending calculation"}`
+                          : "Enable scheduling below to automate daily delta migrations to Databricks"}
+                      </span>
                     </div>
-                    <button
-                      disabled={!pid || busy || medDeployment?.status !== "PASSED"}
-                      title={medDeployment?.status === "PASSED" ? "Validate deployed DEV data products against source evidence" : "Complete the Medallion DEV deployment first"}
-                      onClick={runDevReconciliation}
-                    >
-                      <Gauge size={15} /> Validate deployed DEV data products
-                    </button>
+                    {scheduleConfig?.schedule?.last_run_status && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#64748b" }}>
+                        <span>Last Run:</span>
+                        <Badge s={scheduleConfig.schedule.last_run_status} />
+                        <span>({scheduleConfig.schedule.last_run_at ? new Date(scheduleConfig.schedule.last_run_at).toLocaleTimeString() : "-"})</span>
+                      </div>
+                    )}
                   </div>
-                  <div className="dev-stage-card">
-                    <div className="dev-stage-number">3</div>
+
+                  {/* Form Configuration Grid */}
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: 16,
+                    padding: 16,
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 8
+                  }}>
                     <div>
-                      <span>APPROVE</span>
-                      <h4>Evaluate DEV gate</h4>
-                      <p>Approve DEV only after reconciliation passes.</p>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, fontSize: 13, cursor: "pointer", marginTop: 22 }}>
+                        <input
+                          type="checkbox"
+                          checked={scheduleEnabled}
+                          onChange={(e) => setScheduleEnabled(e.target.checked)}
+                          style={{ width: 16, height: 16 }}
+                        />
+                        <span>Enable Automated Refresh</span>
+                      </label>
                     </div>
-                    <button
-                      disabled={!pid || busy || reconResult?.status !== "PASSED"}
-                      title={reconResult?.status === "PASSED" ? "Approve the validated DEV release for TEST promotion" : "DEV reconciliation must pass before gate evaluation"}
-                      onClick={() =>
-                        action(async () => {
-                          const r: any = await api(
-                            `/projects/${pid}/deployments/dev/evaluate-gate`,
-                            { method: "POST" },
-                          );
-                          setGateResult(r);
-                          return r;
-                        })
-                      }
-                    >
-                      <ShieldCheck size={15} /> Approve DEV release for TEST
-                    </button>
+
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 6 }}>
+                        Frequency
+                      </label>
+                      <select
+                        value={scheduleFreq}
+                        onChange={(e) => setScheduleFreq(e.target.value)}
+                        style={{ width: "100%", padding: "7px 10px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                      >
+                        <option value="DAILY">Daily</option>
+                        <option value="HOURLY">Hourly</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 6 }}>
+                        Scheduled Time (HH:MM UTC)
+                      </label>
+                      <input
+                        type="time"
+                        value={scheduleTime}
+                        onChange={(e) => setScheduleTime(e.target.value)}
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                      />
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 6 }}>
+                        Digest Email (Brevo Notifications)
+                      </label>
+                      <input
+                        type="email"
+                        placeholder="admin@company.com"
+                        value={scheduleEmail}
+                        onChange={(e) => setScheduleEmail(e.target.value)}
+                        style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1" }}
+                      />
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "flex-end" }}>
+                      <button
+                        className="primary-action"
+                        disabled={!pid || scheduleLoading}
+                        onClick={saveScheduleConfig}
+                        style={{ width: "100%", padding: "7px 14px", height: 36 }}
+                      >
+                        {scheduleLoading ? "Saving..." : "Save Schedule Settings"}
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Watermark Tracking Table */}
+                  <div>
+                    <h4 style={{ fontSize: 14, fontWeight: 700, margin: "8px 0 10px 0", color: "#1e293b" }}>
+                      High-Watermark Tracking Status (Delta State)
+                    </h4>
+                    {scheduleConfig?.watermarks?.length ? (
+                      <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ background: "#f1f5f9", textAlign: "left" }}>
+                            <th style={{ padding: "8px 12px" }}>Table Name</th>
+                            <th style={{ padding: "8px 12px" }}>Watermark Column</th>
+                            <th style={{ padding: "8px 12px" }}>Data Type</th>
+                            <th style={{ padding: "8px 12px" }}>Current High-Watermark</th>
+                            <th style={{ padding: "8px 12px", textAlign: "right" }}>Last Synced Rows</th>
+                            <th style={{ padding: "8px 12px" }}>Last Updated</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scheduleConfig.watermarks.map((wm: any) => (
+                            <tr key={wm.id} style={{ borderBottom: "1px solid #e2e8f0" }}>
+                              <td style={{ padding: "8px 12px", fontWeight: 600 }}>{wm.table_name}</td>
+                              <td style={{ padding: "8px 12px" }}><code>{wm.watermark_column}</code></td>
+                              <td style={{ padding: "8px 12px" }}>{wm.watermark_type}</td>
+                              <td style={{ padding: "8px 12px", color: "#2563eb", fontFamily: "monospace" }}>
+                                {wm.last_watermark_value || <span style={{ color: "#94a3b8" }}>Initial Baseline</span>}
+                              </td>
+                              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600 }}>
+                                {wm.last_synced_rows?.toLocaleString() || 0}
+                              </td>
+                              <td style={{ padding: "8px 12px", color: "#64748b" }}>
+                                {wm.updated_at ? new Date(wm.updated_at).toLocaleString() : "-"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div style={{ padding: 16, background: "#f8fafc", borderRadius: 6, color: "#64748b", fontSize: 13, border: "1px dashed #cbd5e1" }}>
+                        Watermarks will be automatically populated when the initial sync executes.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Last Run Digest Summary */}
+                  {scheduleConfig?.schedule?.last_run_summary && (
+                    <div style={{ padding: 14, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontWeight: 700, fontSize: 13, color: "#1e293b" }}>
+                          Latest Execution Summary ({scheduleConfig.schedule.last_run_summary.executed_at})
+                        </span>
+                        <Badge s={scheduleConfig.schedule.last_run_summary.status} />
+                      </div>
+                      <div style={{ display: "flex", gap: 24, fontSize: 13, color: "#475569" }}>
+                        <div>Duration: <b>{scheduleConfig.schedule.last_run_summary.duration_seconds}s</b></div>
+                        <div>Total Delta Records Ingested: <b>{scheduleConfig.schedule.last_run_summary.total_delta_rows?.toLocaleString()}</b></div>
+                        <div>Run ID: <code>{scheduleConfig.schedule.last_run_summary.run_id}</code></div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Panel>
+
               <details className="legacy-deployment">
                 <summary>Legacy artifact deployment — separate workflow</summary>
                 <p>These controls deploy the legacy artifact set. They are not required after a successful Medallion deployment.</p>

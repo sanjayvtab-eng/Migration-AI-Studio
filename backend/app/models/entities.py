@@ -49,6 +49,12 @@ class MigrationSource(Base, ProjectScoped):
     server_name: Mapped[str] = mapped_column(String(255))
     database_name: Mapped[str] = mapped_column(String(255))
     profile_name: Mapped[str] = mapped_column(String(255))
+    engine: Mapped[str] = mapped_column(String(32), default="SQLSERVER")
+    port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    schema_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    credential_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    options_json: Mapped[str] = mapped_column(Text, default="{}")
 
 class MigrationObject(Base, ProjectScoped):
     __tablename__ = "migration_object"
@@ -190,6 +196,10 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(32), default="VIEWER")
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    otp: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
 # Generic project-scoped control tables required by the canonical model but represented compactly.
 class CanonicalRecord(Base, ProjectScoped):
@@ -411,3 +421,31 @@ class RequirementArtifactTrace(Base, ProjectScoped):
     evidence_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     __table_args__ = (UniqueConstraint("spec_version_id", "request_id", name="uq_requirement_trace_version"),)
+
+
+class MigrationSchedule(Base, ProjectScoped):
+    __tablename__ = "migration_schedule"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    frequency: Mapped[str] = mapped_column(String(32), default="DAILY")
+    scheduled_time: Mapped[str] = mapped_column(String(16), default="02:00")
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    notification_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_run_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("project_id", name="uq_schedule_project"),)
+
+
+class MigrationWatermark(Base, ProjectScoped):
+    __tablename__ = "migration_watermark"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    table_name: Mapped[str] = mapped_column(String(255), index=True)
+    watermark_column: Mapped[str] = mapped_column(String(128))
+    watermark_type: Mapped[str] = mapped_column(String(32), default="DATETIME")
+    last_watermark_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_synced_rows: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("project_id", "table_name", name="uq_watermark_project_table"),)

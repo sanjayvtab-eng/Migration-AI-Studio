@@ -9,7 +9,11 @@ TYPE_MAP = {
     "datetime":"TIMESTAMP", "datetime2":"TIMESTAMP", "smalldatetime":"TIMESTAMP",
     "uniqueidentifier":"STRING", "binary":"BINARY", "varbinary":"BINARY", "image":"BINARY",
     "xml":"STRING", "timestamp":"BINARY", "rowversion":"BINARY",
-    "datetimeoffset":"STRING", "sysname":"STRING", "hierarchyid":"STRING", "json":"STRING"
+    "datetimeoffset":"STRING", "sysname":"STRING", "hierarchyid":"STRING", "json":"STRING",
+    "integer":"INT", "serial":"INT", "bigserial":"BIGINT", "boolean":"BOOLEAN", "bool":"BOOLEAN",
+    "bytea":"BINARY", "raw":"BINARY", "long raw":"BINARY", "longblob":"BINARY", "mediumblob":"BINARY",
+    "tinyblob":"BINARY", "longtext":"STRING", "mediumtext":"STRING", "tinytext":"STRING",
+    "double precision":"DOUBLE", "character varying":"STRING"
 }
 
 def map_sqlserver_type(name: str, precision: int|None=None, scale: int|None=None) -> str:

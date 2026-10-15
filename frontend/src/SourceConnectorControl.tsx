@@ -4,7 +4,7 @@ import { Settings } from "lucide-react";
 
 type Props = {
   projectId: string;
-  source: { id: string; server_name: string; database_name: string };
+  source: { id: string; server_name: string; database_name: string; engine?: string };
   onlyStatus?: boolean;
   onlyButton?: boolean;
 };
@@ -15,7 +15,8 @@ export default function SourceConnectorControl({
   onlyStatus,
   onlyButton,
 }: Props) {
-  const [status, setStatus] = useState("Loading");
+  const connectorSupported = !source.engine || source.engine === "SQLSERVER";
+  const [status, setStatus] = useState(connectorSupported ? "Loading" : "DIRECT");
   const [registration, setRegistration] = useState<{ token: string } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -30,6 +31,7 @@ export default function SourceConnectorControl({
   useEffect(() => {
     let active = true;
     const refresh = async () => {
+      if (!connectorSupported) { if (active) setStatus("DIRECT"); return; }
       try {
         const result = await api<{ status: string }>(path);
         if (active) setStatus(result.status);
@@ -40,7 +42,7 @@ export default function SourceConnectorControl({
     void refresh();
     const timer = window.setInterval(refresh, 15000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [path]);
+  }, [path, connectorSupported]);
 
   const mutate = async (method: string) => {
     setBusy(true);
@@ -96,7 +98,7 @@ export default function SourceConnectorControl({
   const pillClass = isOnline ? "active" : isBlocked ? "blocked" : "review";
   const statusText =
     status === "DIRECT"
-      ? "Direct Connection (Healthy)"
+      ? connectorSupported ? "Direct Connection (Healthy)" : "Native Driver (Direct)"
       : status === "ONLINE"
       ? "Connector Online (Ready)"
       : status === "OFFLINE"
@@ -405,6 +407,7 @@ export default function SourceConnectorControl({
   );
 
   if (onlyStatus) return statusPill;
+  if (onlyButton && !connectorSupported) return null;
   if (onlyButton)
     return (
       <>

@@ -11,7 +11,7 @@ from app.core.security import hash_password, verify_password, create_access_toke
 from app.models.entities import *
 from app.models.canonical import MigrationDeployment, MigrationRunStep, MigrationValidation, MigrationReconciliation, MigrationReconciliationDetail
 from app.services.engine import *
-from app.services.discovery import discover_sqlserver, test_sqlserver_connection
+from app.services.source_adapters import DEFAULT_PORTS, SUPPORTED_ENGINES, adapter_for_source, normalize_engine
 from app.services.source_connector import connector_info, request as connector_request
 from app.core.config import get_settings
 from app.services.databricks_client import execute_sql
@@ -54,11 +54,29 @@ import io
 router=APIRouter(prefix="/api")
 
 class ProjectIn(BaseModel): name:str
-class SourceIn(BaseModel): profile_name:str; server_name:str; database_name:str
+class SourceIn(BaseModel):
+    profile_name: str
+    server_name: str
+    database_name: str
+    engine: str = "SQLSERVER"
+    port: int | None = None
+    schema_name: str | None = None
+    username: str | None = None
+    password: str | None = None
+    ssl_mode: str | None = None
+    charset: str | None = None
+    service_name: str | None = None
+    sid: str | None = None
+    auth_mode: str | None = None
+    connection_mode: str | None = None
+    driver: str | None = None
 class SnapshotIn(BaseModel): source_id:str; snapshot:dict
 class MappingIn(BaseModel): environment:str="DEV"; catalog:str
 class ArtifactIn(BaseModel): object_id:str; environment:str="DEV"
 class LoginIn(BaseModel): username:str; password:str
+class RegisterRequestIn(BaseModel): email:str
+class VerifyOtpIn(BaseModel): email:str; otp:str
+class SetPasswordIn(BaseModel): email:str; password:str
 class ReviewIn(BaseModel): artifact_version_id:str; review_type:str="ARCHITECT_REVIEW"; status:str; reviewer:str; comments:str|None=None
 class GateIn(BaseModel): environment:str; status:str; pass_count:int=0; fail_count:int=0; blocker_count:int=0; deployment_version:str|None=None
 class LayerOverrideIn(BaseModel): selected_layer:str; user:str; reason:str
@@ -280,16 +298,168 @@ def bootstrap_admin(data:LoginIn,db:Session=Depends(get_db)):
     if db.scalar(select(func.count()).select_from(User))>0: raise HTTPException(409,"Users already exist")
     u=User(id=uid("USR"),username=data.username,password_hash=hash_password(data.password),role="ADMIN");db.add(u);db.commit();return {"created":True}
 
+@router.post("/register/request-otp")
+async def register_request_otp(data:RegisterRequestIn,db:Session=Depends(get_db)):
+    email = data.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Valid email address is required")
+    
+    from app.services import supabase_auth_service
+    sb_user = supabase_auth_service.get_user_by_email(email)
+    if sb_user and sb_user.get("is_verified") and sb_user.get("password_hash"):
+        raise HTTPException(409, "An account with this email already exists. Please sign in.")
+    
+    existing = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    if existing and existing.is_verified and existing.password_hash:
+        raise HTTPException(409, "An account with this email already exists. Please sign in.")
+    
+    import random
+    from datetime import timedelta
+    otp_code = f"{random.randint(100000, 999999)}"
+    expires = datetime.utcnow() + timedelta(minutes=10)
+    
+    # Save OTP to Supabase app_users table
+    supabase_auth_service.upsert_user_otp(email, otp_code, expires)
+
+    # Also mirror into local database
+    if not existing:
+        existing = User(
+            id=uid("USR"),
+            username=email,
+            email=email,
+            password_hash="",
+            role="ADMIN",
+            otp=otp_code,
+            otp_expires_at=expires,
+            is_verified=False
+        )
+        db.add(existing)
+    else:
+        existing.email = email
+        existing.otp = otp_code
+        existing.otp_expires_at = expires
+    db.commit()
+    
+    from app.services.email_service import send_otp_email
+    email_sent, email_detail = await send_otp_email(email, otp_code)
+    
+    return {
+        "message": "OTP verification code sent to your email" if email_sent else f"OTP generated (Delivery note: {email_detail})",
+        "email": email,
+        "email_dispatched": email_sent,
+        "detail": email_detail
+    }
+
+
+@router.post("/register/verify-otp")
+def register_verify_otp(data:VerifyOtpIn,db:Session=Depends(get_db)):
+    email = data.email.strip().lower()
+    otp_input = data.otp.strip()
+    
+    from app.services import supabase_auth_service
+    ok, err_msg = supabase_auth_service.verify_user_otp(email, otp_input)
+    
+    # Also verify local record if Supabase was bypassed
+    u = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    if not ok:
+        if not u or not u.otp:
+            raise HTTPException(400, err_msg)
+        if u.otp_expires_at and u.otp_expires_at < datetime.utcnow():
+            raise HTTPException(400, "OTP code has expired. Please request a new code.")
+        if u.otp != otp_input:
+            raise HTTPException(400, "Invalid verification code")
+
+    if u:
+        u.is_verified = True
+        u.otp = None
+        db.commit()
+    
+    return {
+        "verified": True,
+        "message": "Email verified successfully. Please create your password.",
+        "email": email
+    }
+
+
+@router.post("/register/set-password")
+def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
+    email = data.email.strip().lower()
+    pwd = data.password.strip()
+    if len(pwd) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters long")
+    
+    from app.services import supabase_auth_service
+    hashed = hash_password(pwd)
+    supabase_auth_service.set_user_password(email, hashed)
+
+    u = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    if not u:
+        u = User(
+            id=uid("USR"),
+            username=email,
+            email=email,
+            password_hash=hashed,
+            role="ADMIN",
+            is_verified=True
+        )
+        db.add(u)
+    else:
+        u.password_hash = hashed
+        u.role = "ADMIN"
+        u.is_verified = True
+        u.failed_attempts = 0
+        u.locked = False
+    db.commit()
+    
+    return {
+        "access_token": create_access_token(u.username, u.role),
+        "token_type": "bearer",
+        "role": u.role,
+        "username": u.username
+    }
+
+
 @router.post("/login")
 def login(data:LoginIn,db:Session=Depends(get_db)):
-    u=db.scalar(select(User).where(User.username==data.username))
-    if not u or u.locked or not verify_password(data.password,u.password_hash if u else ""):
+    identifier = data.username.strip()
+    
+    # 1. Try Supabase app_users authentication first
+    from app.services import supabase_auth_service
+    sb_user = supabase_auth_service.authenticate_app_user(identifier, data.password)
+    if sb_user:
+        raw_role = str(sb_user.get("role") or "ADMIN").upper()
+        role = "ADMIN" if raw_role in ("ADMIN", "USER") else raw_role
+        if role not in ("ADMIN", "ENGINEER", "LEAD", "VIEWER"):
+            role = "ADMIN"
+        email = sb_user.get("email", identifier)
+        # Ensure local user exists for foreign key references
+        local_u = db.scalar(select(User).where((User.username == email) | (User.email == email.lower())))
+        if not local_u:
+            local_u = User(
+                id=uid("USR"),
+                username=email,
+                email=email,
+                password_hash=sb_user.get("password_hash", ""),
+                role=role,
+                is_verified=True,
+            )
+            db.add(local_u)
+        else:
+            local_u.role = role
+        db.commit()
+        return {"access_token": create_access_token(email, local_u.role), "token_type": "bearer", "role": local_u.role, "username": email, "email": email}
+
+    # 2. Fallback to local User (e.g. bootstrap admin)
+    u = db.scalar(select(User).where((User.username == identifier) | (User.email == identifier.lower())))
+    if not u or u.locked or not verify_password(data.password, u.password_hash if u else ""):
         if u:
-            u.failed_attempts+=1
-            if u.failed_attempts>=5:u.locked=True
+            u.failed_attempts += 1
+            if u.failed_attempts >= 5: u.locked = True
             db.commit()
-        raise HTTPException(401,"Invalid credentials or account locked")
-    u.failed_attempts=0;db.commit();return {"access_token":create_access_token(u.username,u.role),"token_type":"bearer","role":u.role}
+        raise HTTPException(401, "Invalid credentials or account locked")
+    u.failed_attempts = 0
+    db.commit()
+    return {"access_token": create_access_token(u.username, u.role), "token_type": "bearer", "role": u.role, "username": u.username, "email": u.email}
 
 @router.post("/projects")
 def projects_create(data:ProjectIn,db:Session=Depends(get_db),_=Depends(auth)):
@@ -603,6 +773,7 @@ def automated_promotion_cancel(
 def sources_list(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     rows=db.scalars(select(MigrationSource).where(MigrationSource.project_id==project_id).order_by(MigrationSource.profile_name)).all()
     return [{"id":x.id,"profile_name":x.profile_name,"server_name":x.server_name,"database_name":x.database_name,
+             "engine":x.engine or "SQLSERVER","port":x.port,"schema_name":x.schema_name,"username":x.username,
              "connector": connector_info(x.id)} for x in rows]
 
 @router.post("/projects/{project_id}/sources/{source_id}/test")
@@ -610,8 +781,12 @@ def source_test(project_id:str,source_id:str,db:Session=Depends(get_db),_=Depend
     src=db.get(MigrationSource,source_id)
     if not src or src.project_id!=project_id: raise HTTPException(404,"Source not found in project")
     try:
-        result = (connector_request(src.id, "test") if connector_info(src.id)["mode"] == "CONNECTOR"
-                  else test_sqlserver_connection(_sqlserver_conn_for_source(src)))
+        if connector_info(src.id)["mode"] == "CONNECTOR":
+            if normalize_engine(src.engine) != "SQLSERVER":
+                raise ValueError("The local connector currently supports SQL Server sources only")
+            result = connector_request(src.id, "test")
+        else:
+            result = adapter_for_source(src).test_connection()
         result.update({"profile_name":src.profile_name,"server_name":src.server_name,"database_name":src.database_name})
         return result
     except Exception as e:
@@ -621,14 +796,16 @@ def source_test(project_id:str,source_id:str,db:Session=Depends(get_db),_=Depend
 def discovery_live(project_id:str,source_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     src=db.get(MigrationSource,source_id)
     if not src or src.project_id!=project_id: raise HTTPException(404,"Source not found in project")
-    conn=_sqlserver_conn_for_source(src)
     try:
         if connector_info(src.id)["mode"] == "CONNECTOR":
+            if normalize_engine(src.engine) != "SQLSERVER":
+                raise ValueError("The local connector currently supports SQL Server sources only")
             connector_request(src.id, "test")
             snap = connector_request(src.id, "discover")
         else:
-            test_sqlserver_connection(conn)
-            snap=discover_sqlserver(conn)
+            adapter = adapter_for_source(src)
+            adapter.test_connection()
+            snap=adapter.discover_catalog()
         return {"counts":ingest_snapshot(db,project_id,source_id,snap),"database":snap.get("database"),"objects":len(snap.get("objects",[]))}
     except Exception as e:
         raise HTTPException(400,f"Discovery failed: {e}")
@@ -800,7 +977,23 @@ def dependencies_list(project_id:str,db:Session=Depends(get_db),_=Depends(auth))
 @router.post("/projects/{project_id}/sources")
 def source_create(project_id:str,data:SourceIn,db:Session=Depends(get_db),_=Depends(auth)):
     if not db.get(MigrationProject,project_id): raise HTTPException(404,"Project not found")
-    s=add_source(db,project_id,data.profile_name,data.server_name,data.database_name);return {"id":s.id,"project_id":s.project_id}
+    try:
+        engine = normalize_engine(data.engine)
+        if data.port is not None and not 1 <= data.port <= 65535:
+            raise ValueError("Source port must be between 1 and 65535")
+        if engine in {"POSTGRESQL", "ORACLE"} and not (data.schema_name or "").strip():
+            raise ValueError(f"{engine.title()} sources require a schema")
+        options = {key: value for key, value in {
+            "ssl_mode": data.ssl_mode, "charset": data.charset,
+            "service_name": data.service_name, "sid": data.sid,
+            "auth_mode": data.connection_mode or data.auth_mode, "driver": data.driver,
+        }.items() if value not in (None, "")}
+        s=add_source(db,project_id,data.profile_name.strip(),data.server_name.strip(),data.database_name.strip(),
+                     engine=engine,port=data.port or DEFAULT_PORTS[engine],schema_name=(data.schema_name or None),
+                     username=(data.username or None),password=data.password,options=options)
+        return {"id":s.id,"project_id":s.project_id,"engine":s.engine}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 @router.post("/projects/{project_id}/discovery/snapshot")
 def discovery_snapshot(project_id:str,data:SnapshotIn,db:Session=Depends(get_db),_=Depends(auth)):
@@ -1639,3 +1832,108 @@ def system_health_check(project_id: str | None = None, db: Session = Depends(get
         "failureReason": failure_reason,
         "checkedAt": datetime.now(timezone.utc).isoformat(),
     }
+
+
+class ScheduleUpdateIn(BaseModel):
+    frequency: str = "DAILY"
+    scheduled_time: str = "02:00"
+    is_enabled: bool = False
+    notification_email: str | None = None
+
+
+@router.get("/projects/{project_id}/schedule", tags=["Schedule"])
+def get_project_schedule(project_id: str, db: Session = Depends(get_db)):
+    from app.services.scheduler_service import compute_next_run_at
+    schedule = db.query(MigrationSchedule).filter(MigrationSchedule.project_id == project_id).first()
+    if not schedule:
+        schedule = MigrationSchedule(
+            id=uid("SCH"),
+            project_id=project_id,
+            frequency="DAILY",
+            scheduled_time="02:00",
+            is_enabled=False,
+            notification_email=None,
+            next_run_at=compute_next_run_at("DAILY", "02:00"),
+        )
+        db.add(schedule)
+        db.commit()
+        db.refresh(schedule)
+
+    watermarks = db.query(MigrationWatermark).filter(MigrationWatermark.project_id == project_id).all()
+    watermark_list = [
+        {
+            "id": wm.id,
+            "table_name": wm.table_name,
+            "watermark_column": wm.watermark_column,
+            "watermark_type": wm.watermark_type,
+            "last_watermark_value": wm.last_watermark_value,
+            "last_synced_rows": wm.last_synced_rows,
+            "updated_at": wm.updated_at.isoformat() if wm.updated_at else None,
+        }
+        for wm in watermarks
+    ]
+
+    last_summary = None
+    if schedule.last_run_summary_json:
+        try:
+            last_summary = json.loads(schedule.last_run_summary_json)
+        except Exception:
+            last_summary = None
+
+    return {
+        "schedule": {
+            "id": schedule.id,
+            "project_id": schedule.project_id,
+            "frequency": schedule.frequency,
+            "scheduled_time": schedule.scheduled_time,
+            "is_enabled": schedule.is_enabled,
+            "notification_email": schedule.notification_email,
+            "last_run_at": schedule.last_run_at.isoformat() if schedule.last_run_at else None,
+            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+            "last_run_status": schedule.last_run_status,
+            "last_run_summary": last_summary,
+        },
+        "watermarks": watermark_list,
+    }
+
+
+@router.put("/projects/{project_id}/schedule", tags=["Schedule"])
+def update_project_schedule(project_id: str, payload: ScheduleUpdateIn, db: Session = Depends(get_db)):
+    from app.services.scheduler_service import compute_next_run_at
+    schedule = db.query(MigrationSchedule).filter(MigrationSchedule.project_id == project_id).first()
+    if not schedule:
+        schedule = MigrationSchedule(
+            id=uid("SCH"),
+            project_id=project_id,
+        )
+        db.add(schedule)
+
+    schedule.frequency = payload.frequency.upper()
+    schedule.scheduled_time = payload.scheduled_time
+    schedule.is_enabled = payload.is_enabled
+    schedule.notification_email = payload.notification_email.strip() if payload.notification_email else None
+    
+    if schedule.is_enabled:
+        schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time)
+    else:
+        schedule.next_run_at = None
+
+    db.commit()
+    db.refresh(schedule)
+    return {
+        "message": "Schedule updated successfully",
+        "schedule": {
+            "id": schedule.id,
+            "is_enabled": schedule.is_enabled,
+            "frequency": schedule.frequency,
+            "scheduled_time": schedule.scheduled_time,
+            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+        },
+    }
+
+
+@router.post("/projects/{project_id}/schedule/trigger-now", tags=["Schedule"])
+async def trigger_schedule_now(project_id: str, db: Session = Depends(get_db)):
+    from app.services.watermark_service import run_incremental_sync_for_project
+    summary = await run_incremental_sync_for_project(db, project_id, actor="MANUAL_TRIGGER")
+    return summary

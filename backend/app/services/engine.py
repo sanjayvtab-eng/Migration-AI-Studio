@@ -320,8 +320,19 @@ def ensure_project(db: Session, name: str) -> MigrationProject:
     if p: return p
     p=MigrationProject(id=uid("PRJ"),name=name); db.add(p); db.commit(); return p
 
-def add_source(db: Session, project_id: str, profile_name: str, server: str, database: str) -> MigrationSource:
-    s=MigrationSource(id=uid("SRC"),project_id=project_id,profile_name=profile_name,server_name=server,database_name=database)
+def add_source(db: Session, project_id: str, profile_name: str, server: str, database: str,
+               *, engine: str = "SQLSERVER", port: int | None = None,
+               schema_name: str | None = None, username: str | None = None,
+               password: str | None = None, options: dict | None = None) -> MigrationSource:
+    from app.services.source_adapters import DEFAULT_PORTS, encrypt_password, normalize_engine
+    normalized = normalize_engine(engine)
+    s=MigrationSource(
+        id=uid("SRC"), project_id=project_id, profile_name=profile_name,
+        server_name=server, database_name=database, engine=normalized,
+        port=port or DEFAULT_PORTS[normalized], schema_name=schema_name,
+        username=username, credential_ciphertext=encrypt_password(password),
+        options_json=json.dumps(options or {}, sort_keys=True),
+    )
     db.add(s); db.commit(); return s
 
 def ingest_snapshot(db: Session, project_id: str, source_id: str, snapshot: dict) -> dict:

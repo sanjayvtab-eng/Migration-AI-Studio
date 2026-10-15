@@ -1,4 +1,8 @@
-# SQL Server → Databricks AI Migration Factory — 2.4.1 BRONZE_TARGET_CONSISTENCY
+# Migration AI Studio — 2.5.0 Multi Source Connectivity
+
+Migration AI Studio now accepts SQL Server, PostgreSQL, MySQL/MariaDB, and Oracle source profiles through a polymorphic adapter boundary. Source discovery, full-load extraction, canonical datatype mapping, and high-watermark reads are engine-specific; the existing canonical inventory and Stages 2–8 remain shared.
+
+Configure a source from the Stage 1 engine tiles. PostgreSQL supports schema and SSL mode, MySQL supports charset, Oracle supports Service Name or SID plus Normal/SYSDBA mode, and SQL Server retains Windows or SQL authentication and ODBC driver selection. Passwords submitted through the API are encrypted at rest using a key derived from `JWT_SECRET`.
 
 **Build marker:** the UI must display `Build 2.4.1 BRONZE_TARGET_CONSISTENCY`. If you do not see that marker, you are running an older extracted folder or browser/Vite instance.
 

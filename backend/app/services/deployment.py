@@ -39,6 +39,7 @@ from app.services.databricks_client import execute_sql, databricks_connection, w
 from app.services.engine import compare_schema, topo_order, uid
 from app.services.discovery import test_sqlserver_connection
 from app.services.source_connector import connector_info, request as connector_request, TableStream
+from app.services.source_adapters import adapter_for_source
 from app.services.type_compatibility import (
     classify_execution_error,
     format_sql_literal,
@@ -409,10 +410,9 @@ def _source_rows(src, obj, cols, sql_text, max_rows):
         with TableStream(src.id, obj, cols, max_rows) as stream:
             yield stream
     else:
-        import pyodbc
-        with pyodbc.connect(_source_connection_string(src), timeout=30) as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql_text)
+        with adapter_for_source(src).open_table_cursor(
+            obj, list(cols), batch_size=get_settings().batch_size, max_rows=max_rows
+        ) as cursor:
             yield cursor
 
 
@@ -765,14 +765,7 @@ def _routine_exists(target_fqn: str, routine_type: str) -> None:
 def _source_table_count(source: MigrationSource, obj: MigrationObject) -> int:
     if connector_info(source.id)["mode"] == "CONNECTOR":
         return int(connector_request(source.id, "count", {"schema": obj.schema_name, "table": obj.object_name})["count"])
-    import pyodbc
-    with pyodbc.connect(_source_connection_string(source), timeout=30) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT COUNT(*) FROM [{obj.schema_name.replace(']', ']]')}]."
-            f"[{obj.object_name.replace(']', ']]')}]"
-        )
-        return int(cur.fetchone()[0])
+    return adapter_for_source(source).count_rows(obj)
 
 
 def _reconcile_medallion_run(

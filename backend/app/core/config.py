@@ -23,6 +23,26 @@ class Settings(BaseSettings):
     sqlserver_driver: str = "ODBC Driver 18 for SQL Server"
     sqlserver_username: str | None = None
     sqlserver_password: str | None = None
+    source_db_engine: str = "SQLSERVER"
+    postgres_host: str | None = None
+    postgres_port: int = 5432
+    postgres_database: str | None = None
+    postgres_schema: str = "public"
+    postgres_username: str | None = None
+    postgres_password: str | None = None
+    postgres_ssl_mode: str = "prefer"
+    mysql_host: str | None = None
+    mysql_port: int = 3306
+    mysql_database: str | None = None
+    mysql_username: str | None = None
+    mysql_password: str | None = None
+    mysql_charset: str = "utf8mb4"
+    oracle_host: str | None = None
+    oracle_port: int = 1521
+    oracle_service_name: str | None = None
+    oracle_schema: str | None = None
+    oracle_username: str | None = None
+    oracle_password: str | None = None
 
     databricks_host: str | None = None
     databricks_http_path: str | None = None
@@ -62,6 +82,12 @@ class Settings(BaseSettings):
     prompt_native_dynamic_generators_enabled: bool = True
     enable_legacy_rollback_mode: bool = False
     function_parameter_naming_pattern: str = r"^[A-Za-z_][A-Za-z0-9_]*$"
+    brevo_api_key: str | None = None
+    brevo_sender_email: str = "noreply@migrationstudio.ai"
+    brevo_sender_name: str = "Migration Factory"
+    supabase_url: str | None = None
+    supabase_anon_key: str | None = None
+    supabase_service_role_key: str | None = None
 
     model_config = SettingsConfigDict(env_file=str(ENV_FILE), env_file_encoding="utf-8", case_sensitive=False, extra="ignore")
 

@@ -10,6 +10,7 @@ from app.api.routes import auth
 from app.models.entities import MigrationSource
 from app.models.connector import SourceConnector, ConnectorTask
 from app.services.source_connector import digest, connector_info
+from app.services.source_adapters import normalize_engine
 
 router = APIRouter(prefix="/api")
 
@@ -35,7 +36,9 @@ def status(project_id: str, source_id: str, db: Session = Depends(get_db), _=Dep
 
 @router.post("/projects/{project_id}/sources/{source_id}/connector")
 def register(project_id: str, source_id: str, db: Session = Depends(get_db), _=Depends(admin)):
-    source(db, project_id, source_id)
+    src = source(db, project_id, source_id)
+    if normalize_engine(src.engine) != "SQLSERVER":
+        raise HTTPException(400, "The local connector currently supports SQL Server sources only")
     token = secrets.token_urlsafe(48)
     row = db.get(SourceConnector, source_id)
     if not row:
