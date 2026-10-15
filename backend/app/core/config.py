@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     enable_legacy_rollback_mode: bool = False
     function_parameter_naming_pattern: str = r"^[A-Za-z_][A-Za-z0-9_]*$"
     brevo_api_key: str | None = None
-    brevo_sender_email: str = "noreply@migrationstudio.ai"
-    brevo_sender_name: str = "Migration Factory"
+    brevo_sender_email: str = "sanjay.vtab@gmail.com"
+    brevo_sender_name: str = "Vtab Migration Studio"
     supabase_url: str | None = None
     supabase_anon_key: str | None = None
     supabase_service_role_key: str | None = None
