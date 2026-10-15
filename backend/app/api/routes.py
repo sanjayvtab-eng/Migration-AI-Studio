@@ -342,9 +342,11 @@ async def register_request_otp(data:RegisterRequestIn,db:Session=Depends(get_db)
     
     from app.services.email_service import send_otp_email
     email_sent, email_detail = await send_otp_email(email, otp_code)
+    print(f"[AUTH] Generated OTP for {email}: {otp_code} (dispatched={email_sent})")
     
+    msg = "OTP verification code sent to your email" if email_sent else f"OTP: {otp_code} (Delivery note: {email_detail})"
     return {
-        "message": "OTP verification code sent to your email" if email_sent else f"OTP generated (Delivery note: {email_detail})",
+        "message": msg,
         "email": email,
         "email_dispatched": email_sent,
         "detail": email_detail
