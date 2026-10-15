@@ -5,7 +5,7 @@ services:
     # Free demo: local SQLite data is lost on restart or redeploy.
     plan: free
     region: singapore
-    branch: codex/release-6-master-orchestrator
+    branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health
@@ -18,9 +18,9 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: BOOTSTRAP_ADMIN_USERNAME
-        sync: false
+        value: admin
       - key: BOOTSTRAP_ADMIN_PASSWORD
-        sync: false
+        value: Admin@Migration2026!
       - key: ALLOWED_ORIGINS
         value: "*"
       - key: SQLSERVER_DRIVER
