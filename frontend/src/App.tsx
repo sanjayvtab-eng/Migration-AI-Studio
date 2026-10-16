@@ -774,6 +774,10 @@ export default function App() {
   const [scheduleTime, setScheduleTime] = useState("02:00");
   const [scheduleEmail, setScheduleEmail] = useState("");
   const [scheduleSyncing, setScheduleSyncing] = useState(false);
+  const scheduleInitializedPid = useRef<string | null>(null);
+  useEffect(() => {
+    scheduleInitializedPid.current = null;
+  }, [pid]);
   const [medValidation, setMedValidation] = useState<any>(null),
     [artifactInspector, setArtifactInspector] = useState<any>(null);
   const [aiCandidate, setAiCandidate] = useState<any>(null),
@@ -959,7 +963,8 @@ export default function App() {
         api(`/projects/${id}/schedule`)
           .then((data: any) => {
             setScheduleConfig(data);
-            if (data?.schedule) {
+            if (data?.schedule && scheduleInitializedPid.current !== id) {
+              scheduleInitializedPid.current = id;
               setScheduleEnabled(data.schedule.is_enabled || false);
               setScheduleFreq(data.schedule.frequency || "DAILY");
               setScheduleTime(data.schedule.scheduled_time || "02:00");
