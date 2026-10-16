@@ -1839,6 +1839,8 @@ def system_health_check(project_id: str | None = None, db: Session = Depends(get
 class ScheduleUpdateIn(BaseModel):
     frequency: str = "DAILY"
     scheduled_time: str = "02:00"
+    timezone: str | None = "UTC"
+    timezone_offset: int | None = 0
     is_enabled: bool = False
     notification_email: str | None = None
 
@@ -1853,9 +1855,11 @@ def get_project_schedule(project_id: str, db: Session = Depends(get_db)):
             project_id=project_id,
             frequency="DAILY",
             scheduled_time="02:00",
+            timezone="UTC",
+            timezone_offset=0,
             is_enabled=False,
             notification_email=None,
-            next_run_at=compute_next_run_at("DAILY", "02:00"),
+            next_run_at=compute_next_run_at("DAILY", "02:00", 0),
         )
         db.add(schedule)
         db.commit()
@@ -1870,7 +1874,7 @@ def get_project_schedule(project_id: str, db: Session = Depends(get_db)):
             "watermark_type": wm.watermark_type,
             "last_watermark_value": wm.last_watermark_value,
             "last_synced_rows": wm.last_synced_rows,
-            "updated_at": wm.updated_at.isoformat() if wm.updated_at else None,
+            "updated_at": (wm.updated_at.isoformat() + "Z") if wm.updated_at else None,
         }
         for wm in watermarks
     ]
@@ -1888,10 +1892,12 @@ def get_project_schedule(project_id: str, db: Session = Depends(get_db)):
             "project_id": schedule.project_id,
             "frequency": schedule.frequency,
             "scheduled_time": schedule.scheduled_time,
+            "timezone": schedule.timezone or "UTC",
+            "timezone_offset": schedule.timezone_offset or 0,
             "is_enabled": schedule.is_enabled,
             "notification_email": schedule.notification_email,
-            "last_run_at": schedule.last_run_at.isoformat() if schedule.last_run_at else None,
-            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+            "last_run_at": (schedule.last_run_at.isoformat() + "Z") if schedule.last_run_at else None,
+            "next_run_at": (schedule.next_run_at.isoformat() + "Z") if schedule.next_run_at else None,
             "last_run_status": schedule.last_run_status,
             "last_run_summary": last_summary,
         },
@@ -1912,11 +1918,15 @@ def update_project_schedule(project_id: str, payload: ScheduleUpdateIn, db: Sess
 
     schedule.frequency = payload.frequency.upper()
     schedule.scheduled_time = payload.scheduled_time
+    if payload.timezone:
+        schedule.timezone = payload.timezone
+    if payload.timezone_offset is not None:
+        schedule.timezone_offset = payload.timezone_offset
     schedule.is_enabled = payload.is_enabled
     schedule.notification_email = payload.notification_email.strip() if payload.notification_email else None
     
     if schedule.is_enabled:
-        schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time)
+        schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time, schedule.timezone_offset or 0)
     else:
         schedule.next_run_at = None
 
@@ -1929,7 +1939,9 @@ def update_project_schedule(project_id: str, payload: ScheduleUpdateIn, db: Sess
             "is_enabled": schedule.is_enabled,
             "frequency": schedule.frequency,
             "scheduled_time": schedule.scheduled_time,
-            "next_run_at": schedule.next_run_at.isoformat() if schedule.next_run_at else None,
+            "timezone": schedule.timezone or "UTC",
+            "timezone_offset": schedule.timezone_offset or 0,
+            "next_run_at": (schedule.next_run_at.isoformat() + "Z") if schedule.next_run_at else None,
         },
     }
 

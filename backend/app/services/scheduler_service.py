@@ -15,11 +15,11 @@ _scheduler_task: asyncio.Task | None = None
 _is_running: bool = False
 
 
-def compute_next_run_at(frequency: str, scheduled_time: str) -> datetime:
+def compute_next_run_at(frequency: str, scheduled_time: str, timezone_offset: int = 0) -> datetime:
     """
-    Computes the next run datetime in UTC based on frequency and HH:MM string.
+    Computes the next run datetime in UTC based on frequency, HH:MM string, and client timezone_offset (in minutes, e.g. +330 for IST).
     """
-    now = datetime.utcnow()
+    now_utc = datetime.utcnow()
     try:
         parts = scheduled_time.strip().split(":")
         hour = int(parts[0])
@@ -30,15 +30,21 @@ def compute_next_run_at(frequency: str, scheduled_time: str) -> datetime:
     freq = (frequency or "DAILY").upper()
 
     if freq == "HOURLY":
-        target = now.replace(minute=minute, second=0, microsecond=0)
-        if target <= now:
+        # Calculate UTC minute corresponding to user's local minute
+        utc_minute = (minute - (timezone_offset % 60)) % 60
+        target = now_utc.replace(minute=utc_minute, second=0, microsecond=0)
+        if target <= now_utc:
             target += timedelta(hours=1)
         return target
     else:  # DAILY
-        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        return target
+        # Local time now in client's timezone:
+        now_local = now_utc + timedelta(minutes=timezone_offset)
+        target_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target_local <= now_local:
+            target_local += timedelta(days=1)
+        # Convert local target back to UTC for scheduling
+        target_utc = target_local - timedelta(minutes=timezone_offset)
+        return target_utc
 
 
 async def scheduler_worker_loop():
@@ -91,7 +97,7 @@ async def _run_schedule_job(project_id: str):
             schedule = db.query(MigrationSchedule).filter(MigrationSchedule.project_id == project_id).first()
             if schedule:
                 schedule.last_run_status = "FAILED"
-                schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time)
+                schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time, schedule.timezone_offset or 0)
                 db.commit()
 
 

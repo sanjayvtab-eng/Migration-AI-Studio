@@ -146,23 +146,85 @@ type ModRecord = {
   payload: { title?: string; status?: string; details?: any };
 };
 
-function formatDateTime(val: any): string {
+function formatDateTime(val: any, includeTz: boolean = false): string {
   if (!val) return "-";
   let s = String(val).trim();
   if (!s) return "-";
+  let d: Date;
   if (/^\d{10,13}$/.test(s)) {
     const num = Number(s);
-    const d = new Date(num < 1e11 ? num * 1000 : num);
-    return isNaN(d.getTime()) ? s : d.toLocaleString();
+    d = new Date(num < 1e11 ? num * 1000 : num);
+  } else {
+    if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+      s = s.replace(" ", "T");
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+      s = s + "Z";
+    }
+    d = new Date(s);
   }
-  if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
-    s = s.replace(" ", "T");
+  if (isNaN(d.getTime())) return String(val);
+  const dateStr = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+  const formatted = `${dateStr}, ${timeStr}`;
+  if (includeTz) {
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      return `${formatted} (${tz})`;
+    } catch {
+      return formatted;
+    }
   }
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
-    s = s + "Z";
+  return formatted;
+}
+
+function formatDateTimeWithUtc(val: any): string {
+  if (!val) return "Pending calculation";
+  let s = String(val).trim();
+  if (!s) return "Pending calculation";
+  let d: Date;
+  if (/^\d{10,13}$/.test(s)) {
+    const num = Number(s);
+    d = new Date(num < 1e11 ? num * 1000 : num);
+  } else {
+    if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+      s = s.replace(" ", "T");
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+      s = s + "Z";
+    }
+    d = new Date(s);
   }
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? String(val) : d.toLocaleString();
+  if (isNaN(d.getTime())) return String(val);
+  const dateStr = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const timeStr = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+  let tz = "";
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {}
+  const utcStr = d.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  return `${dateStr}, ${timeStr} ${tz ? `(${tz})` : ""} [${utcStr}]`;
+}
+
+function formatDateOnly(val: any): string {
+  if (!val) return "-";
+  let s = String(val).trim();
+  if (!s) return "-";
+  let d: Date;
+  if (/^\d{10,13}$/.test(s)) {
+    const num = Number(s);
+    d = new Date(num < 1e11 ? num * 1000 : num);
+  } else {
+    if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(s)) {
+      s = s.replace(" ", "T");
+    }
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {
+      s = s + "Z";
+    }
+    d = new Date(s);
+  }
+  if (isNaN(d.getTime())) return String(val);
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
 function formatTimeOnly(val: any): string {
@@ -176,7 +238,25 @@ function formatTimeOnly(val: any): string {
     s = s + "Z";
   }
   const d = new Date(s);
-  return isNaN(d.getTime()) ? String(val) : d.toLocaleTimeString();
+  if (isNaN(d.getTime())) return String(val);
+  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+}
+
+function computeUtcEquivalent(localHHMM: string): string {
+  try {
+    const parts = (localHHMM || "02:00").split(":");
+    const h = parseInt(parts[0], 10) || 0;
+    const m = parseInt(parts[1], 10) || 0;
+    const offsetMin = -new Date().getTimezoneOffset();
+    let totalLocalMin = h * 60 + m;
+    let totalUtcMin = (totalLocalMin - offsetMin) % 1440;
+    if (totalUtcMin < 0) totalUtcMin += 1440;
+    const utcH = Math.floor(totalUtcMin / 60);
+    const utcM = totalUtcMin % 60;
+    return `${String(utcH).padStart(2, "0")}:${String(utcM).padStart(2, "0")} UTC`;
+  } catch {
+    return "UTC";
+  }
 }
 
 function formatSqlIdent(raw: string): string {
@@ -1694,11 +1774,15 @@ export default function App() {
     if (!pid) return;
     setScheduleLoading(true);
     try {
+      const clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      const clientOffsetMinutes = -new Date().getTimezoneOffset();
       await api(`/projects/${pid}/schedule`, {
         method: "PUT",
         body: JSON.stringify({
           frequency: scheduleFreq,
           scheduled_time: scheduleTime,
+          timezone: clientTimeZone,
+          timezone_offset: clientOffsetMinutes,
           is_enabled: scheduleEnabled,
           notification_email: scheduleEmail || null,
         }),
@@ -4020,7 +4104,7 @@ export default function App() {
                           const stageLabel = isCompleted ? "Production Cutover" : isReview ? "Gate Reviews" : isActive ? "Migration Workflow" : "Discovery";
 
                           const formattedDate = p.created_at
-                            ? new Date(p.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                            ? formatDateOnly(p.created_at)
                             : "Recently";
 
                           return (
@@ -8110,7 +8194,7 @@ export default function App() {
                       </span>
                       <span style={{ fontSize: 13, color: "#334155", fontWeight: 600 }}>
                         {scheduleEnabled
-                          ? `Next automated run: ${scheduleConfig?.schedule?.next_run_at ? new Date(scheduleConfig.schedule.next_run_at).toUTCString() : "Pending calculation"}`
+                          ? `Next automated run: ${scheduleConfig?.schedule?.next_run_at ? formatDateTimeWithUtc(scheduleConfig.schedule.next_run_at) : "Pending calculation"}`
                           : "Enable scheduling below to automate daily delta migrations to Databricks"}
                       </span>
                     </div>
@@ -8118,7 +8202,7 @@ export default function App() {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#64748b" }}>
                         <span>Last Run:</span>
                         <Badge s={scheduleConfig.schedule.last_run_status} />
-                        <span>({scheduleConfig.schedule.last_run_at ? new Date(scheduleConfig.schedule.last_run_at).toLocaleTimeString() : "-"})</span>
+                        <span>({scheduleConfig.schedule.last_run_at ? formatDateTime(scheduleConfig.schedule.last_run_at, true) : "-"})</span>
                       </div>
                     )}
                   </div>
@@ -8161,7 +8245,7 @@ export default function App() {
 
                     <div>
                       <label style={{ fontSize: 12, fontWeight: 600, color: "#475569", display: "block", marginBottom: 6 }}>
-                        Scheduled Time (HH:MM UTC)
+                        Scheduled Time (Local - {Intl.DateTimeFormat().resolvedOptions().timeZone || "Local"})
                       </label>
                       <input
                         type="time"
@@ -8169,6 +8253,9 @@ export default function App() {
                         onChange={(e) => setScheduleTime(e.target.value)}
                         style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1" }}
                       />
+                      <span style={{ fontSize: 11, color: "#64748b", marginTop: 4, display: "block" }}>
+                        Runs at <b>{scheduleTime || "02:00"} Local</b> ({computeUtcEquivalent(scheduleTime)})
+                      </span>
                     </div>
 
                     <div>
@@ -8226,7 +8313,7 @@ export default function App() {
                                 {wm.last_synced_rows?.toLocaleString() || 0}
                               </td>
                               <td style={{ padding: "8px 12px", color: "#64748b" }}>
-                                {wm.updated_at ? new Date(wm.updated_at).toLocaleString() : "-"}
+                                {wm.updated_at ? formatDateTime(wm.updated_at, true) : "-"}
                               </td>
                             </tr>
                           ))}
@@ -8244,7 +8331,7 @@ export default function App() {
                     <div style={{ padding: 14, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                         <span style={{ fontWeight: 700, fontSize: 13, color: "#1e293b" }}>
-                          Latest Execution Summary ({scheduleConfig.schedule.last_run_summary.executed_at})
+                          Latest Execution Summary ({formatDateTime(scheduleConfig.schedule.last_run_summary.executed_at, true)})
                         </span>
                         <Badge s={scheduleConfig.schedule.last_run_summary.status} />
                       </div>

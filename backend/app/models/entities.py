@@ -428,6 +428,8 @@ class MigrationSchedule(Base, ProjectScoped):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     frequency: Mapped[str] = mapped_column(String(32), default="DAILY")
     scheduled_time: Mapped[str] = mapped_column(String(16), default="02:00")
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True, default="UTC")
+    timezone_offset: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     notification_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

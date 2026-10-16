@@ -446,7 +446,7 @@ async def run_incremental_sync_for_project(
         schedule.last_run_summary_json = json.dumps(summary)
         # Advance next_run_at
         from app.services.scheduler_service import compute_next_run_at
-        schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time)
+        schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time, schedule.timezone_offset or 0)
         db.commit()
 
         # Send digest email if configured
