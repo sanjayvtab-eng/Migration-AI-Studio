@@ -372,19 +372,19 @@ class OracleAdapter(DBAPIAdapter):
         schema = (self.source.schema_name or self.source.username or "").upper()
         with self._cursor() as cursor:
             cursor.execute("""SELECT OWNER schema_name, TABLE_NAME object_name, 'TABLE' object_type
-                FROM ALL_TABLES WHERE OWNER=:1 UNION ALL SELECT OWNER, VIEW_NAME, 'VIEW'
-                FROM ALL_VIEWS WHERE OWNER=:1 ORDER BY 2""", [schema])
+                FROM ALL_TABLES WHERE OWNER=:schema UNION ALL SELECT OWNER, VIEW_NAME, 'VIEW'
+                FROM ALL_VIEWS WHERE OWNER=:schema ORDER BY 2""", {"schema": schema})
             objects = self._rows(cursor)
             cursor.execute("""SELECT OWNER AS schema_name, TABLE_NAME AS object_name, COLUMN_NAME AS column_name,
                 COLUMN_ID AS ordinal, DATA_TYPE AS data_type, DATA_LENGTH AS max_length, DATA_PRECISION AS "precision",
                 DATA_SCALE AS "scale", NULLABLE AS is_nullable, DATA_DEFAULT AS column_default
-                FROM ALL_TAB_COLUMNS WHERE OWNER=:1 ORDER BY TABLE_NAME, COLUMN_ID""", [schema])
+                FROM ALL_TAB_COLUMNS WHERE OWNER=:schema ORDER BY TABLE_NAME, COLUMN_ID""", {"schema": schema})
             columns = self._rows(cursor)
             cursor.execute("""SELECT c.OWNER schema_name, c.TABLE_NAME object_name, c.CONSTRAINT_NAME constraint_name,
                 CASE c.CONSTRAINT_TYPE WHEN 'P' THEN 'PRIMARY KEY' ELSE 'UNIQUE' END constraint_type,
                 cc.COLUMN_NAME column_name, cc.POSITION ordinal FROM ALL_CONSTRAINTS c
                 JOIN ALL_CONS_COLUMNS cc ON c.OWNER=cc.OWNER AND c.CONSTRAINT_NAME=cc.CONSTRAINT_NAME
-                WHERE c.OWNER=:1 AND c.CONSTRAINT_TYPE IN ('P','U')""", [schema])
+                WHERE c.OWNER=:schema AND c.CONSTRAINT_TYPE IN ('P','U')""", {"schema": schema})
             constraints = self._rows(cursor)
         return _canonical_snapshot(self.source.database_name, objects, columns, constraints, self.engine)
 
