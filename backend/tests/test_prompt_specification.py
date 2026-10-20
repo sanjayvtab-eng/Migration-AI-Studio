@@ -229,3 +229,101 @@ def test_prompt_native_dev_uses_every_approved_canonical_bronze_target(db, monke
         "`migration_dev`.`bronze`.`order_summary`",
         "`migration_dev`.`bronze`.`products`",
     }
+
+
+def test_retail_migration_demo_nineteen_artifacts_medallion():
+    prompt = (
+        "Migrate RetailMigrationDemo from SQL Server to Databricks DEV. "
+        "Bronze: ingest RetailCustomers, Suppliers, Inventory, Sales and SalesDetails. "
+        "Silver: create cleaned views for all five tables; validate duplicates, prices, discounts, stock quantities and foreign keys; "
+        "implement fn_CalculateNetSales and idempotent MERGE loaders usp_loadInventory and usp_loadSales. "
+        "Gold: create dim_customer, dim_product, dim_supplier, fact_sales, vw_monthly_sales_trend and vw_inventory_reorder_alerts "
+        "with monthly revenue, profit margins, sales growth, supplier performance and low-stock alerts. "
+        "Validate all identifiers, source dependencies, business rules and artifact placement; wait for plan approval before generation."
+    )
+    snapshot = {
+        "database": "RetailMigrationDemo",
+        "objects": [
+            {"name": "Suppliers", "type": "TABLE", "columns": [
+                {"name": "SupplierID", "target_name": "supplier_id"},
+                {"name": "SupplierName", "target_name": "supplier_name"},
+                {"name": "City", "target_name": "city"},
+                {"name": "Country", "target_name": "country"}
+            ]},
+            {"name": "Inventory", "type": "TABLE", "columns": [
+                {"name": "ProductID", "target_name": "product_id"},
+                {"name": "ProductName", "target_name": "product_name"},
+                {"name": "Category", "target_name": "category"},
+                {"name": "UnitCost", "target_name": "unit_cost"},
+                {"name": "UnitPrice", "target_name": "unit_price"},
+                {"name": "StockQuantity", "target_name": "stock_quantity"},
+                {"name": "SupplierID", "target_name": "supplier_id"}
+            ]},
+            {"name": "RetailCustomers", "type": "TABLE", "columns": [
+                {"name": "CustomerID", "target_name": "customer_id"},
+                {"name": "CustomerName", "target_name": "customer_name"},
+                {"name": "Email", "target_name": "email"},
+                {"name": "City", "target_name": "city"},
+                {"name": "RegistrationDate", "target_name": "registration_date"}
+            ]},
+            {"name": "Sales", "type": "TABLE", "columns": [
+                {"name": "SaleID", "target_name": "sale_id"},
+                {"name": "CustomerID", "target_name": "customer_id"},
+                {"name": "SaleDate", "target_name": "sale_date"},
+                {"name": "PaymentMethod", "target_name": "payment_method"},
+                {"name": "SaleStatus", "target_name": "sale_status"}
+            ]},
+            {"name": "SalesDetails", "type": "TABLE", "columns": [
+                {"name": "SaleDetailID", "target_name": "sale_detail_id"},
+                {"name": "SaleID", "target_name": "sale_id"},
+                {"name": "ProductID", "target_name": "product_id"},
+                {"name": "Quantity", "target_name": "quantity"},
+                {"name": "UnitPrice", "target_name": "unit_price"},
+                {"name": "DiscountPercent", "target_name": "discount_percent"}
+            ]}
+        ]
+    }
+
+    requests, questions = service._build_requests(prompt, snapshot, {})
+    assert len(requests) == 19
+
+    bronze = [r for r in requests if r["layer"] == "BRONZE"]
+    silver = [r for r in requests if r["layer"] == "SILVER"]
+    gold = [r for r in requests if r["layer"] == "GOLD"]
+
+    assert len(bronze) == 5
+    assert len(silver) == 8
+    assert len(gold) == 6
+
+    # Verify Gold artifact names and types
+    gold_names = {r["name"].lower(): r for r in gold}
+    assert "vw_monthly_sales_trend" in gold_names
+    assert gold_names["vw_monthly_sales_trend"]["type"] == "SUMMARY_VIEW"
+    assert "vw_inventory_reorder_alerts" in gold_names
+    assert gold_names["vw_inventory_reorder_alerts"]["type"] == "SUMMARY_VIEW"
+
+    # Verify dim_product correctly mapped to Inventory
+    assert gold_names["dim_product"]["source_refs"] == ["Inventory"]
+    assert gold_names["dim_customer"]["source_refs"] == ["RetailCustomers"]
+    assert gold_names["dim_supplier"]["source_refs"] == ["Suppliers"]
+
+    # Verify clean views
+    clean_views = [r for r in silver if r["structured"].get("view_kind") == "CLEAN"]
+    assert len(clean_views) == 5
+    clean_names = {r["name"] for r in clean_views}
+    assert clean_names == {
+        "vw_suppliers_clean",
+        "vw_inventory_clean",
+        "vw_retail_customers_clean",
+        "vw_sales_clean",
+        "vw_sales_details_clean",
+    }
+
+    # Verify DAG validity
+    assert service._validate_dag(requests) == []
+
+    # Verify answer completion grounds all 19 artifacts
+    answers = {q["key"]: q["recommended_answer"] for q in questions}
+    grounded_requests, _ = service._build_requests(prompt, snapshot, answers)
+    assert all(r["grounding_status"] == "GROUNDED" for r in grounded_requests)
+

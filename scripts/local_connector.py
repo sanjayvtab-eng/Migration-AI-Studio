@@ -290,15 +290,31 @@ class LocalAgent:
             conn.timeout = 60
             return conn
         except pyodbc.Error as exc:
-            if "IM002" in str(exc):
+            err_str = str(exc)
+            if "IM002" in err_str:
                 installed = [d for d in pyodbc.drivers() if "SQL Server" in d]
-                for alt in ["ODBC Driver 17 for SQL Server", "ODBC Driver 18 for SQL Server", "SQL Server"]:
+                for alt in ["ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server", "SQL Server"]:
                     if alt in installed and alt not in self.connection_string:
                         alt_cs = re.sub(r"DRIVER=\{[^}]+\}", f"DRIVER={{{alt}}}", self.connection_string)
                         try:
                             conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
                             conn.timeout = 60
                             self.connection_string = alt_cs
+                            return conn
+                        except Exception:
+                            continue
+            # Automatic fallback if plain localhost/127.0.0.1 is used on a named instance machine
+            if any(k in err_str for k in ("08001", "HYT00", "network-related", "not accessible", "server is not found")):
+                server_m = re.search(r"SERVER=\{?([^};]+)\}?", self.connection_string)
+                current_server = (server_m.group(1) if server_m else "").strip("{}'\"")
+                if current_server.lower() in ("localhost", "127.0.0.1", ".", "localhost:1433", "127.0.0.1:1433"):
+                    for candidate in [r"localhost\SQLEXPRESS", r".\SQLEXPRESS", r"SHANJI\SQLEXPRESS"]:
+                        alt_cs = re.sub(r"SERVER=\{?[^};]+\}?", f"SERVER={{{candidate}}}", self.connection_string)
+                        try:
+                            conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
+                            conn.timeout = 60
+                            self.connection_string = alt_cs
+                            self.server = candidate
                             return conn
                         except Exception:
                             continue
@@ -314,8 +330,17 @@ class LocalAgent:
                     self.streams.pop(key, None)
 
     def handle(self, task: dict[str, Any]) -> dict[str, Any]:
-        if (task.get("source_id"), task.get("server"), task.get("database")) != (
-                self.source_id, self.server, self.database):
+        def _match_server(s1: str, s2: str) -> bool:
+            if s1 == s2:
+                return True
+            n1 = (s1 or "").lower().replace(r".\\", "localhost\\").replace("127.0.0.1", "localhost").split(":")[0]
+            n2 = (s2 or "").lower().replace(r".\\", "localhost\\").replace("127.0.0.1", "localhost").split(":")[0]
+            if n1 == n2:
+                return True
+            local_aliases = {"localhost", "localhost\\sqlexpress", "shanji\\sqlexpress", ".\\sqlexpress"}
+            return n1 in local_aliases and n2 in local_aliases
+
+        if task.get("source_id") != self.source_id or task.get("database") != self.database or not _match_server(task.get("server", ""), self.server):
             raise ValueError("Source identity mismatch; verify the registered source profile")
         op, data = task["operation"], task.get("payload", {})
         self.cleanup()

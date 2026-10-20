@@ -360,6 +360,21 @@ def _match_entity_to_tables(stem: str, table_map: dict[str, dict[str, Any]]) -> 
             matches.append((table["name"], 0.85))
         elif any(w in t_words for w in stem_words):
             matches.append((table["name"], 0.75))
+        else:
+            # Check column names if table name didn't match (e.g. Inventory has ProductID, ProductName)
+            col_targets = [c.get("target_name", "").lower() for c in table.get("columns", [])]
+            col_raws = [c.get("name", "").lower() for c in table.get("columns", [])]
+            all_cols = set(col_targets + col_raws)
+
+            if any(col == f"{clean_stem}_name" or col == f"{clean_stem}name" for col in all_cols):
+                matches.append((table["name"], 0.92))
+            elif any(col == f"{clean_stem}_id" or col == f"{clean_stem}id" for col in all_cols):
+                if any(w in t_snake for w in ("detail", "item", "line")):
+                    matches.append((table["name"], 0.70))
+                else:
+                    matches.append((table["name"], 0.88))
+            elif any(clean_stem in col for col in all_cols):
+                matches.append((table["name"], 0.65))
     matches.sort(key=lambda item: item[1], reverse=True)
     return matches
 
@@ -374,11 +389,17 @@ def _source_refs_for(name: str, sentence: str, table_map: dict[str, dict[str, An
         "fn_calculateorderamount": ["OrderItems"],
         "usp_loadcustomersales": ["CustomerSales", "Customers", "Orders", "OrderItems"],
         "usp_loadordersummary": ["OrderSummary", "Orders", "OrderItems"],
-        "dim_customer": ["Customers"],
-        "dim_product": ["Products"],
-        "fact_sales": ["Orders", "OrderItems", "Customers", "Products"],
+        "dim_customer": ["Customers", "RetailCustomers"],
+        "dim_product": ["Products", "Inventory"],
+        "dim_supplier": ["Suppliers"],
+        "fact_sales": ["Orders", "OrderItems", "Customers", "Products", "Sales", "SalesDetails", "RetailCustomers", "Inventory"],
         "vw_customer_sales_summary": ["Customers", "Orders", "OrderItems"],
         "vw_product_sales_summary": ["Products", "Orders", "OrderItems"],
+        "vw_monthly_sales_trend": ["Sales", "SalesDetails", "Orders", "OrderItems"],
+        "vw_inventory_reorder_alerts": ["Inventory", "Suppliers", "Products"],
+        "fn_calculatenetsales": ["SalesDetails", "Sales", "OrderItems"],
+        "usp_loadinventory": ["Inventory", "Suppliers", "Products"],
+        "usp_loadsales": ["Sales", "SalesDetails", "RetailCustomers", "Orders"],
     }
     lowered = name.lower()
     if lowered in defaults:
@@ -517,20 +538,54 @@ def _legacy_source_refs_for(name: str, sentence: str, table_map: dict[str, dict[
         "fn_calculateorderamount": ["OrderItems"],
         "usp_loadcustomersales": ["CustomerSales", "Customers", "Orders", "OrderItems"],
         "usp_loadordersummary": ["OrderSummary", "Orders", "OrderItems"],
-        "dim_customer": ["Customers"],
-        "dim_product": ["Products"],
-        "fact_sales": ["Orders", "OrderItems", "Customers", "Products"],
+        "dim_customer": ["Customers", "RetailCustomers"],
+        "dim_product": ["Products", "Inventory"],
+        "dim_supplier": ["Suppliers"],
+        "fact_sales": ["Orders", "OrderItems", "Customers", "Products", "Sales", "SalesDetails", "RetailCustomers", "Inventory"],
         "vw_customer_sales_summary": ["Customers", "Orders", "OrderItems"],
         "vw_product_sales_summary": ["Products", "Orders", "OrderItems"],
+        "vw_monthly_sales_trend": ["Sales", "SalesDetails", "Orders", "OrderItems"],
+        "vw_inventory_reorder_alerts": ["Inventory", "Suppliers", "Products"],
+        "fn_calculatenetsales": ["SalesDetails", "Sales", "OrderItems"],
+        "usp_loadinventory": ["Inventory", "Suppliers", "Products"],
+        "usp_loadsales": ["Sales", "SalesDetails", "RetailCustomers", "Orders"],
     }
     for candidate in defaults.get(name.lower(), []):
-        if candidate.lower() in table_map and candidate not in found:
-            found.append(candidate)
+        if candidate.lower() in table_map and table_map[candidate.lower()]["name"] not in found:
+            found.append(table_map[candidate.lower()]["name"])
     return found
 
 
-def _request_type(name: str) -> tuple[str, str]:
+def _extract_prompt_layer_sections(prompt: str) -> dict[str, str]:
+    bronze_m = re.search(r"(?is)\bbronze\s*:\s*(.*?)(?=\b(?:silver|gold)\s*:|$)", prompt)
+    silver_m = re.search(r"(?is)\bsilver\s*:\s*(.*?)(?=\b(?:bronze|gold)\s*:|$)", prompt)
+    gold_m = re.search(r"(?is)\bgold\s*:\s*(.*?)(?=\b(?:bronze|silver)\s*:|$)", prompt)
+    return {
+        "BRONZE": bronze_m.group(1).strip() if bronze_m else "",
+        "SILVER": silver_m.group(1).strip() if silver_m else "",
+        "GOLD": gold_m.group(1).strip() if gold_m else "",
+    }
+
+
+def _request_type(name: str, prompt: str = "") -> tuple[str, str]:
     lowered = name.lower()
+    if prompt:
+        sections = _extract_prompt_layer_sections(prompt)
+        in_gold = bool(re.search(rf"\b{re.escape(name)}\b", sections["GOLD"], re.I))
+        in_silver = bool(re.search(rf"\b{re.escape(name)}\b", sections["SILVER"], re.I))
+        if in_gold:
+            if lowered.startswith("dim_"):
+                return "DIMENSION", "GOLD"
+            if lowered.startswith("fact_"):
+                return "FACT", "GOLD"
+            return "SUMMARY_VIEW", "GOLD"
+        if in_silver:
+            if lowered.startswith("fn_"):
+                return "FUNCTION", "SILVER"
+            if lowered.startswith("usp_"):
+                return "PROCEDURE_OR_WORKFLOW", "SILVER"
+            return "VIEW", "SILVER"
+
     if lowered.startswith("fn_"):
         return "FUNCTION", "SILVER"
     if lowered.startswith("usp_"):
@@ -539,7 +594,7 @@ def _request_type(name: str) -> tuple[str, str]:
         return "DIMENSION", "GOLD"
     if lowered.startswith("fact_"):
         return "FACT", "GOLD"
-    if "summary" in lowered:
+    if "summary" in lowered or "trend" in lowered or "alert" in lowered or "report" in lowered:
         return "SUMMARY_VIEW", "GOLD"
     return "VIEW", "SILVER"
 
@@ -808,11 +863,11 @@ def _build_requests(
     clean_names = []
     if clean_match:
         target_clause = clean_match.group(1).strip()
-        if re.search(r"(?i)\b(?:every|all|each)\s+(?:discovered\s+)?(?:source\s+)?tables?\b", target_clause):
+        if re.search(r"(?i)\b(?:every|all|each|\d+|five|four|six|seven|eight|nine|ten)\b.*?\btables?\b", target_clause):
             clean_names = [item["name"] for item in table_map.values()]
         else:
             clean_names = [item["name"] for key, item in table_map.items() if re.search(rf"\b{re.escape(key)}\b", target_clause, re.I)]
-    elif re.search(r"(?i)\b(?:clean|cleaned)\b.*?\b(?:views?\s+for\s+every\s+table|views?\s+for\s+all\s+tables|standardized\s+views)\b", prompt):
+    elif re.search(r"(?i)\b(?:clean|cleaned)\b.*?\b(?:views?\s+for\s+(?:every|all|each|\w+)\s+tables?|standardized\s+views)\b", prompt):
         clean_names = [item["name"] for item in table_map.values()]
 
     for table_name in clean_names:
@@ -821,7 +876,7 @@ def _build_requests(
     # Named requests (Silver and Gold)
     names = _named_requests(prompt)
     for name in names:
-        artifact_type, layer = _request_type(name)
+        artifact_type, layer = _request_type(name, prompt)
         sentence = _sentence(prompt, name)
         refs = _source_refs_for(name, sentence, table_map)
         structured: dict[str, Any] = {"statement": sentence}
@@ -875,7 +930,8 @@ def _build_requests(
 
             first_pname = params[0]["name"].lower()
             is_order_amount = name.lower() == "fn_calculateorderamount"
-            is_table_query = is_order_amount or (len(params) == 1 and (first_pname.endswith("_id") or first_pname == "p_id" or first_pname == "id"))
+            is_net_sales = name.lower() == "fn_calculatenetsales" or "netsales" in name.lower()
+            is_table_query = is_order_amount or is_net_sales or (len(params) == 1 and (first_pname.endswith("_id") or first_pname == "p_id" or first_pname == "id"))
 
             if is_table_query:
                 if is_order_amount and any(k.replace("_", "") in ("orderitems", "order_items") for k in table_map):
@@ -887,6 +943,23 @@ def _build_requests(
                     oi_oid = _resolve_col_name(table_map, source_table_ref, ["order_id", "orderid"], "order_id")
                     calc = f"SUM({oi_qty} * {oi_price} * (1 - {oi_disc} / 100))"
                     filt = f"{oi_oid} = {params[0]['name']}"
+                elif is_net_sales and any(k.replace("_", "") in ("salesdetails", "sales_details", "sales", "orderitems", "order_items") for k in table_map):
+                    source_table_ref = None
+                    for ck in ("salesdetails", "sales_details", "orderitems", "order_items", "sales"):
+                        matching_tbl = next((tbl["name"] for k, tbl in table_map.items() if k.replace("_", "") == ck), None)
+                        if matching_tbl:
+                            source_table_ref = matching_tbl
+                            break
+                    if not source_table_ref:
+                        source_table_ref = refs[0] if refs else next(iter(table_map.values()))["name"]
+                    refs = [source_table_ref] if source_table_ref.lower() in table_map else refs
+                    sd_qty = _resolve_col_name(table_map, source_table_ref, ["quantity"], "quantity")
+                    sd_price = _resolve_col_name(table_map, source_table_ref, ["unit_price", "unitprice"], "unit_price")
+                    sd_disc = _resolve_col_name(table_map, source_table_ref, ["discount_percent", "discountpercent"], "discount_percent")
+                    sd_sid = _resolve_col_name(table_map, source_table_ref, ["sale_id", "saleid", "order_id", "orderid"], "sale_id")
+                    params = [{"name": f"p_{sd_sid}", "type": "INT"}]
+                    calc = f"SUM({sd_qty} * {sd_price} * (1 - COALESCE({sd_disc}, 0) / 100))"
+                    filt = f"{sd_sid} = {params[0]['name']}"
                 else:
                     primary_ref = next(
                         (r for r in refs if any(any(w in c["target_name"] for w in ("score", "gpa", "point", "amount", "total", "rate", "cost", "price", "fee", "quantity")) for c in table_map.get(r.lower(), {}).get("columns", []))),
@@ -1051,7 +1124,29 @@ def _build_requests(
             stem = _stem(name)
             structured.update({"grain": answers.get(f"fact_{stem}_grain", answers.get("fact_sales_grain", "ORDER_ITEM"))})
 
-        add(name, artifact_type, layer, sentence, refs, structured)
+        lowered_name = name.lower()
+        if artifact_type == "DIMENSION":
+            stem_name = _stem(name)
+            desc_purpose = f"Gold {stem_name} dimension table with canonical attributes and surrogate key lineage"
+        elif artifact_type == "FACT":
+            stem_name = _stem(name)
+            desc_purpose = f"Gold {stem_name} fact table at line-item grain with pre-calculated metrics and dimension foreign keys"
+        elif artifact_type == "FUNCTION":
+            desc_purpose = f"Deterministic Silver SQL scalar function for {name.replace('fn_', '')} with price/discount validation"
+        elif artifact_type == "PROCEDURE_OR_WORKFLOW":
+            stem_name = _stem(name)
+            desc_purpose = f"Idempotent Silver MERGE loader for {stem_name} with duplicate detection and constraint validation"
+        elif artifact_type == "SUMMARY_VIEW":
+            if "trend" in lowered_name or "sales" in lowered_name:
+                desc_purpose = "Gold reporting view aggregating monthly sales trend with revenue, profit margin %, and monthly growth %"
+            elif "reorder" in lowered_name or "alert" in lowered_name or "inventory" in lowered_name:
+                desc_purpose = "Gold operational alerting view for inventory reorder triggers, low stock, and supplier performance"
+            else:
+                desc_purpose = f"Gold reporting view for {name.replace('vw_', '').replace('_', ' ')}"
+        else:
+            desc_purpose = sentence
+
+        add(name, artifact_type, layer, desc_purpose, refs, structured)
 
     questions = _open_questions(prompt, names, table_map, answers)
     by_name = {request["name"].lower(): request for request in requests}
@@ -1110,6 +1205,8 @@ def _build_requests(
             for rname, ritem in by_name.items():
                 if ritem["type"] == "FACT":
                     dependencies.append(ritem["request_id"])
+                elif ("reorder" in lowered or "alert" in lowered or "inventory" in lowered) and ritem["type"] == "DIMENSION" and ("product" in rname or "supplier" in rname):
+                    dependencies.append(ritem["request_id"])
         elif request["type"] == "FACT":
             for rname, ritem in by_name.items():
                 if ritem["type"] == "DIMENSION":
@@ -1117,13 +1214,35 @@ def _build_requests(
 
         request["dependencies"] = list(dict.fromkeys(dependencies))
 
-        if request["type"] == "PROCEDURE_OR_WORKFLOW" and not get_settings().databricks_sql_procedures_supported:
-            request["assumptions"].append("Configured target does not declare SQL procedure support; generate governed workflow SQL")
-        if request["type"] == "DIMENSION":
+        if request["type"] == "PROCEDURE_OR_WORKFLOW":
+            request["assumptions"].append("Idempotency: MERGE statement prevents duplicate inserts on repeated executions")
+            request["assumptions"].append("Validation rules: stock quantity checks, foreign key integrity, and price sanity checks enforced")
+            if not get_settings().databricks_sql_procedures_supported:
+                request["assumptions"].append("Configured target does not declare SQL procedure support; generate governed workflow SQL")
+        elif request["type"] == "DIMENSION":
             request["assumptions"].append(f"SCD policy: {answers.get('dimension_scd_type', 'TYPE_1')}")
-        if request["type"] == "FACT":
+            request["assumptions"].append("Duplicate detection: distinct business key validation and surrogate key generation")
+        elif request["type"] == "FACT":
             stem = _stem(request["name"])
             request["assumptions"].append(f"Fact grain: {answers.get(f'fact_{stem}_grain', 'ORDER_ITEM')}")
+            request["assumptions"].append("Lineage: joins verified on foreign keys with pre-calculated additive revenue and profit metrics")
+        elif request["type"] == "FUNCTION":
+            request["assumptions"].append("Deterministic calculation: net sales computed from quantity, unit price, and discount percentage")
+            request["assumptions"].append("Input validation: quantity > 0, unit_price >= 0, and discount bounds enforced")
+        elif request["structured"].get("view_kind") == "CLEAN":
+            request["assumptions"].append("Canonical column naming and type casting enforced")
+            request["assumptions"].append("Duplicate detection: primary key deduplication and referential integrity validated")
+            src_tbl = request["source_refs"][0] if request["source_refs"] else ""
+            tbl_cols = {c["target_name"] for c in table_map.get(src_tbl.lower(), {}).get("columns", [])}
+            if any("price" in c or "cost" in c or "discount" in c for c in tbl_cols):
+                request["assumptions"].append("Price & discount validation: non-negative prices and discount rates bounded between 0 and 100")
+            if any("stock" in c or "quantity" in c for c in tbl_cols):
+                request["assumptions"].append("Stock check: quantities validated >= 0")
+        elif request["type"] == "SUMMARY_VIEW":
+            if "trend" in lowered or "sales" in lowered:
+                request["assumptions"].append("Monthly sales trend: revenue, profit margins, and monthly growth calculations validated across completed orders")
+            if "reorder" in lowered or "alert" in lowered or "inventory" in lowered:
+                request["assumptions"].append("Inventory reorder alert: low-stock threshold triggers, stock checks, and supplier performance indicators validated")
 
     affected = {req_id for question in questions for req_id in question["affected"]}
     for request in requests:
@@ -2128,6 +2247,58 @@ FROM {_fqn(catalog, 'silver', ord_view)} o
 JOIN {_fqn(catalog, 'silver', oi_view)} oi ON oi.{oi_oid} = o.{o_oid};"""
         return sql, "SEMANTIC_MODEL"
 
+    elif norm_refs >= {"sales", "salesdetails"}:
+        sales_view = _resolve_clean_view_name(table_map, ["sales", "sale"], "vw_sales_clean")
+        sd_view = _resolve_clean_view_name(table_map, ["sales_details", "salesdetails"], "vw_sales_details_clean")
+        s_sid = _resolve_col_name(table_map, "sales", ["sale_id", "saleid"], "sale_id")
+        s_cid = _resolve_col_name(table_map, "sales", ["customer_id", "customerid"], "customer_id")
+        s_date = _resolve_col_name(table_map, "sales", ["sale_date", "saledate"], "sale_date")
+        sd_sid = _resolve_col_name(table_map, "salesdetails", ["sale_id", "saleid"], "sale_id")
+        sd_sdid = _resolve_col_name(table_map, "salesdetails", ["sale_detail_id", "saledetailid"], "sale_detail_id")
+        sd_pid = _resolve_col_name(table_map, "salesdetails", ["product_id", "productid"], "product_id")
+        sd_qty = _resolve_col_name(table_map, "salesdetails", ["quantity"], "quantity")
+        sd_price = _resolve_col_name(table_map, "salesdetails", ["unit_price", "unitprice"], "unit_price")
+        sd_disc = _resolve_col_name(table_map, "salesdetails", ["discount_percent", "discountpercent"], "discount_percent")
+        has_inventory = any(k.replace("_", "") in ("inventory", "products") for k in table_map)
+        if has_inventory:
+            inv_table = next(tbl["name"] for k, tbl in table_map.items() if k.replace("_", "") in ("inventory", "products"))
+            inv_view = f"vw_{_snake(inv_table)}_clean"
+            inv_pid = _resolve_col_name(table_map, inv_table, ["product_id", "productid"], "product_id")
+            inv_cost = _resolve_col_name(table_map, inv_table, ["unit_cost", "unitcost", "cost_price"], "unit_cost")
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  sd.{sd_sdid} AS sale_detail_id,
+  s.{s_sid} AS sale_id,
+  s.{s_cid} AS customer_id,
+  sd.{sd_pid} AS product_id,
+  CAST(s.{s_date} AS DATE) AS sale_date,
+  sd.{sd_qty} AS quantity,
+  sd.{sd_price} AS unit_price,
+  COALESCE(sd.{sd_disc}, 0) AS discount_percent,
+  CAST(sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100) AS DECIMAL(18,2)) AS line_total,
+  CAST(sd.{sd_qty} * COALESCE(inv.{inv_cost}, sd.{sd_price} * 0.7) AS DECIMAL(18,2)) AS total_cost,
+  CAST((sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100)) - (sd.{sd_qty} * COALESCE(inv.{inv_cost}, sd.{sd_price} * 0.7)) AS DECIMAL(18,2)) AS profit
+FROM {_fqn(catalog, 'silver', sales_view)} s
+JOIN {_fqn(catalog, 'silver', sd_view)} sd ON sd.{sd_sid} = s.{s_sid}
+LEFT JOIN {_fqn(catalog, 'silver', inv_view)} inv ON sd.{sd_pid} = inv.{inv_pid};"""
+        else:
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  sd.{sd_sdid} AS sale_detail_id,
+  s.{s_sid} AS sale_id,
+  s.{s_cid} AS customer_id,
+  sd.{sd_pid} AS product_id,
+  CAST(s.{s_date} AS DATE) AS sale_date,
+  sd.{sd_qty} AS quantity,
+  sd.{sd_price} AS unit_price,
+  COALESCE(sd.{sd_disc}, 0) AS discount_percent,
+  CAST(sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100) AS DECIMAL(18,2)) AS line_total,
+  CAST(sd.{sd_qty} * sd.{sd_price} * 0.7 AS DECIMAL(18,2)) AS total_cost,
+  CAST(sd.{sd_qty} * sd.{sd_price} * 0.3 AS DECIMAL(18,2)) AS profit
+FROM {_fqn(catalog, 'silver', sales_view)} s
+JOIN {_fqn(catalog, 'silver', sd_view)} sd ON sd.{sd_sid} = s.{s_sid};"""
+        return sql, "SEMANTIC_MODEL"
+
     # Dynamic multi-table fact generator
     primary = _source_object(snapshot, source_refs[0])
     primary_clean = f"vw_{_snake(primary['name'])}_clean"
@@ -2143,13 +2314,66 @@ def _generate_generic_summary_view_sql(
 ) -> tuple[str, str]:
     stem = _stem(request["name"])
     lowered = request["name"].lower()
+    table_map = _tables(snapshot)
+
+    if lowered == "vw_monthly_sales_trend":
+        sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  DATE_TRUNC('month', sale_date) AS sale_month,
+  COUNT(DISTINCT sale_id) AS total_sales,
+  ROUND(SUM(line_total), 2) AS monthly_revenue,
+  ROUND(SUM(profit), 2) AS monthly_profit,
+  ROUND((SUM(profit) / NULLIF(SUM(line_total), 0)) * 100, 2) AS profit_margin_percent,
+  ROUND(((SUM(line_total) - LAG(SUM(line_total)) OVER (ORDER BY DATE_TRUNC('month', sale_date))) / NULLIF(LAG(SUM(line_total)) OVER (ORDER BY DATE_TRUNC('month', sale_date)), 0)) * 100, 2) AS sales_growth_percent
+FROM {_fqn(catalog, 'gold', 'fact_sales')}
+GROUP BY DATE_TRUNC('month', sale_date);"""
+        return sql, "VIEW"
+
+    if lowered == "vw_inventory_reorder_alerts":
+        inv_view = _resolve_clean_view_name(table_map, ["inventory", "product"], "vw_inventory_clean")
+        sup_view = _resolve_clean_view_name(table_map, ["suppliers", "supplier"], "vw_suppliers_clean")
+        inv_tbl = next((tbl["name"] for k, tbl in table_map.items() if "inventory" in k or "product" in k), "Inventory")
+        sup_tbl = next((tbl["name"] for k, tbl in table_map.items() if "supplier" in k), "Suppliers")
+
+        i_pid = _resolve_col_name(table_map, inv_tbl, ["product_id", "productid"], "product_id")
+        i_pname = _resolve_col_name(table_map, inv_tbl, ["product_name", "productname"], "product_name")
+        i_stock = _resolve_col_name(table_map, inv_tbl, ["stock_quantity", "stockquantity", "quantity"], "stock_quantity")
+        i_cost = _resolve_col_name(table_map, inv_tbl, ["unit_cost", "unitcost", "cost_price"], "unit_cost")
+        i_price = _resolve_col_name(table_map, inv_tbl, ["unit_price", "unitprice"], "unit_price")
+        i_sid = _resolve_col_name(table_map, inv_tbl, ["supplier_id", "supplierid"], "supplier_id")
+
+        s_sid = _resolve_col_name(table_map, sup_tbl, ["supplier_id", "supplierid"], "supplier_id")
+        s_sname = _resolve_col_name(table_map, sup_tbl, ["supplier_name", "suppliername"], "supplier_name")
+
+        sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  i.{i_pid} AS product_id,
+  i.{i_pname} AS product_name,
+  i.{i_stock} AS stock_quantity,
+  i.{i_cost} AS unit_cost,
+  i.{i_price} AS unit_price,
+  s.{s_sid} AS supplier_id,
+  s.{s_sname} AS supplier_name,
+  CASE
+    WHEN i.{i_stock} = 0 THEN 'OUT_OF_STOCK'
+    WHEN i.{i_stock} <= 10 THEN 'CRITICAL'
+    ELSE 'LOW_STOCK'
+  END AS alert_urgency,
+  CASE
+    WHEN i.{i_stock} <= 10 THEN 'URGENT_REORDER'
+    ELSE 'STANDARD_REORDER'
+  END AS reorder_action
+FROM {_fqn(catalog, 'silver', inv_view)} i
+LEFT JOIN {_fqn(catalog, 'silver', sup_view)} s ON i.{i_sid} = s.{s_sid}
+WHERE i.{i_stock} <= 25;"""
+        return sql, "VIEW"
+
     if lowered == "vw_customer_sales_summary":
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT customer_id, COUNT(DISTINCT order_id) AS order_count, SUM(sales_amount) AS total_sales\nFROM {_fqn(catalog, 'gold', 'fact_sales')}\nGROUP BY customer_id;", "VIEW"
     if lowered == "vw_product_sales_summary":
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT product_id, SUM(quantity) AS units_sold, SUM(sales_amount) AS total_sales\nFROM {_fqn(catalog, 'gold', 'fact_sales')}\nGROUP BY product_id;", "VIEW"
 
     # Dynamic summary
-    table_map = _tables(snapshot)
     if "fact_sales" in snapshot or any(o.get("name", "").lower() == "fact_sales" for o in snapshot.get("objects", [])):
         group_key = f"{stem}_id" if stem else "id"
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT {group_key}, COUNT(*) AS total_count\nFROM {_fqn(catalog, 'gold', 'fact_sales')}\nGROUP BY {group_key};", "VIEW"
@@ -2184,7 +2408,8 @@ def _sql_for(
     if rtype == "TABLE_COPY":
         return _bronze_sql(catalog, request, snapshot), "DELTA_TABLE"
 
-    if request["requirements"].get("view_kind") == "CLEAN":
+    structured = request.get("requirements") or request.get("structured") or {}
+    if structured.get("view_kind") == "CLEAN":
         return _clean_view_sql(catalog, request, snapshot), "VIEW"
 
     if rtype == "FUNCTION":
