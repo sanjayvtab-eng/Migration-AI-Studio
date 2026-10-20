@@ -901,15 +901,19 @@ export default function App() {
         setRecords(await api(`/projects/${id}/module/${moduleMap[page]}`));
       if (id && ["Medallion Design", "Deployments", "Migration Workflow"].includes(page)) {
         const [status, projectLogs]: any = await Promise.all([
-          api(`/projects/${id}/medallion/deployments/dev/status`),
-          api(`/projects/${id}/deployments/dev/logs?limit=1000`),
+          api(`/projects/${id}/medallion/deployments/dev/status`).catch(() => null),
+          api(`/projects/${id}/deployments/dev/logs?limit=1000`).catch(() => null),
         ]);
-        const logs: any = status.run_id
-          ? await api(`/projects/${id}/medallion/deployments/${status.run_id}/logs`)
-          : { logs: [] };
-        setMedDeployment(status);
-        setMedLogs(logs.logs || []);
-        setLogView(projectLogs.logs || []);
+        if (status) {
+          const logs: any = status.run_id
+            ? await api(`/projects/${id}/medallion/deployments/${status.run_id}/logs`).catch(() => ({ logs: [] }))
+            : { logs: [] };
+          setMedDeployment(status);
+          setMedLogs(logs?.logs || []);
+        }
+        if (projectLogs) {
+          setLogView(projectLogs?.logs || []);
+        }
       }
       if (page === "Compatibility" && id)
         setCompat(await api(`/projects/${id}/compatibility/summary`));
@@ -975,20 +979,20 @@ export default function App() {
       }
       if ((page === "Waves" || page === "Deployment" || page === "Deployments") && id) {
         const [status, recon, uatStatus, uatReconciliation, prodStatus, prodReconciliation, promptPromotion]: any = await Promise.all([
-          api(`/projects/${id}/promotions/test/status`),
-          api(`/projects/${id}/promotions/test/reconciliation/latest`),
-          api(`/projects/${id}/promotions/uat/status`),
-          api(`/projects/${id}/promotions/uat/reconciliation/latest`),
-          api(`/projects/${id}/promotions/prod/status`),
-          api(`/projects/${id}/promotions/prod/reconciliation/latest`),
+          api(`/projects/${id}/promotions/test/status`).catch(() => null),
+          api(`/projects/${id}/promotions/test/reconciliation/latest`).catch(() => null),
+          api(`/projects/${id}/promotions/uat/status`).catch(() => null),
+          api(`/projects/${id}/promotions/uat/reconciliation/latest`).catch(() => null),
+          api(`/projects/${id}/promotions/prod/status`).catch(() => null),
+          api(`/projects/${id}/promotions/prod/reconciliation/latest`).catch(() => null),
           api(`/projects/${id}/prompt-promotion/latest`).catch(() => ({ plan: null, execution: null })),
         ]);
-        setTestPromotion(status);
-        setTestRecon(recon);
-        setUatPromotion(uatStatus);
-        setUatRecon(uatReconciliation);
-        setProdPromotion(prodStatus);
-        setProdRecon(prodReconciliation);
+        if (status) setTestPromotion(status);
+        if (recon) setTestRecon(recon);
+        if (uatStatus) setUatPromotion(uatStatus);
+        if (uatReconciliation) setUatRecon(uatReconciliation);
+        if (prodStatus) setProdPromotion(prodStatus);
+        if (prodReconciliation) setProdRecon(prodReconciliation);
         if (promptPromotion?.plan) setPromotionPlan(promptPromotion.plan);
         if (promptPromotion?.execution) setPromotionExecution(promptPromotion.execution);
       }
@@ -3219,7 +3223,7 @@ export default function App() {
                     {/* Final Step: Deploy & Validate on DEV (Strictly disabled until all artifacts are generated, validated, and approved) */}
                     {(() => {
                       const hasOpenQuestions = promptSpec?.clarifications?.some((question: any) => question.status === "OPEN");
-                      const isArtifactsApproved = promptSpec && ["ARTIFACTS_APPROVED", "DEV_DEPLOYMENT_FAILED"].includes(promptSpec.status);
+                      const isArtifactsApproved = promptSpec && ["ARTIFACTS_APPROVED", "DEV_DEPLOYMENT_FAILED", "DEPLOYING_DEV"].includes(promptSpec.status);
                       const isDevDeployEnabled = Boolean(isArtifactsApproved && !hasOpenQuestions && !busy && !promptRunning);
 
                       const disabledReason = !promptSpec
@@ -3234,6 +3238,8 @@ export default function App() {
                         ? "Click 'Validate in Databricks' first"
                         : promptSpec.status === "PENDING_ARTIFACT_REVIEW"
                         ? "Click 'Approve Current Artifacts' first"
+                        : promptSpec.status === "DEPLOYING_DEV"
+                        ? "Deploying to DEV (or click to retry if interrupted)"
                         : "Complete artifact review before DEV deployment";
 
                       return (
@@ -9226,6 +9232,32 @@ export default function App() {
                         <option value="RUNNING">Running</option>
                       </select>
                     </div>
+
+                    {(overallStatus === "RUNNING" || medDeployment?.status === "RUNNING") && (
+                      <button
+                        type="button"
+                        className="deploy-action-btn"
+                        style={{ color: "#e11d48", borderColor: "#fecdd3", background: "#fff1f2", fontWeight: 700 }}
+                        title="Cancel or reset stuck running deployment attempt"
+                        disabled={!pid || busy}
+                        onClick={async () => {
+                          if (confirm("Reset the current running deployment attempt and allow retrying?")) {
+                            setBusy(true);
+                            try {
+                              await api(`/projects/${pid}/medallion/deployments/cancel`, { method: "POST" });
+                              await refresh();
+                              setMsg("Deployment run reset. Ready to retry Deploy to DEV.");
+                            } catch (e: any) {
+                              setMsg(e.message);
+                            } finally {
+                              setBusy(false);
+                            }
+                          }
+                        }}
+                      >
+                        <AlertCircle size={13} /> Reset Stale Run
+                      </button>
+                    )}
 
                     <button
                       type="button"

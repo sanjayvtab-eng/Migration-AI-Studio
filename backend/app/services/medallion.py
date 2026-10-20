@@ -2128,6 +2128,17 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
 
     loaded_bronze_results = {}
     if len(bronze_targets_to_load) > 1:
+        from app.services.source_connector import connector_info
+        is_connector = False
+        for obj_id, _ in bronze_targets_to_load:
+            obj = object_by_id.get(obj_id)
+            if obj and connector_info(obj.source_id).get("mode") == "CONNECTOR":
+                is_connector = True
+                break
+
+        # Connector sources must be loaded sequentially (max_workers=1) to prevent queue contention and cursor interleaving on the local agent
+        max_workers = 1 if is_connector else min(len(bronze_targets_to_load), 4)
+
         import concurrent.futures
         from app.core.database import SessionLocal
 
@@ -2148,7 +2159,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
             finally:
                 worker_db.close()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(bronze_targets_to_load), 4)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(_worker_bronze_load, obj_id, target_fqn): obj_id
                 for obj_id, target_fqn in bronze_targets_to_load

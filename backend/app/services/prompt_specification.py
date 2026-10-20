@@ -1396,6 +1396,12 @@ def detail(db: Session, project_id: str, specification_id: str) -> dict[str, Any
     spec = db.get(PromptSpecification, specification_id)
     if not spec or spec.project_id != project_id:
         raise LookupError("Prompt specification not found in project")
+    if spec.current_status == "DEPLOYING_DEV":
+        from app.services.deployment import medallion_deployment_status
+        med_status = medallion_deployment_status(db, project_id, "DEV")
+        if med_status.get("status") in {"FAILED", "PASSED"}:
+            spec.current_status = "DEV_GATE_PASSED" if med_status.get("status") == "PASSED" else "DEV_DEPLOYMENT_FAILED"
+            db.commit()
     version = _current_version(db, spec)
     requests = list(db.scalars(select(PromptArtifactRequest).where(
         PromptArtifactRequest.project_id == project_id,

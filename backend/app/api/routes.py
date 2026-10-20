@@ -25,7 +25,7 @@ from app.services.type_compatibility import compatibility_catalog, transport_con
 from app.services.deployment import (
     dev_precheck, deploy_dev, latest_failed_dev_run, run_reconciliation,
     latest_reconciliation, evaluate_dev_gate, deployment_status,
-    medallion_deployment_status,
+    medallion_deployment_status, cancel_stale_medallion_deployment,
     test_promotion_precheck, promote_medallion_to_test, evaluate_test_gate,
     uat_promotion_precheck, promote_medallion_to_uat, evaluate_uat_gate,
     prod_promotion_precheck, promote_medallion_to_prod, evaluate_prod_gate,
@@ -1425,6 +1425,11 @@ def deployment_status_api(project_id:str,db:Session=Depends(get_db),_=Depends(au
 @router.get("/projects/{project_id}/medallion/deployments/dev/status")
 def medallion_deployment_status_api(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     return medallion_deployment_status(db,project_id,"DEV")
+
+
+@router.post("/projects/{project_id}/medallion/deployments/cancel")
+def medallion_cancel_run_api(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+    return cancel_stale_medallion_deployment(db,project_id,"DEV")
 
 
 @router.post("/projects/{project_id}/promotions/test/precheck")

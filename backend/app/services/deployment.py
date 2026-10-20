@@ -720,9 +720,33 @@ def medallion_deployment_status(
         objects = [row for row in run_rows if _payload(row).get("medallion_node_id")]
         failure = next((row for row in run_rows if row.status == "FAILED"), None)
         complete = any(_payload(row).get("medallion_run_complete") for row in run_rows)
-        status = "FAILED" if failure else "PASSED" if complete else "RUNNING" if any(
-            _payload(row).get("medallion_run_started") for row in run_rows
-        ) else "INCOMPLETE"
+        is_started = any(_payload(row).get("medallion_run_started") for row in run_rows)
+
+        # Detect stale RUNNING runs: if a run was started but has had no activity for > 180 seconds,
+        # or if started > 180 seconds ago with 0 deployed objects, auto-transition to FAILED so UI doesn't hang.
+        if is_started and not failure and not complete:
+            latest_time = max((row.created_at for row in run_rows if row.created_at), default=None)
+            if latest_time and (datetime.utcnow() - latest_time).total_seconds() > 180:
+                stale_err = "Deployment attempt timed out or was interrupted. Click Deploy Medallion DEV to retry."
+                timeout_record = MigrationDeployment(
+                    id=uid("DPL"),
+                    project_id=project_id,
+                    object_id=None,
+                    environment=env,
+                    status="FAILED",
+                    payload_json=_json({
+                        "run_id": run_id,
+                        "medallion_run_finished": True,
+                        "error": stale_err,
+                        "timeout": True,
+                    })
+                )
+                db.add(timeout_record)
+                db.commit()
+                failure = timeout_record
+                run_rows.append(timeout_record)
+
+        status = "FAILED" if failure else "PASSED" if complete else "RUNNING" if is_started else "INCOMPLETE"
         # Accept complete manifests recorded before explicit run markers were added.
         previous = _latest_successful_medallion_run(db, project_id, env)
         if not failure and previous and previous[0] == run_id:
@@ -750,6 +774,42 @@ def medallion_deployment_status(
         "run_id": run_id,
         "deployed": len(manifest),
     }
+
+
+def cancel_stale_medallion_deployment(db: Session, project_id: str, env: str = "DEV") -> dict[str, Any]:
+    """Force-cancel or clear a stuck RUNNING deployment run so users can retry."""
+    rows = list(db.scalars(select(MigrationDeployment).where(
+        MigrationDeployment.project_id == project_id,
+        MigrationDeployment.environment == env,
+    ).order_by(MigrationDeployment.created_at.desc())).all())
+    attempts = [row for row in rows if any(_payload(row).get(key) for key in (
+        "medallion_node_id", "medallion_run_started", "medallion_run_finished", "medallion_run_complete",
+    ))]
+    if not attempts:
+        return {"status": "NO_ACTIVE_RUN", "message": "No active medallion run found."}
+    run_id = _payload(attempts[0]).get("run_id")
+    run_rows = [row for row in attempts if _payload(row).get("run_id") == run_id]
+    failure = next((row for row in run_rows if row.status == "FAILED"), None)
+    complete = any(_payload(row).get("medallion_run_complete") for row in run_rows)
+    if not failure and not complete:
+        err = "Deployment cancelled / reset by user. Ready to retry."
+        cancel_record = MigrationDeployment(
+            id=uid("DPL"),
+            project_id=project_id,
+            object_id=None,
+            environment=env,
+            status="FAILED",
+            payload_json=_json({
+                "run_id": run_id,
+                "medallion_run_finished": True,
+                "error": err,
+                "cancelled": True,
+            })
+        )
+        db.add(cancel_record)
+        db.commit()
+        return {"status": "CANCELLED", "run_id": run_id, "message": "Active deployment cancelled successfully."}
+    return {"status": "ALREADY_FINISHED", "run_id": run_id, "message": "Run has already completed or failed."}
 
 
 def _routine_exists(target_fqn: str, routine_type: str) -> None:
