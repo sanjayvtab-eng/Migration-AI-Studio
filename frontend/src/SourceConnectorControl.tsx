@@ -270,6 +270,25 @@ export default function SourceConnectorControl({
                 >
                   ⬇ Download Agent (.exe)
                 </button>
+                <button
+                  type="button"
+                  onClick={downloadEnvFile}
+                  style={{
+                    background: "#091e420f",
+                    color: "#0052cc",
+                    border: "1px solid #0052cc",
+                    borderRadius: 4,
+                    padding: "9px 18px",
+                    fontSize: "0.95rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  📄 Download Configuration (agent.env)
+                </button>
               </div>
               <p
                 style={{
