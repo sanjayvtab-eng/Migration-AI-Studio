@@ -437,15 +437,21 @@ def find_config_path(cli_path: str | None = None) -> Path | None:
         p = Path(cli_path)
         if p.is_file():
             return p
-    for name in ["agent.env", "connector.env", ".env"]:
-        p = Path.cwd() / name
-        if p.is_file():
-            return p
+
+    dirs = [Path.cwd()]
     base_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-    for name in ["agent.env", "connector.env", ".env"]:
-        p = base_dir / name
-        if p.is_file():
-            return p
+    if base_dir not in dirs:
+        dirs.append(base_dir)
+
+    for d in dirs:
+        # Detect browser numbered downloads like agent (1).env or connector (1).env and pick the newest
+        all_env = list(d.glob("agent*.env")) + list(d.glob("connector*.env")) + list(d.glob(".env*"))
+        existing_env = [f for f in all_env if f.is_file() and f.stat().st_size > 0]
+        if existing_env:
+            # Sort by modification time descending so latest download is always used
+            existing_env.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            return existing_env[0]
+
     return None
 
 
