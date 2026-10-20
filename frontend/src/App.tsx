@@ -997,9 +997,11 @@ export default function App() {
         if (promptPromotion?.execution) setPromotionExecution(promptPromotion.execution);
       }
       // Auto-promotion status fetch
-      api(`/projects/${id}/master-orchestration/current`)
-        .then((s: any) => setAutoPromotionStatus(s))
-        .catch(() => setAutoPromotionStatus(null));
+      if (id && id !== "undefined") {
+        api(`/projects/${id}/master-orchestration/current`)
+          .then((s: any) => setAutoPromotionStatus(s))
+          .catch(() => setAutoPromotionStatus(null));
+      }
 
       if (page === "Migration Workflow" && id) {
         const [compatibility, mp, sm, ma, devRecon, cutover, decommission, promptData, masterData, latestSpec]: any = await Promise.all([

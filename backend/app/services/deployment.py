@@ -722,12 +722,12 @@ def medallion_deployment_status(
         complete = any(_payload(row).get("medallion_run_complete") for row in run_rows)
         is_started = any(_payload(row).get("medallion_run_started") for row in run_rows)
 
-        # Detect stale RUNNING runs: if a run was started but has had no activity for > 180 seconds,
-        # or if started > 180 seconds ago with 0 deployed objects, auto-transition to FAILED so UI doesn't hang.
+        # Detect stale RUNNING runs: if a run was started but has had no activity for > 600 seconds (10m),
+        # or if started > 600 seconds ago with 0 deployed objects, auto-transition to FAILED so UI doesn't hang forever.
         if is_started and not failure and not complete:
             latest_time = max((row.created_at for row in run_rows if row.created_at), default=None)
-            if latest_time and (datetime.utcnow() - latest_time).total_seconds() > 180:
-                stale_err = "Deployment attempt timed out or was interrupted. Click Deploy Medallion DEV to retry."
+            if latest_time and (datetime.utcnow() - latest_time).total_seconds() > 600:
+                stale_err = "Deployment attempt timed out after 10m of inactivity. Click Deploy Medallion DEV to retry (or specify Max rows for faster DEV testing)."
                 timeout_record = MigrationDeployment(
                     id=uid("DPL"),
                     project_id=project_id,
