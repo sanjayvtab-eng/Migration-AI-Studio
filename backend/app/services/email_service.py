@@ -6,13 +6,13 @@ BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 async def send_otp_email(to_email: str, otp_code: str) -> tuple[bool, str]:
     settings = get_settings()
-    api_key = settings.brevo_api_key
+    api_key = (settings.brevo_api_key or "").strip().strip('"').strip("'")
     if not api_key:
         print("[EMAIL WARNING] BREVO_API_KEY is not configured.")
         return False, "BREVO_API_KEY is not configured" 
 
-    sender_email = settings.brevo_sender_email or "noreply@migrationstudio.ai"
-    sender_name = settings.brevo_sender_name or "Migration Factory"
+    sender_email = (settings.brevo_sender_email or "noreply@migrationstudio.ai").strip().strip('"').strip("'")
+    sender_name = (settings.brevo_sender_name or "Migration Factory").strip().strip('"').strip("'")
 
     html_content = f"""
     <!DOCTYPE html>
@@ -73,13 +73,13 @@ async def send_otp_email(to_email: str, otp_code: str) -> tuple[bool, str]:
 
 async def send_migration_schedule_digest(to_email: str, project_name: str, summary: dict) -> tuple[bool, str]:
     settings = get_settings()
-    api_key = settings.brevo_api_key
+    api_key = (settings.brevo_api_key or "").strip().strip('"').strip("'")
     if not api_key:
         print("[EMAIL WARNING] BREVO_API_KEY is not configured.")
         return False, "BREVO_API_KEY is not configured"
 
-    sender_email = settings.brevo_sender_email or "noreply@migrationstudio.ai"
-    sender_name = settings.brevo_sender_name or "Migration Factory"
+    sender_email = (settings.brevo_sender_email or "noreply@migrationstudio.ai").strip().strip('"').strip("'")
+    sender_name = (settings.brevo_sender_name or "Migration Factory").strip().strip('"').strip("'")
 
     status = summary.get("status", "SUCCESS")
     total_delta = summary.get("total_delta_rows", 0)
