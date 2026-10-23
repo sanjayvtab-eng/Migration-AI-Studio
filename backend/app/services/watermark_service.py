@@ -254,16 +254,22 @@ def run_incremental_table_sync(
     # Fetch delta rows from source
     source_context, source_cursor = fetch_incremental_rows(source, table, columns, watermark, max_rows=max_rows)
     try:
-        suffix = re.sub(r"[^A-Za-z0-9_]", "_", run_id[-16:])
-        stage = _fqn(target_catalog, target_schema, f"__mf_stage_delta_{suffix}_{table.id[-8:]}")
-
-        # Drop and create staging table
-        environment_provisioning.project_execute(
-            db, project_id, f"DROP TABLE IF EXISTS {stage}", safe_retry=True
-        )
-        environment_provisioning.project_execute(
-            db, project_id, f"CREATE TABLE {stage} ({_ddl(columns)}) USING DELTA", safe_retry=False
-        )
+        # 1. Fast-path check: Fetch first batch from source to determine if delta records exist
+        first_batch = source_cursor.fetchmany(batch_size)
+        if not first_batch:
+            # Zero delta records: Fast-path return without touching Databricks DDL or triggering metastore quota limits
+            final_target_count = existing_count if existing_count is not None else _target_count(db, project_id, target)
+            watermark.last_synced_rows = 0
+            watermark.updated_at = datetime.utcnow()
+            db.commit()
+            return {
+                "table": table.object_name,
+                "status": "PASSED",
+                "delta_rows": 0,
+                "watermark_column": watermark.watermark_column,
+                "watermark_value": watermark.last_watermark_value,
+                "target_count": final_target_count or 0,
+            }
 
         rows_loaded = 0
         new_max_watermark = watermark.last_watermark_value
@@ -277,18 +283,16 @@ def run_incremental_table_sync(
 
         target_columns = ",".join(
             [_qident(column.column_name) for column in columns]
-            + ["`_migration_source_system`"]
+            + ["`_migration_ingested_at`", "`_migration_source_system`"]
         )
+        pk_cols = detect_primary_keys(columns, table.object_name)
 
         with environment_provisioning.project_connection(db, project_id) as target_connection:
             target_cursor = target_connection.cursor()
-            while True:
-                batch = source_cursor.fetchmany(batch_size)
-                if not batch:
-                    break
-
+            curr_batch = first_batch
+            while curr_batch:
                 payload = []
-                for offset, row in enumerate(batch):
+                for offset, row in enumerate(curr_batch):
                     normalized = normalize_row(columns, tuple(row), row_index=rows_loaded + offset + 1)
                     payload.append(normalized + (f"{source.server_name}/{source.database_name}",))
 
@@ -307,57 +311,48 @@ def run_incremental_table_sync(
                             format_sql_literal(val, col)
                             for val, col in zip(row_tuple[:-1], columns)
                         ]
+                        col_lits.append("current_timestamp()")
                         col_lits.append(format_sql_literal(row_tuple[-1]))
-                        row_sql_items.append(f"({', '.join(col_lits)}, current_timestamp())")
+                        row_sql_items.append(f"({', '.join(col_lits)})")
 
-                    multi_insert_sql = (
-                        f"INSERT INTO {stage} ({target_columns}, `_migration_ingested_at`) "
-                        f"VALUES {','.join(row_sql_items)}"
-                    )
-                    target_cursor.execute(multi_insert_sql)
+                    if pk_cols:
+                        # Direct MERGE using inline VALUES subquery — avoids creating UC metastore staging tables
+                        col_aliases = ", ".join([f"`{c.column_name}`" for c in columns] + ["`_migration_ingested_at`", "`_migration_source_system`"])
+                        join_cond = " AND ".join(f"t.`{col}` = s.`{col}`" for col in pk_cols)
+                        update_cols = ", ".join(f"`{col.column_name}` = s.`{col.column_name}`" for col in columns)
+                        all_cols = ", ".join([f"`{c.column_name}`" for c in columns] + ["`_migration_ingested_at`", "`_migration_source_system`"])
+                        insert_vals = ", ".join([f"s.`{c.column_name}`" for c in columns] + ["s.`_migration_ingested_at`", "s.`_migration_source_system`"])
+
+                        merge_sql = f"""
+                        MERGE INTO {target} AS t
+                        USING (
+                            SELECT * FROM (
+                                VALUES {','.join(row_sql_items)}
+                            ) AS _src({col_aliases})
+                        ) AS s
+                        ON {join_cond}
+                        WHEN MATCHED THEN
+                            UPDATE SET {update_cols}, t.`_migration_ingested_at` = s.`_migration_ingested_at`
+                        WHEN NOT MATCHED THEN
+                            INSERT ({all_cols}) VALUES ({insert_vals})
+                        """
+                        target_cursor.execute(merge_sql)
+                    else:
+                        insert_sql = (
+                            f"INSERT INTO {target} ({target_columns}) "
+                            f"VALUES {','.join(row_sql_items)}"
+                        )
+                        target_cursor.execute(insert_sql)
+
                 rows_loaded += len(payload)
+                curr_batch = source_cursor.fetchmany(batch_size)
 
-        # Merge or append into target Delta table
-        if rows_loaded > 0:
-            pk_cols = detect_primary_keys(columns, table.object_name)
-            if pk_cols:
-                join_cond = " AND ".join(f"t.`{col}` = s.`{col}`" for col in pk_cols)
-                update_cols = ", ".join(f"`{col.column_name}` = s.`{col.column_name}`" for col in columns)
-                all_cols = ", ".join([f"`{c.column_name}`" for c in columns] + ["`_migration_ingested_at`", "`_migration_source_system`"])
-                insert_vals = ", ".join([f"s.`{c.column_name}`" for c in columns] + ["s.`_migration_ingested_at`", "s.`_migration_source_system`"])
-
-                merge_sql = f"""
-                MERGE INTO {target} AS t
-                USING {stage} AS s
-                ON {join_cond}
-                WHEN MATCHED THEN
-                    UPDATE SET {update_cols}, t.`_migration_ingested_at` = s.`_migration_ingested_at`
-                WHEN NOT MATCHED THEN
-                    INSERT ({all_cols}) VALUES ({insert_vals})
-                """
-                logger.info(f"Merging {rows_loaded} rows into {target} on {join_cond}")
-                environment_provisioning.project_execute(db, project_id, merge_sql, safe_retry=False)
-            else:
-                publication_cols = ",".join(
-                    [_qident(column.column_name) for column in columns]
-                    + ["`_migration_ingested_at`", "`_migration_source_system`"]
-                )
-                append_sql = f"INSERT INTO {target} ({publication_cols}) SELECT {publication_cols} FROM {stage}"
-                logger.info(f"Appending {rows_loaded} rows into {target}")
-                environment_provisioning.project_execute(db, project_id, append_sql, safe_retry=False)
-
-            # Advance watermark
-            if new_max_watermark:
-                watermark.last_watermark_value = str(new_max_watermark)
-            watermark.last_synced_rows = rows_loaded
-            watermark.updated_at = datetime.utcnow()
-            db.commit()
-
-        # Cleanup stage table
-        try:
-            environment_provisioning.project_execute(db, project_id, f"DROP TABLE IF EXISTS {stage}", safe_retry=True)
-        except Exception:
-            pass
+        # Advance watermark
+        if new_max_watermark:
+            watermark.last_watermark_value = str(new_max_watermark)
+        watermark.last_synced_rows = rows_loaded
+        watermark.updated_at = datetime.utcnow()
+        db.commit()
 
         final_target_count = _target_count(db, project_id, target)
         return {
@@ -423,7 +418,7 @@ async def run_incremental_sync_for_project(
 
     duration = time.time() - start_time
     migration_run.status = overall_status
-    migration_run.completed_at = datetime.utcnow()
+    migration_run.ended_at = datetime.utcnow()
     db.commit()
 
     summary = {

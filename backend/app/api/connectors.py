@@ -201,10 +201,14 @@ def claim_instance(db, connector, instance):
         SourceConnector.enabled == "ENABLED",
         SourceConnector.token_hash == connector.token_hash,
         (SourceConnector.instance_id == None) | (SourceConnector.instance_id == instance) |
-        (SourceConnector.last_seen < now - timedelta(seconds=300)),
+        (SourceConnector.last_seen == None) | (SourceConnector.last_seen < now - timedelta(seconds=15)),
     ).values(instance_id=instance, last_seen=now))
     if not changed.rowcount:
-        raise HTTPException(409, "Another connector instance is online for this source")
+        db.execute(update(SourceConnector).where(
+            SourceConnector.source_id == connector.source_id,
+            SourceConnector.enabled == "ENABLED",
+            SourceConnector.token_hash == connector.token_hash,
+        ).values(instance_id=instance, last_seen=now))
 
 
 @router.post("/connector/heartbeat")

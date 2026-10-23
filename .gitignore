@@ -12,3 +12,6 @@ build/
 *.spec
 ~$*
 *.tsbuildinfo
+backup_before_update/
+scripts/bin/
+backend/scratch_graph.py

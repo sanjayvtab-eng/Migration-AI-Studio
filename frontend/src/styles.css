@@ -1220,6 +1220,17 @@
   color: #0f172a !important;
 }
 
+.actions-dropdown button.delete-action {
+  color: #ef4444 !important;
+  border-top: 1px solid #f1f5f9 !important;
+  margin-top: 2px !important;
+}
+
+.actions-dropdown button.delete-action:hover {
+  background: #fef2f2 !important;
+  color: #dc2626 !important;
+}
+
 /* Modal Dialog */
 .project-modal-backdrop {
   position: fixed;

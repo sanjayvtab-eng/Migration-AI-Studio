@@ -14,6 +14,8 @@ import {
   LogOut,
   Play,
   Plus,
+  Pencil,
+  Trash2,
   Search,
   CheckCircle2,
   PlugZap,
@@ -802,8 +804,7 @@ export default function App() {
   const [apiActiveCount, setApiActiveCount] = useState(0);
   const [manualSyncing, setManualSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<"idle" | "loading" | "success">("idle");
-  const [syncContext, setSyncContext] = useState<string>("Syncing...");
-  const isOperating = busy || apiActiveCount > 0 || manualSyncing;
+  const [syncContext, setSyncContext] = useState<string>("Sync");
   const prevOperatingRef = useRef(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
@@ -834,6 +835,36 @@ export default function App() {
   );
   const [promptSourceId, setPromptSourceId] = useState<string>("");
   const [promptSpec, setPromptSpec] = useState<any>(null);
+  const [artifactEditor, setArtifactEditor] = useState<any>(null);
+  const [artifactEditorError, setArtifactEditorError] = useState("");
+  const [planRefinement, setPlanRefinement] = useState("");
+  const [planRefinementNotice, setPlanRefinementNotice] = useState<{
+    type: "success" | "error" | "info";
+    title: string;
+    message: string;
+    timestamp?: string;
+    version?: number;
+    artifactCount?: number;
+    score?: number;
+  } | null>(null);
+  const [isRefiningPlan, setIsRefiningPlan] = useState(false);
+  const [refineDetailsOpen, setRefineDetailsOpen] = useState(true);
+  const isOperating = Boolean(
+    busy ||
+    manualSyncing ||
+    isRefiningPlan ||
+    promptRunning ||
+    promotionRunning ||
+    masterRunning ||
+    autoRunning ||
+    scheduleSyncing ||
+    ["DEPLOYING_DEV", "GENERATING_ARTIFACTS"].includes(promptSpec?.status) ||
+    medDeployment?.status === "RUNNING" ||
+    deployment?.status === "RUNNING"
+  );
+  const [promptAnalysis, setPromptAnalysis] = useState<any>(null);
+  const planEditingBlocked = busy || !promptSpec || ["DEPLOYING_DEV", "GENERATING_ARTIFACTS"].includes(promptSpec?.status)
+    || promptSpec?.clarifications?.some((q: any) => q.status === "OPEN");
   const [promptSpecPlan, setPromptSpecPlan] = useState<any>(null);
   const [promptSpecTrace, setPromptSpecTrace] = useState<any>(null);
   const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
@@ -866,6 +897,31 @@ export default function App() {
     setProjects(ps);
     if (!pid && ps[0]) setPid(ps[0].id);
     return ps;
+  }
+  async function handleDeleteProject(p: Project) {
+    if (
+      !window.confirm(
+        `Are you sure you want to permanently delete project "${p.name}" (${p.id})?\n\nThis will remove all associated sources, tables, metadata snapshots, and migration plans.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/projects/${p.id}`, { method: "DELETE" });
+      const updatedProjects = await api<Project[]>("/projects");
+      setProjects(updatedProjects);
+      if (pid === p.id) {
+        const nextProject = updatedProjects.find((x: any) => x.id !== p.id);
+        setPid(nextProject ? nextProject.id : "");
+      }
+      await refresh();
+      setMsg(`Project "${p.name}" deleted successfully.`);
+    } catch (err: any) {
+      setMsg(err.message || "Failed to delete project");
+    } finally {
+      setBusy(false);
+    }
   }
   async function refresh() {
     if (!ready) return;
@@ -1026,7 +1082,8 @@ export default function App() {
         if (promptData?.execution) setPromptExecution(promptData.execution);
         setMasterPlan(masterData?.plan || null);
         setMasterExecution(masterData?.execution || null);
-        if (latestSpec?.id) {
+        setPromptAnalysis(latestSpec?.analysis || null);
+        if (!artifactEditor && latestSpec?.id) {
           setPromptSpec(latestSpec);
           const [specPlan, specTrace] = await Promise.all([
             api(`/projects/${id}/prompt-specifications/${latestSpec.id}/plan`).catch(() => null),
@@ -1034,6 +1091,10 @@ export default function App() {
           ]);
           if (specPlan) setPromptSpecPlan(specPlan);
           if (specTrace) setPromptSpecTrace(specTrace);
+        } else {
+          setPromptSpec(null);
+          setPromptSpecPlan(null);
+          setPromptSpecTrace(null);
         }
       }
       if (page === "Users") setUsers(await api("/users"));
@@ -1074,16 +1135,41 @@ export default function App() {
     refresh();
   }, [ready, pid, page]);
 
-  // Live auto-polling on Migration Workflow, Deployment, Deployments, and Waves pages
+  // Live auto-polling: ONLY poll when an active background process / job is running
   useEffect(() => {
     if (!ready || !pid) return;
-    if (["Migration Workflow", "Deployments", "Deployment", "Waves"].includes(page)) {
+    const isJobActive = Boolean(
+      promptRunning ||
+      masterRunning ||
+      promotionRunning ||
+      autoRunning ||
+      isRefiningPlan ||
+      scheduleSyncing ||
+      ["DEPLOYING_DEV", "GENERATING_ARTIFACTS"].includes(promptSpec?.status) ||
+      medDeployment?.status === "RUNNING" ||
+      deployment?.status === "RUNNING"
+    );
+
+    if (isJobActive) {
       const pollTimer = setInterval(() => {
         refresh();
       }, 3000);
       return () => clearInterval(pollTimer);
     }
-  }, [ready, pid, page]);
+  }, [
+    ready,
+    pid,
+    page,
+    promptRunning,
+    masterRunning,
+    promotionRunning,
+    autoRunning,
+    isRefiningPlan,
+    scheduleSyncing,
+    promptSpec?.status,
+    medDeployment?.status,
+    deployment?.status,
+  ]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -1102,7 +1188,11 @@ export default function App() {
   useEffect(() => {
     if (isOperating && !prevOperatingRef.current) {
       setSyncStatus("loading");
-      if (page === "Deployments" || page === "Deployment" || page === "Waves") {
+      if (isRefiningPlan) {
+        setSyncContext("Refining Plan...");
+      } else if (promptRunning || autoRunning) {
+        setSyncContext("Generating Plan...");
+      } else if (page === "Deployments" || page === "Deployment" || page === "Waves" || promptSpec?.status === "DEPLOYING_DEV" || medDeployment?.status === "RUNNING") {
         setSyncContext("Deploying to DEV...");
       } else if (page === "Environment Setup") {
         setSyncContext("Provisioning DEV...");
@@ -1125,7 +1215,7 @@ export default function App() {
       return () => clearTimeout(timer);
     }
     prevOperatingRef.current = isOperating;
-  }, [isOperating, page]);
+  }, [isOperating, page, isRefiningPlan, promptRunning, autoRunning, promptSpec?.status, medDeployment?.status]);
 
   const handleLiveSync = async () => {
     if (isOperating) return;
@@ -1503,6 +1593,7 @@ export default function App() {
       api(`/projects/${pid}/prompt-specifications/${specificationId}/trace`).catch(() => null),
     ]);
     setPromptSpec(specification);
+    setPromptAnalysis((specification as any).analysis);
     setPromptSpecPlan(plan);
     setPromptSpecTrace(trace);
   }
@@ -1521,6 +1612,87 @@ export default function App() {
     } catch (e: any) {
       setMsg(e.message);
     } finally {
+      setBusy(false);
+    }
+  }
+  async function analyzePromptSpecification() {
+    if (!pid || !promptNativeText.trim()) return;
+    setBusy(true);
+    try {
+      const analysis = await api(`/projects/${pid}/prompt-specifications/analyze`, {
+        method: "POST", body: JSON.stringify({ prompt: promptNativeText, source_id: promptSourceId || undefined }),
+      });
+      setPromptAnalysis(analysis);
+    } catch (e: any) { setMsg(e.message); }
+    finally { setBusy(false); }
+  }
+  function openArtifactEditor(layer: string, item?: any) {
+    setArtifactEditorError("");
+    setArtifactEditor({ request_id: item?.request_id, name: item?.name || "", layer,
+      type: item?.type || (layer === "BRONZE" ? "TABLE_COPY" : "VIEW"),
+      source_refs: item?.source_refs?.join(", ") || "", dependencies: item?.dependencies?.join(", ") || "" });
+  }
+  async function savePlanArtifact() {
+    if (!artifactEditor || !pid || !promptSpec?.id) return;
+    setBusy(true);
+    setArtifactEditorError("");
+    const split = (value: string) => value.split(",").map(v => v.trim()).filter(Boolean);
+    try {
+      const { request_id, ...fields } = artifactEditor;
+      await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/artifacts${request_id ? `/${encodeURIComponent(request_id)}` : ""}`, {
+        method: request_id ? "PATCH" : "POST",
+        body: JSON.stringify({ ...fields, source_refs: split(fields.source_refs), dependencies: split(fields.dependencies) }),
+      });
+      await loadPromptSpecification(promptSpec.id);
+      setArtifactEditor(null);
+      setMsg("Plan updated. Review and approve the new version before generating artifacts.");
+    } catch (e: any) { setArtifactEditorError(e.message); }
+    finally { setBusy(false); }
+  }
+  async function deletePlanArtifact(item: any) {
+    if (!window.confirm(`Delete ${item.name} from the plan? Required dependents may prevent deletion.`)) return;
+    setBusy(true);
+    try {
+      await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/artifacts/${encodeURIComponent(item.request_id)}`, { method: "DELETE" });
+      await loadPromptSpecification(promptSpec.id);
+      setMsg("Artifact removed. Review and approve the updated plan.");
+    } catch (e: any) { setMsg(e.message); }
+    finally { setBusy(false); }
+  }
+  async function refinePromptPlan() {
+    if (!planRefinement.trim()) return;
+    setIsRefiningPlan(true);
+    setPlanRefinementNotice(null);
+    setBusy(true);
+    try {
+      const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/refine`, {
+        method: "POST", body: JSON.stringify({ refinement_prompt: planRefinement }),
+      });
+      await loadPromptSpecification(promptSpec.id);
+      const newVersion = result?.version ?? (promptSpec?.version ? promptSpec.version + 1 : "new");
+      const artCount = result?.artifacts?.length ?? (promptSpec?.artifacts?.length ?? 0);
+      const matchScore = result?.analysis?.accuracy_score;
+      setPlanRefinement("");
+      setPlanRefinementNotice({
+        type: "success",
+        title: `Refinement Applied Successfully (Plan v${newVersion})`,
+        message: `Plan updated to Version v${newVersion} with ${artCount} Medallion artifacts${matchScore !== undefined ? ` (Grounding Match: ${matchScore}%)` : ""}. Previous nodes have been superseded and re-grounded. Please review below and approve when ready.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        version: typeof newVersion === "number" ? newVersion : undefined,
+        artifactCount: artCount,
+        score: matchScore,
+      });
+      setMsg(`Refinement saved in Plan v${newVersion}. Review it before approval.`);
+    } catch (e: any) {
+      setPlanRefinementNotice({
+        type: "error",
+        title: "Plan Refinement Failed",
+        message: e.message || "Unable to refine plan. Please ensure commands use valid syntax (e.g. 'Move <artifact> to Gold', 'Add <artifact> view to Silver', 'Rename <old> to <new>', 'Delete <artifact>').",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      });
+      setMsg(e.message);
+    } finally {
+      setIsRefiningPlan(false);
       setBusy(false);
     }
   }
@@ -3154,6 +3326,7 @@ export default function App() {
                     value={promptNativeText || masterPrompt}
                     onChange={(e) => {
                       setPromptNativeText(e.target.value);
+                      setPromptAnalysis(null);
                       setMasterPrompt(e.target.value);
                       setPromptText(e.target.value);
                     }}
@@ -3163,6 +3336,20 @@ export default function App() {
                   />
                 </div>
 
+                {promptAnalysis && (
+                  <details style={{ margin: "12px 0", padding: 12, borderRadius: 8,
+                    background: promptAnalysis.status === "OPTIMAL" ? "#ecfdf5" : "#fffbeb", color: "#334155" }}>
+                    <summary style={{ cursor: "pointer", fontWeight: 700 }}>
+                      {promptAnalysis.accuracy_score}% Grounding Match | {promptAnalysis.grounded_sources?.length || 0} Grounded Sources | {promptAnalysis.missing_keys?.length || 0} Missing Artifacts
+                    </summary>
+                    <p>{promptAnalysis.score_basis}</p>
+                    <p>Source coverage: {promptAnalysis.coverage_percent}% · Explicit requests: {promptAnalysis.explicit_entities_count} · Inferred additions: {promptAnalysis.inferred_additions_count}</p>
+                    <p>Grounded tables: {promptAnalysis.grounded_sources?.join(", ") || "None"}</p>
+                    {!!promptAnalysis.missing_keys?.length && <p>Missing: {promptAnalysis.missing_keys.join(", ")}</p>}
+                    <ul>{promptAnalysis.warnings?.map((note: string, index: number) => <li key={index}>{note}</li>)}</ul>
+                  </details>
+                )}
+
                 {/* Controls below: Target source dropdown + Parse and Ground Prompt button + Action buttons */}
                 <div className="wf-studio-controls">
                   <div className="wf-studio-controls-left">
@@ -3170,7 +3357,7 @@ export default function App() {
                     <select
                       className="wf-source-select"
                       value={promptSourceId}
-                      onChange={(e) => setPromptSourceId(e.target.value)}
+                      onChange={(e) => { setPromptSourceId(e.target.value); setPromptAnalysis(null); }}
                       disabled={busy}
                     >
                       <option value="">Auto-detect from prompt</option>
@@ -3191,6 +3378,7 @@ export default function App() {
                     >
                       <Command size={14} /> Parse and Ground Prompt
                     </button>
+                    <button className="btn-secondary" disabled={!pid || busy || !promptNativeText.trim()} onClick={analyzePromptSpecification}>Analyze Prompt</button>
                   </div>
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -3345,7 +3533,7 @@ export default function App() {
                     </h4>
                     <span style={{ fontSize: 11, color: "#10b981", fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
                       <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#10b981" }} />
-                      Grounded against source metadata
+                      {promptSpec?.artifacts?.some((item: any) => item.grounding_status !== "GROUNDED") ? "Source validation needs review" : "Grounded against source metadata"}
                     </span>
                   </div>
 
@@ -3362,7 +3550,7 @@ export default function App() {
                           assumptions: ["Preserves SQL Server data fidelity"],
                         })))
                       : [];
-                    const items = specItems.length ? specItems : fallbackItems;
+                    const items = promptSpecPlan ? specItems : fallbackItems;
                     const count = items.length;
                     const tierClass = layer.toLowerCase();
                     const icon = layer === "GOLD" ? "🥇" : layer === "SILVER" ? "🥈" : "🥉";
@@ -3376,6 +3564,9 @@ export default function App() {
                           <span style={{ fontSize: 11, fontWeight: 600, color: "#64748b" }}>
                             {layer === "BRONZE" ? "Raw Delta Lake Tables" : layer === "SILVER" ? "Cleaned & Conformed Entities" : "Business Metric Marts"}
                           </span>
+                          <button className="btn-secondary" disabled={planEditingBlocked} onClick={() => openArtifactEditor(layer)} title="Answer open clarifications before editing">
+                            <Plus size={14} /> Add Artifact
+                          </button>
                         </div>
                         {count > 0 && (
                           <div style={{ overflowX: "auto" }}>
@@ -3387,6 +3578,7 @@ export default function App() {
                                   <th>Grounding</th>
                                   <th>Source Dependencies</th>
                                   <th>Assumptions / Notes</th>
+                                  <th>Actions</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -3394,22 +3586,30 @@ export default function App() {
                                   <tr key={item.request_id || idx}>
                                     <td>
                                       <code style={{ color: "#0369a1", fontWeight: 600 }}>{item.name || item.source_fqn}</code>
+                                      {item.target_fqn && <small style={{ display: "block", color: "#64748b" }}>{item.target_fqn}</small>}
                                       {item.purpose && <small style={{ display: "block", color: "#64748b" }}>{item.purpose}</small>}
                                     </td>
                                     <td><Badge s={item.type || "TABLE"} /></td>
                                     <td>
-                                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#059669", fontSize: 11, fontWeight: 700 }}>
-                                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981" }} />
-                                        Grounded
+                                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: item.grounding_status === "GROUNDED" ? "#059669" : "#92400e", fontSize: 11, fontWeight: 700 }}>
+                                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: item.grounding_status === "GROUNDED" ? "#10b981" : "#d97706" }} />
+                                        {item.grounding_status || "Not analyzed"}
                                       </span>
                                     </td>
                                     <td>
+                                      {item.source_refs?.length > 0 && <small style={{ display: "block" }}>{item.source_refs.join(", ")}</small>}
                                       <code style={{ fontSize: 11 }}>{item.dependencies?.join(", ") || item.bronze || item.source_fqn || "—"}</code>
                                     </td>
                                     <td>
                                       <span style={{ fontSize: 12, color: "#475569" }}>
-                                        {item.assumptions?.join("; ") || "Direct 1:1 schema mapping with ACID rollback guarantees"}
+                                        {item.assumptions?.join("; ") || "No additional assumptions recorded."}
                                       </span>
+                                    </td>
+                                    <td>
+                                      {item.request_id && <div style={{ display: "flex", gap: 8 }}>
+                                        <button className="btn-secondary" aria-label={`Edit ${item.name}`} disabled={planEditingBlocked} onClick={() => openArtifactEditor(layer, item)}><Pencil size={14} /></button>
+                                        <button className="btn-secondary" aria-label={`Delete ${item.name}`} disabled={planEditingBlocked} onClick={() => deletePlanArtifact(item)}><Trash2 size={14} /></button>
+                                      </div>}
                                     </td>
                                   </tr>
                                 ))}
@@ -3420,6 +3620,243 @@ export default function App() {
                       </div>
                     );
                   })}
+                  {promptSpec && (
+                    <details
+                      open={refineDetailsOpen}
+                      onToggle={(e) => setRefineDetailsOpen(e.currentTarget.open)}
+                      style={{
+                        marginTop: 18,
+                        border: planRefinementNotice?.type === "error"
+                          ? "1px solid rgba(239, 68, 68, 0.45)"
+                          : planRefinementNotice?.type === "success"
+                          ? "1px solid rgba(16, 185, 129, 0.45)"
+                          : "1px solid rgba(255, 255, 255, 0.12)",
+                        borderRadius: 10,
+                        padding: "14px 16px",
+                        background: "rgba(15, 23, 42, 0.8)",
+                        boxShadow: "0 4px 18px rgba(0, 0, 0, 0.2)",
+                        transition: "border-color 0.2s ease, background 0.2s ease",
+                      }}
+                    >
+                      <summary
+                        style={{
+                          cursor: "pointer",
+                          fontWeight: 700,
+                          fontSize: 14,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          color: "#f8fafc",
+                          userSelect: "none",
+                        }}
+                      >
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                          <Sparkles size={16} style={{ color: "#38bdf8" }} />
+                          Refine Plan Commands (ADD, RENAME, MOVE, DELETE)
+                        </span>
+                        {planRefinementNotice && (
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              padding: "2px 8px",
+                              borderRadius: 6,
+                              background: planRefinementNotice.type === "success" ? "rgba(16, 185, 129, 0.2)" : "rgba(239, 68, 68, 0.2)",
+                              color: planRefinementNotice.type === "success" ? "#4ade80" : "#f87171",
+                              border: planRefinementNotice.type === "success" ? "1px solid rgba(16, 185, 129, 0.35)" : "1px solid rgba(239, 68, 68, 0.35)",
+                            }}
+                          >
+                            {planRefinementNotice.type === "success" ? "✓ Refined" : "✕ Error"}
+                          </span>
+                        )}
+                      </summary>
+
+                      <p style={{ fontSize: 12, color: "#94a3b8", margin: "8px 0 12px 0", lineHeight: 1.5 }}>
+                        Use exact artifact names: <code style={{ background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: 4, color: "#e2e8f0" }}>Move vw_monthly_sales to Gold</code>;{" "}
+                        <code style={{ background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: 4, color: "#e2e8f0" }}>Add order items view to Silver</code>;{" "}
+                        <code style={{ background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: 4, color: "#e2e8f0" }}>Rename old_name to new_name</code>;{" "}
+                        <code style={{ background: "rgba(255,255,255,0.08)", padding: "1px 5px", borderRadius: 4, color: "#e2e8f0" }}>Delete artifact_name</code>.
+                      </p>
+
+                      {/* IN-PLACE NOTIFICATION IN MARKED REFINEMENT AREA */}
+                      {isRefiningPlan && (
+                        <div
+                          role="status"
+                          style={{
+                            marginBottom: 12,
+                            padding: "10px 14px",
+                            borderRadius: 8,
+                            background: "rgba(59, 130, 246, 0.15)",
+                            border: "1px solid rgba(59, 130, 246, 0.4)",
+                            color: "#93c5fd",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            fontSize: 12,
+                          }}
+                        >
+                          <RefreshCw size={15} className="spin" style={{ flexShrink: 0 }} />
+                          <span>Refining plan, validating Medallion DAG, and saving new version...</span>
+                        </div>
+                      )}
+
+                      {planRefinementNotice && !isRefiningPlan && (
+                        <div
+                          role="alert"
+                          style={{
+                            marginBottom: 12,
+                            padding: "12px 14px",
+                            borderRadius: 8,
+                            display: "flex",
+                            alignItems: "flex-start",
+                            justifyContent: "space-between",
+                            gap: 12,
+                            border: planRefinementNotice.type === "success"
+                              ? "1px solid rgba(16, 185, 129, 0.55)"
+                              : "1px solid rgba(239, 68, 68, 0.55)",
+                            background: planRefinementNotice.type === "success"
+                              ? "linear-gradient(135deg, rgba(6, 78, 59, 0.5) 0%, rgba(6, 95, 70, 0.25) 100%)"
+                              : "linear-gradient(135deg, rgba(127, 29, 29, 0.5) 0%, rgba(153, 27, 27, 0.25) 100%)",
+                            color: planRefinementNotice.type === "success" ? "#a7f3d0" : "#fca5a5",
+                            boxShadow: planRefinementNotice.type === "success"
+                              ? "0 2px 12px rgba(16, 185, 129, 0.15)"
+                              : "0 2px 12px rgba(239, 68, 68, 0.15)",
+                          }}
+                        >
+                          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                            {planRefinementNotice.type === "success" ? (
+                              <CheckCircle2 size={18} style={{ color: "#34d399", marginTop: 2, flexShrink: 0 }} />
+                            ) : (
+                              <AlertTriangle size={18} style={{ color: "#f87171", marginTop: 2, flexShrink: 0 }} />
+                            )}
+                            <div style={{ display: "grid", gap: 3 }}>
+                              <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8, color: planRefinementNotice.type === "success" ? "#6ee7b7" : "#fca5a5" }}>
+                                <span>{planRefinementNotice.title}</span>
+                                {planRefinementNotice.timestamp && (
+                                  <span style={{ fontSize: 11, fontWeight: 400, opacity: 0.75, color: "#cbd5e1" }}>
+                                    [{planRefinementNotice.timestamp}]
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: 12, color: "#e2e8f0", lineHeight: 1.45 }}>
+                                {planRefinementNotice.message}
+                              </div>
+                              {planRefinementNotice.type === "error" && (
+                                <div style={{ fontSize: 11, color: "#cbd5e1", marginTop: 4, background: "rgba(0,0,0,0.25)", padding: "6px 10px", borderRadius: 6 }}>
+                                  <strong style={{ color: "#fca5a5" }}>Supported Command Syntax:</strong>
+                                  <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
+                                    <li><code>Add &lt;name&gt; view to Silver</code> (e.g. <code>Add vw_order_items_clean to Silver</code>)</li>
+                                    <li><code>Move &lt;name&gt; to Gold</code> (e.g. <code>Move vw_monthly_sales to Gold</code>)</li>
+                                    <li><code>Rename &lt;old&gt; to &lt;new&gt;</code> (e.g. <code>Rename old_view to new_view</code>)</li>
+                                    <li><code>Delete &lt;name&gt;</code> (e.g. <code>Delete unwanted_view</code>)</li>
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setPlanRefinementNotice(null)}
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: "#94a3b8",
+                              cursor: "pointer",
+                              padding: 4,
+                              display: "flex",
+                              alignItems: "center",
+                              borderRadius: 4,
+                            }}
+                            title="Dismiss notification"
+                            aria-label="Dismiss notification"
+                          >
+                            <X size={15} />
+                          </button>
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+                        <textarea
+                          aria-label="Plan refinement commands"
+                          rows={2}
+                          style={{
+                            flex: 1,
+                            minWidth: 260,
+                            padding: "8px 12px",
+                            borderRadius: 8,
+                            border: "1px solid rgba(255, 255, 255, 0.15)",
+                            background: "rgba(15, 23, 42, 0.85)",
+                            color: "#f8fafc",
+                            fontSize: 13,
+                            lineHeight: 1.4,
+                            resize: "vertical",
+                            minHeight: 46,
+                          }}
+                          value={planRefinement}
+                          onChange={(e) => setPlanRefinement(e.target.value)}
+                          placeholder="Enter refinement commands (e.g. Add <artifact> to <Layer> with <Table>; Rename <old> to <new>; Delete <name>)..."
+                          disabled={planEditingBlocked || isRefiningPlan}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                              e.preventDefault();
+                              if (!planEditingBlocked && planRefinement.trim() && !isRefiningPlan) {
+                                refinePromptPlan();
+                              }
+                            }
+                          }}
+                        />
+                        <button
+                          className="btn-primary-blue"
+                          style={{
+                            height: 46,
+                            padding: "0 18px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 8,
+                            fontWeight: 600,
+                            whiteSpace: "nowrap",
+                          }}
+                          disabled={planEditingBlocked || !planRefinement.trim() || isRefiningPlan}
+                          onClick={refinePromptPlan}
+                        >
+                          {isRefiningPlan ? (
+                            <>
+                              <RefreshCw size={14} className="spin" />
+                              Refining...
+                            </>
+                          ) : (
+                            "Apply Refinement"
+                          )}
+                        </button>
+                      </div>
+                    </details>
+                  )}
+                  {artifactEditor && <div role="presentation" style={{ position: "fixed", inset: 0, zIndex: 2000, background: "rgba(15,23,42,.55)", display: "grid", placeItems: "center", padding: 20 }}>
+                    <section role="dialog" aria-modal="true" aria-labelledby="artifact-editor-title" onKeyDown={e => {
+                      if (e.key === "Escape" && !busy) setArtifactEditor(null);
+                      if (e.key === "Tab") {
+                        const focusable = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('input, select, button:not(:disabled)'));
+                        const first = focusable[0], last = focusable[focusable.length - 1];
+                        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+                        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+                      }
+                    }} style={{ width: "min(560px, 100%)", maxHeight: "85vh", overflowY: "auto", padding: 24, borderRadius: 12, background: "white", color: "#0f172a" }}>
+                      <h3 id="artifact-editor-title">{artifactEditor.request_id ? "Edit Artifact" : "Add Artifact"}</h3>
+                      <p>Changes create a new plan version and require approval. Use comma-separated source tables and dependency request IDs.</p>
+                      <div style={{ display: "grid", gap: 12 }}>
+                        <label>Name<input autoFocus style={{ width: "100%" }} value={artifactEditor.name} onChange={e => setArtifactEditor({ ...artifactEditor, name: e.target.value })} /></label>
+                        <label>Layer<select style={{ width: "100%" }} value={artifactEditor.layer} onChange={e => setArtifactEditor({ ...artifactEditor, layer: e.target.value })}>{["BRONZE", "SILVER", "GOLD"].map(v => <option key={v}>{v}</option>)}</select></label>
+                        <label>Type<select style={{ width: "100%" }} value={artifactEditor.type} onChange={e => setArtifactEditor({ ...artifactEditor, type: e.target.value })}>{["TABLE_COPY", "VIEW", "FUNCTION", "PROCEDURE_OR_WORKFLOW", "DIMENSION", "FACT", "SUMMARY_VIEW"].map(v => <option key={v}>{v}</option>)}</select></label>
+                        <label>Source tables<input style={{ width: "100%" }} value={artifactEditor.source_refs} placeholder="dbo.OrderItems (leave blank to infer)" onChange={e => setArtifactEditor({ ...artifactEditor, source_refs: e.target.value })} /></label>
+                        <label>Dependency request IDs<input style={{ width: "100%" }} value={artifactEditor.dependencies} onChange={e => setArtifactEditor({ ...artifactEditor, dependencies: e.target.value })} /></label>
+                        {artifactEditorError && <p role="alert" style={{ color: "#b91c1c" }}>{artifactEditorError}</p>}
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button className="btn-primary-blue" disabled={busy || !artifactEditor.name.trim()} onClick={savePlanArtifact}>Save Artifact</button>
+                          <button className="btn-secondary" disabled={busy} onClick={() => setArtifactEditor(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    </section>
+                  </div>}
                 </div>
               </div>
 
@@ -4232,6 +4669,16 @@ export default function App() {
                                           }}
                                         >
                                           <Copy size={13} /> Copy Project ID
+                                        </button>
+                                        <button
+                                          className="delete-action"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setActiveMenuProjectId(null);
+                                            handleDeleteProject(p);
+                                          }}
+                                        >
+                                          <Trash2 size={13} /> Delete Project
                                         </button>
                                       </div>
                                     )}

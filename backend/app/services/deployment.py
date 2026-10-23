@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import re
 from datetime import datetime
@@ -40,6 +41,9 @@ from app.services.engine import compare_schema, topo_order, uid
 from app.services.discovery import test_sqlserver_connection
 from app.services.source_connector import connector_info, request as connector_request, TableStream
 from app.services.source_adapters import adapter_for_source
+from app.services.sql_preflight import (
+    compiler_identifier_repair, split_sql, validate_databricks_sql,
+)
 from app.services.type_compatibility import (
     classify_execution_error,
     format_sql_literal,
@@ -356,7 +360,7 @@ def _execute_promoted_sql(sql_content: str, safe_retry: bool = False) -> None:
     statements (such as bootstrap CREATE TABLE followed by idempotent MERGE)
     and executes each statement sequentially.
     """
-    statements = [part.strip() for part in re.split(r";(?:\r?\n|\s*$)", sql_content) if part.strip()]
+    statements = split_sql(sql_content)
     if not statements:
         return
     for statement in statements:
@@ -370,7 +374,48 @@ def _safe_execute_artifact(content: str, *, allow_destructive: bool = False) -> 
     forbidden = ("DROP TABLE", "DROP VIEW", "DROP SCHEMA", "TRUNCATE TABLE", "DELETE FROM")
     if any(x in upper for x in forbidden) and not allow_destructive:
         raise RuntimeError("Generated artifact contains a destructive statement; explicit governed replacement is required.")
+    errors = validate_databricks_sql(content)
+    if errors:
+        raise ValueError('; '.join(errors))
     _execute_promoted_sql(content, safe_retry=False)
+
+
+def _safe_execute_with_auto_healing(
+    db: Session, sql: str, allow_destructive: bool = False, *,
+    project_id: str | None = None, run_id: str | None = None,
+    environment: str = 'DEV', executor=None,
+) -> list[dict[str, Any]]:
+    """One audited retry of an analysis failure; never replay successful batch steps."""
+    errors = validate_databricks_sql(sql)
+    if errors:
+        raise ValueError('; '.join(errors))
+    upper = sql.upper()
+    if not allow_destructive and any(token in upper for token in ('DROP TABLE', 'DROP VIEW', 'DROP SCHEMA', 'TRUNCATE TABLE', 'DELETE FROM')):
+        raise RuntimeError('Generated artifact contains a destructive statement; explicit governed replacement is required.')
+    execute = executor or execute_sql
+    repairs = []
+    for statement in split_sql(sql):
+        try:
+            execute(statement.rstrip(';') + ';', safe_retry=False)
+        except Exception as original_error:
+            repair = compiler_identifier_repair(statement, str(original_error))
+            if repair is None or not project_id or not run_id:
+                raise
+            patched, metadata = repair
+            metadata.update({
+                'original_sql_hash': hashlib.sha256(statement.encode()).hexdigest(),
+                'patched_sql_hash': hashlib.sha256(patched.encode()).hexdigest(),
+                'compiler_code': 'UNRESOLVED_COLUMN.WITH_SUGGESTION', 'attempt': 1,
+            })
+            _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'RUNNING', environment=environment, **metadata)
+            try:
+                execute(patched.rstrip(';') + ';', safe_retry=False)
+            except Exception:
+                _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'FAILED', environment=environment, **metadata)
+                raise
+            _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'PASSED', environment=environment, **metadata)
+            repairs.append(metadata)
+    return repairs
 
 
 def _apply_table_schema_policy(db: Session, project_id: str, obj: MigrationObject, mapping: MigrationMapping,
@@ -576,16 +621,16 @@ def deploy_dev(db: Session, project_id: str, *, allow_destructive: bool = False,
                 schema_action = _apply_table_schema_policy(db, project_id, obj, mapping, allow_destructive)
                 if schema_action["action"] == "CREATE":
                     failure_stage = "DEPLOY_DDL"
-                    _safe_execute_artifact(av.content, allow_destructive=allow_destructive)
+                    _safe_execute_with_auto_healing(db, av.content, allow_destructive=allow_destructive, project_id=project_id, run_id=run_id)
                 elif schema_action["action"] == "REPLACE":
                     failure_stage = "GOVERNED_DEV_REPLACE"
                     execute_sql(f"DROP TABLE {mapping.target_fqn}", safe_retry=False)
                     failure_stage = "DEPLOY_DDL"
-                    _safe_execute_artifact(av.content, allow_destructive=allow_destructive)
+                    _safe_execute_with_auto_healing(db, av.content, allow_destructive=allow_destructive, project_id=project_id, run_id=run_id)
             else:
                 # CREATE OR REPLACE is safe for views/functions when already generated that way; raw destructive SQL remains blocked.
                 failure_stage = "DEPLOY_DDL"
-                _safe_execute_artifact(av.content, allow_destructive=allow_destructive)
+                _safe_execute_with_auto_healing(db, av.content, allow_destructive=allow_destructive, project_id=project_id, run_id=run_id)
 
             failure_stage = "BRONZE_LOAD"
             load_result = load_bronze_table(
@@ -1314,7 +1359,7 @@ def promote_medallion_to_test(db: Session, project_id: str) -> dict[str, Any]:
                     raise clone_results[target_fqn]
                 action = "DEEP_CLONE_DEV"
             else:
-                _execute_promoted_sql(_replace_catalog(version.content, dev_catalog, test_catalog), safe_retry=False)
+                _safe_execute_with_auto_healing(db, _replace_catalog(version.content, dev_catalog, test_catalog), project_id=project_id, run_id=run.id, environment='TEST')
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="TEST", object_id=evidence.object_id,
@@ -1491,7 +1536,7 @@ def promote_medallion_to_uat(db: Session, project_id: str) -> dict[str, Any]:
             else:
                 promoted_sql = _replace_catalog(version.content, dev_catalog, uat_catalog)
                 promoted_sql = _replace_catalog(promoted_sql, test_catalog, uat_catalog)
-                _execute_promoted_sql(promoted_sql, safe_retry=False)
+                _safe_execute_with_auto_healing(db, promoted_sql, project_id=project_id, run_id=run.id, environment=run.environment)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="UAT", object_id=evidence.object_id,
@@ -1669,7 +1714,7 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
                 promoted_sql = version.content
                 for catalog_name in (dev_catalog, test_catalog, uat_catalog):
                     promoted_sql = _replace_catalog(promoted_sql, catalog_name, prod_catalog)
-                _execute_promoted_sql(promoted_sql, safe_retry=False)
+                _safe_execute_with_auto_healing(db, promoted_sql, project_id=project_id, run_id=run.id, environment=run.environment)
                 action = "EXECUTE_PROMOTED_ARTIFACT"
             _deployment_evidence(
                 db, project_id, run.id, "PASSED", environment="PROD", object_id=evidence.object_id,

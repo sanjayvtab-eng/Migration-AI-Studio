@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from app.core.database import get_db
@@ -177,6 +177,26 @@ class PromptSpecificationIn(BaseModel):
 class PromptClarificationsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     answers: dict[str, Any]
+
+class ArtifactAddIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    layer: str
+    type: str
+    source_refs: list[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list)
+
+class ArtifactPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    layer: str | None = None
+    type: str | None = None
+    source_refs: list[str] | None = None
+    dependencies: list[str] | None = None
+
+class PlanRefineIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    refinement_prompt: str = Field(min_length=1, max_length=10000)
 
 class PromptPlanApprovalIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -471,6 +491,24 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),_=Depends(auth)):
 def projects_list(db:Session=Depends(get_db),_=Depends(auth)):
     return [{"id":p.id,"name":p.name,"status":p.status,"created_at":p.created_at.isoformat() if p.created_at else None} for p in db.scalars(select(MigrationProject).order_by(MigrationProject.created_at.desc())).all()]
 
+@router.delete("/projects/{project_id}")
+def project_delete(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
+    _admin_actor(user)
+    p = db.get(MigrationProject, project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        from app.core.database import Base
+        for table in reversed(Base.metadata.sorted_tables):
+            if "project_id" in table.c:
+                db.execute(table.delete().where(table.c.project_id == project_id))
+        db.delete(p)
+        db.commit()
+        return {"status": "DELETED", "id": project_id, "name": p.name}
+    except Exception as e:
+        db.rollback()
+        _environment_error(e)
+
 @router.get("/projects/{project_id}/databricks/configuration")
 def project_databricks_configuration(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     try: return environment_service.configuration_view(environment_service.get_configuration(db,project_id))
@@ -572,6 +610,54 @@ def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Ses
 def prompt_specification_latest(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     try: return prompt_specification.latest(db,project_id)
     except Exception as e: _environment_error(e)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/analyze")
+def analyze_prompt_api(project_id: str, data: PromptSpecificationIn, db: Session = Depends(get_db), _=Depends(auth)):
+    try:
+        return prompt_specification.analyze_prompt(db, project_id, data.prompt, data.source_id)
+    except Exception as exc:
+        _environment_error(exc)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/artifacts")
+def add_artifact_api(project_id: str, specification_id: str, data: ArtifactAddIn, db: Session = Depends(get_db), user=Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        return prompt_specification.add_plan_artifact(db, project_id, specification_id, data.model_dump(), actor)
+    except Exception as exc:
+        db.rollback()
+        _environment_error(exc)
+
+
+@router.patch("/projects/{project_id}/prompt-specifications/{specification_id}/artifacts/{request_id}")
+def update_artifact_api(project_id: str, specification_id: str, request_id: str, data: ArtifactPatchIn, db: Session = Depends(get_db), user=Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        return prompt_specification.update_plan_artifact(db, project_id, specification_id, request_id, data.model_dump(exclude_unset=True), actor)
+    except Exception as exc:
+        db.rollback()
+        _environment_error(exc)
+
+
+@router.delete("/projects/{project_id}/prompt-specifications/{specification_id}/artifacts/{request_id}")
+def delete_artifact_api(project_id: str, specification_id: str, request_id: str, db: Session = Depends(get_db), user=Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        return prompt_specification.delete_plan_artifact(db, project_id, specification_id, request_id, actor)
+    except Exception as exc:
+        db.rollback()
+        _environment_error(exc)
+
+
+@router.post("/projects/{project_id}/prompt-specifications/{specification_id}/refine")
+def refine_plan_api(project_id: str, specification_id: str, data: PlanRefineIn, db: Session = Depends(get_db), user=Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        return prompt_specification.refine_prompt_plan(db, project_id, specification_id, data.refinement_prompt, actor)
+    except Exception as exc:
+        db.rollback()
+        _environment_error(exc)
 
 
 @router.get("/projects/{project_id}/prompt-specifications/{specification_id}")
@@ -783,12 +869,19 @@ def source_test(project_id:str,source_id:str,db:Session=Depends(get_db),_=Depend
     src=db.get(MigrationSource,source_id)
     if not src or src.project_id!=project_id: raise HTTPException(404,"Source not found in project")
     try:
-        if connector_info(src.id)["mode"] == "CONNECTOR":
+        conn_meta = connector_info(src.id)
+        if conn_meta["mode"] == "CONNECTOR" and conn_meta["status"] == "ONLINE":
             if normalize_engine(src.engine) != "SQLSERVER":
                 raise ValueError("The local connector currently supports SQL Server sources only")
             result = connector_request(src.id, "test")
         else:
-            result = adapter_for_source(src).test_connection()
+            try:
+                result = adapter_for_source(src).test_connection()
+            except Exception as direct_err:
+                if conn_meta["mode"] == "CONNECTOR":
+                    result = connector_request(src.id, "test")
+                else:
+                    raise direct_err
         result.update({"profile_name":src.profile_name,"server_name":src.server_name,"database_name":src.database_name})
         return result
     except Exception as e:
@@ -799,15 +892,23 @@ def discovery_live(project_id:str,source_id:str,db:Session=Depends(get_db),_=Dep
     src=db.get(MigrationSource,source_id)
     if not src or src.project_id!=project_id: raise HTTPException(404,"Source not found in project")
     try:
-        if connector_info(src.id)["mode"] == "CONNECTOR":
+        conn_meta = connector_info(src.id)
+        if conn_meta["mode"] == "CONNECTOR" and conn_meta["status"] == "ONLINE":
             if normalize_engine(src.engine) != "SQLSERVER":
                 raise ValueError("The local connector currently supports SQL Server sources only")
             connector_request(src.id, "test")
             snap = connector_request(src.id, "discover")
         else:
-            adapter = adapter_for_source(src)
-            adapter.test_connection()
-            snap=adapter.discover_catalog()
+            try:
+                adapter = adapter_for_source(src)
+                adapter.test_connection()
+                snap = adapter.discover_catalog()
+            except Exception as direct_err:
+                if conn_meta["mode"] == "CONNECTOR":
+                    connector_request(src.id, "test")
+                    snap = connector_request(src.id, "discover")
+                else:
+                    raise direct_err
         return {"counts":ingest_snapshot(db,project_id,source_id,snap),"database":snap.get("database"),"objects":len(snap.get("objects",[]))}
     except Exception as e:
         raise HTTPException(400,f"Discovery failed: {e}")
@@ -1068,6 +1169,8 @@ def review(project_id:str,data:ReviewIn,db:Session=Depends(get_db),_=Depends(aut
 
     if status=="APPROVED":
         blockers=[]
+        from app.services.sql_preflight import validate_databricks_sql
+        blockers.extend(validate_databricks_sql(av.content))
         if not _artifact_executable(av.content): blockers.append("artifact is not executable")
         validation_status,_=_latest_validation_for_version(db,project_id,obj.id,av.id,"DEV")
         if validation_status!="PASSED": blockers.append("static validation for the current artifact version has not PASSED")

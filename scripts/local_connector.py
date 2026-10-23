@@ -7,6 +7,9 @@ import argparse
 from datetime import date, datetime, time as time_type
 from decimal import Decimal
 import getpass
+import hashlib
+import socket
+import platform
 import json
 import os
 from pathlib import Path
@@ -307,6 +310,17 @@ class LocalAgent:
             if any(k in err_str for k in ("08001", "HYT00", "network-related", "not accessible", "server is not found")):
                 server_m = re.search(r"SERVER=\{?([^};]+)\}?", self.connection_string)
                 current_server = (server_m.group(1) if server_m else "").strip("{}'\"")
+                if "/" in current_server:
+                    fixed_srv = current_server.replace("/", "\\")
+                    alt_cs = re.sub(r"SERVER=\{?[^;}]+\}?", "SERVER={" + fixed_srv + "}", self.connection_string)
+                    try:
+                        conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
+                        conn.timeout = 60
+                        self.connection_string = alt_cs
+                        self.server = fixed_srv
+                        return conn
+                    except Exception:
+                        pass
                 if current_server.lower() in ("localhost", "127.0.0.1", ".", "localhost:1433", "127.0.0.1:1433"):
                     for candidate in [r"localhost\SQLEXPRESS", r".\SQLEXPRESS", r"SHANJI\SQLEXPRESS"]:
                         alt_cs = re.sub(r"SERVER=\{?[^};]+\}?", f"SERVER={{{candidate}}}", self.connection_string)
@@ -500,7 +514,7 @@ def main():
 
     url = args.url or os.environ.get("CONNECTOR_URL") or file_cfg.get("CONNECTOR_URL")
     source = args.source or os.environ.get("CONNECTOR_SOURCE") or os.environ.get("CONNECTOR_SOURCE_ID") or file_cfg.get("CONNECTOR_SOURCE") or file_cfg.get("CONNECTOR_SOURCE_ID")
-    server = args.server or os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER")
+    server = (args.server or os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER") or "").replace("/", "\\")
     database = args.database or os.environ.get("CONNECTOR_DATABASE") or file_cfg.get("CONNECTOR_DATABASE")
     token = args.token or os.environ.get("CONNECTOR_TOKEN") or file_cfg.get("CONNECTOR_TOKEN")
     driver = args.driver or os.environ.get("CONNECTOR_DRIVER") or file_cfg.get("CONNECTOR_DRIVER") or "ODBC Driver 17 for SQL Server"
@@ -536,7 +550,7 @@ def main():
 
     if not server:
         if is_interactive:
-            server = input(r"SQL Server instance name (e.g. localhost\SQLEXPRESS): ").strip()
+            server = input(r"SQL Server instance name (e.g. localhost\SQLEXPRESS): ").strip().replace("/", "\\")
             need_save = True
         else:
             raise SystemExit("Error: --server or CONNECTOR_SERVER is required.")
@@ -590,7 +604,9 @@ def main():
     agent = LocalAgent(source, server, database, connection)
     import httpx
     stopped = threading.Event()
-    instance_id = secrets.token_hex(16)
+    # Use deterministic instance ID based on machine and source so agent restarts immediately claim without lockout
+    import socket, platform, hashlib
+    instance_id = hashlib.sha256(f"{source}_{socket.gethostname()}_{platform.node()}".encode()).hexdigest()[:32]
 
     print("\n" + "=" * 68)
     print("      Databricks Migration AI Studio - Local Agent Online")

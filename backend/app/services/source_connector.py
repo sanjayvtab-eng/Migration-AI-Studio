@@ -21,11 +21,10 @@ def digest(token):
 def connector_info(source_id):
     with SessionLocal() as db:
         row = db.get(SourceConnector, source_id)
-        if row is None:
+        if row is None or row.enabled != "ENABLED":
             return {"mode": "DIRECT", "status": "DIRECT"}
         online = row.last_seen and datetime.utcnow() - row.last_seen < timedelta(seconds=45)
-        return {"mode": "CONNECTOR", "status": ("ONLINE" if online else "OFFLINE")
-                if row.enabled == "ENABLED" else "REVOKED", "last_seen": row.last_seen}
+        return {"mode": "CONNECTOR", "status": "ONLINE" if online else "OFFLINE", "last_seen": row.last_seen}
 
 
 def request(source_id, operation, payload=None):

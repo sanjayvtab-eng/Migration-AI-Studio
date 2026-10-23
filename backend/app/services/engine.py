@@ -326,6 +326,8 @@ def add_source(db: Session, project_id: str, profile_name: str, server: str, dat
                password: str | None = None, options: dict | None = None) -> MigrationSource:
     from app.services.source_adapters import DEFAULT_PORTS, encrypt_password, normalize_engine
     normalized = normalize_engine(engine)
+    if normalized == "SQLSERVER" and server:
+        server = server.replace("/", "\\")
     s=MigrationSource(
         id=uid("SRC"), project_id=project_id, profile_name=profile_name,
         server_name=server, database_name=database, engine=normalized,

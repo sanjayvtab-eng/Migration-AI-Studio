@@ -54,6 +54,7 @@ async def scheduler_worker_loop():
     global _is_running
     _is_running = True
     logger.info("Scheduler worker loop started.")
+    await asyncio.sleep(2)
 
     while _is_running:
         try:

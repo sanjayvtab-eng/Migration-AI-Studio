@@ -17,6 +17,7 @@ from app.models.entities import (
     MigrationArtifactVersion,
     MigrationColumn,
     MigrationConsumer,
+    MigrationDatabricksConfiguration,
     MigrationDependency,
     MigrationMapping,
     MigrationMedallionEdge,
@@ -44,6 +45,7 @@ from app.services.rules import classify_function, classify_procedure, classify_t
 from app.core.config import get_settings
 from app.services.databricks_client import with_project_databricks
 from app.services.ai_remediation import call_structured_llm
+from app.services.sql_preflight import validate_databricks_sql, split_sql
 
 SEMANTIC_ROLES = {"FACT", "DIMENSION", "AGGREGATE", "KPI", "REPORTING", "ENTITY"}
 GOLD_ROLES = {"FACT", "DIMENSION", "AGGREGATE", "KPI", "REPORTING"}
@@ -104,7 +106,7 @@ def _silver_projection(column: MigrationColumn) -> str:
 
 def _stage_validation(content: str, node: MigrationMedallionNode) -> dict[str, Any]:
     """Fast deterministic checks applied to every generated stage artifact."""
-    errors: list[str] = []
+    errors: list[str] = validate_databricks_sql(content)
     warnings: list[str] = []
     upper = content.upper()
     if not content.strip():
@@ -120,10 +122,6 @@ def _stage_validation(content: str, node: MigrationMedallionNode) -> dict[str, A
             errors.append(f"Governed statement is not permitted: {token}")
     if re.search(r"(?is)WHEN\s+NOT\s+MATCHED\s+BY\s+SOURCE\s+THEN\s+DELETE", content):
         errors.append("Governed MERGE cannot delete rows absent from the current source batch")
-    aliases = [x.lower() for x in re.findall(r"(?i)\bAS\s+`([A-Za-z_][A-Za-z0-9_]*)`", content)]
-    duplicates = sorted({x for x in aliases if aliases.count(x) > 1})
-    if duplicates:
-        errors.append("Duplicate projected aliases: " + ", ".join(duplicates))
     if "SELECT *" in upper:
         warnings.append("Wildcard projection reduces column-level lineage precision")
     return {
@@ -144,6 +142,17 @@ def _topological_stage_order(
     nodes: list[MigrationMedallionNode], edges: list[MigrationMedallionEdge]
 ) -> tuple[list[MigrationMedallionNode], list[str]]:
     """Order generated artifacts by recorded lineage and report dependency cycles."""
+    def priority(node):
+        role = (node.model_role or '').upper()
+        kind = (node.node_type or '').upper()
+        if node.layer == 'BRONZE':
+            stage = 0
+        elif node.layer == 'SILVER':
+            clean = _loads(node.transformation_json, {}).get('view_kind') == 'CLEAN' or (node.target_name or '').lower().endswith('_clean')
+            stage = 1 if role == 'FUNCTION' or kind == 'SQL_FUNCTION' else 2 if clean else 4 if kind in {'WORKFLOW_SQL', 'SQL_PROCEDURE'} or role == 'PROCEDURE_OR_WORKFLOW' else 3
+        else:
+            stage = 5 if role == 'DIMENSION' else 6 if role == 'FACT' else 7
+        return stage, node.target_fqn.lower()
     by_id = {node.id: node for node in nodes}
     indegree = {node.id: 0 for node in nodes}
     adjacency: dict[str, set[str]] = defaultdict(set)
@@ -155,7 +164,7 @@ def _topological_stage_order(
             indegree[edge.to_node_id] += 1
     ready = sorted(
         (node_id for node_id, degree in indegree.items() if degree == 0),
-        key=lambda node_id: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(by_id[node_id].layer, 9), by_id[node_id].target_fqn.lower()),
+        key=lambda node_id: priority(by_id[node_id]),
     )
     ordered: list[MigrationMedallionNode] = []
     while ready:
@@ -165,7 +174,7 @@ def _topological_stage_order(
             indegree[target_id] -= 1
             if indegree[target_id] == 0:
                 ready.append(target_id)
-                ready.sort(key=lambda value: ({"BRONZE": 1, "SILVER": 2, "GOLD": 3}.get(by_id[value].layer, 9), by_id[value].target_fqn.lower()))
+                ready.sort(key=lambda value: priority(by_id[value]))
     cycle_nodes = sorted(by_id[node_id].target_fqn for node_id, degree in indegree.items() if degree > 0)
     return ordered, cycle_nodes
 
@@ -1668,10 +1677,21 @@ def generate_medallion_artifacts(db: Session, project_id: str, *, environment: s
 
 def list_medallion_artifacts(db: Session, project_id: str, *, environment: str = "DEV") -> list[dict[str, Any]]:
     env = environment.upper()
+    cfg = db.scalar(select(MigrationDatabricksConfiguration).where(
+        MigrationDatabricksConfiguration.project_id == project_id
+    ))
+    active_catalog = f"{cfg.catalog_prefix}_{env.lower()}" if cfg and cfg.catalog_prefix else None
+
     nodes = {n.id: n for n in db.scalars(select(MigrationMedallionNode).where(
         MigrationMedallionNode.project_id == project_id,
         MigrationMedallionNode.environment == env,
     )).all()}
+    if active_catalog:
+        nodes = {
+            nid: n for nid, n in nodes.items()
+            if n.target_fqn.lower().startswith(f"`{active_catalog.lower()}`.")
+            or n.target_fqn.lower().startswith(f"{active_catalog.lower()}.")
+        }
     arts = list(db.scalars(select(MigrationStageArtifact).where(MigrationStageArtifact.project_id == project_id)).all())
     result = []
     for art in arts:
@@ -1824,6 +1844,9 @@ def review_medallion_artifact(db: Session, project_id: str, version_id: str, *, 
     if state == "APPROVED":
         node = db.get(MigrationMedallionNode, version.node_id)
         obj = db.get(MigrationObject, node.source_object_id) if node and node.source_object_id else None
+        static_errors = [] if node and node.node_type == 'ARCHITECTURE_REVIEW' else validate_databricks_sql(version.content)
+        if static_errors:
+            raise ValueError("Approval blocked by SQL AST validation: " + "; ".join(static_errors))
         issues = medallion_routine_issues(db, project_id, node.environment if node else "DEV",
                                          version.content, obj.object_type if obj else "")
         if issues:
@@ -2091,13 +2114,20 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
         )
         raise ValueError(f"Medallion deployment blocked: {len(blockers)} artifact(s) are not approved/executable/validated. Repair and review the current version: {details}")
 
+    config = environment_provisioning.get_configuration(db, project_id)
+    active_cat = f"{config.catalog_prefix}_{env.lower()}" if config and config.catalog_prefix else None
     node_by_id = {n.id: n for n in db.scalars(select(MigrationMedallionNode).where(
         MigrationMedallionNode.project_id == project_id,
         MigrationMedallionNode.environment == env,
     )).all()}
+    if active_cat:
+        node_by_id = {
+            nid: n for nid, n in node_by_id.items()
+            if n.target_fqn.lower().startswith(f"`{active_cat.lower()}`.")
+            or n.target_fqn.lower().startswith(f"{active_cat.lower()}.")
+        }
     artifacts = _deployment_artifact_order(db, project_id, env, artifacts, node_by_id)
     object_by_id = {o.id: o for o in db.scalars(select(MigrationObject).where(MigrationObject.project_id == project_id)).all()}
-    config = environment_provisioning.get_configuration(db, project_id)
     bronze_objects = [object_by_id[n.source_object_id] for n in node_by_id.values()
                       if n.layer == "BRONZE" and n.source_object_id in object_by_id
                       and object_by_id[n.source_object_id].object_type == "TABLE"]
@@ -2219,14 +2249,18 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 # (target bootstrap followed by idempotent MERGE). Execute each
                 # statement separately because the Databricks SQL connector does
                 # not accept arbitrary multi-statement batches.
-                statements = [part.strip() for part in item["content"].split(";\n") if part.strip()]
+                statements = split_sql(item["content"])
                 if not statements or any(not re.match(r"(?is)^(?:CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|MERGE\s+INTO)\b", statement) for statement in statements):
                     raise RuntimeError("Prompt workflow contains an unsupported statement sequence")
                 for statement in statements:
-                    execute_sql(statement.rstrip(";") + ";", safe_retry=False)
+                    from app.services.deployment import _safe_execute_with_auto_healing
+                    _safe_execute_with_auto_healing(db, statement, allow_destructive=allow_destructive,
+                                                   project_id=project_id, run_id=run_id, executor=execute_sql)
                 detail = {"action": "EXECUTE_WORKFLOW_SQL", "statement_count": len(statements)}
             else:
-                execute_sql(item["content"], safe_retry=False)
+                from app.services.deployment import _safe_execute_with_auto_healing
+                _safe_execute_with_auto_healing(db, item['content'], allow_destructive=allow_destructive,
+                                               project_id=project_id, run_id=run_id, executor=execute_sql)
                 detail = {"action": "EXECUTE_ARTIFACT"}
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
                                        environment="DEV", status="PASSED",
