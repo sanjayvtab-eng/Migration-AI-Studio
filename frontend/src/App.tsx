@@ -328,17 +328,62 @@ const moduleMap: any = {
 
 const BUILD_VERSION = "2.4.1 BRONZE_TARGET_CONSISTENCY";
 
+function EyeIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
+
 function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
-  const [mode, setMode] = useState<"login" | "register_email" | "verify_otp" | "set_password">("login");
+  const [mode, setMode] = useState<"login" | "register_email" | "reset_email" | "verify_otp" | "set_password">("login");
+  const [isResetFlow, setIsResetFlow] = useState(false);
   const [u, setU] = useState("admin");
   const [p, setP] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
+
+  async function handleRequestResetOtp() {
+    setErr("");
+    setInfo("");
+    if (!email || !email.includes("@")) {
+      setErr("Please enter a valid email address.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const r: any = await api("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      setInfo(r.message || "A 6-digit password reset code has been sent to your email.");
+      setIsResetFlow(true);
+      setMode("verify_otp");
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleLogin() {
     setErr("");
@@ -443,18 +488,60 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
               placeholder="Username or Email"
               disabled={loading}
             />
-            <input
-              value={p}
-              type="password"
-              onChange={(e) => setP(e.target.value)}
-              placeholder="Password"
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-              disabled={loading}
-            />
+            <div style={{ position: "relative", width: "100%", margin: "6px 0" }}>
+              <input
+                value={p}
+                type={showLoginPassword ? "text" : "password"}
+                onChange={(e) => setP(e.target.value)}
+                placeholder="Password"
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                disabled={loading}
+                style={{ width: "100%", paddingRight: 42, margin: 0 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowLoginPassword(!showLoginPassword)}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  padding: "6px",
+                  margin: 0,
+                  width: "auto",
+                  boxShadow: "none",
+                  cursor: "pointer",
+                  color: "#64748b",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title={showLoginPassword ? "Hide password" : "Show password"}
+              >
+                {showLoginPassword ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 2, marginBottom: 8 }}>
+              <a
+                href="#forgot"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setErr("");
+                  setInfo("");
+                  setIsResetFlow(true);
+                  setMode("reset_email");
+                }}
+                style={{ fontSize: 12, color: "#38bdf8", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}
+              >
+                Forgot Password?
+              </a>
+            </div>
             <button onClick={handleLogin} disabled={loading}>
               {loading ? "Signing in..." : "Sign in"}
             </button>
-            <div style={{ marginTop: 16, textAlign: "center" }}>
+            <div style={{ marginTop: 14, textAlign: "center" }}>
               <span style={{ fontSize: 13, color: "#94a3b8" }}>New user? </span>
               <a
                 href="#register"
@@ -462,6 +549,7 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
                   e.preventDefault();
                   setErr("");
                   setInfo("");
+                  setIsResetFlow(false);
                   setMode("register_email");
                 }}
                 style={{ fontSize: 13, color: "#38bdf8", fontWeight: 700, textDecoration: "underline", cursor: "pointer" }}
@@ -506,6 +594,40 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
           </>
         )}
 
+        {mode === "reset_email" && (
+          <>
+            <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
+              Enter your registered email to receive a 6-digit password reset code.
+            </div>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Enter your email address"
+              onKeyDown={(e) => e.key === "Enter" && handleRequestResetOtp()}
+              disabled={loading}
+              autoFocus
+            />
+            <button onClick={handleRequestResetOtp} disabled={loading}>
+              {loading ? "Sending reset code..." : "Send Reset Code"}
+            </button>
+            <div style={{ marginTop: 14, textAlign: "center" }}>
+              <a
+                href="#login"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setErr("");
+                  setInfo("");
+                  setMode("login");
+                }}
+                style={{ fontSize: 13, color: "#38bdf8", fontWeight: 500, textDecoration: "none", cursor: "pointer" }}
+              >
+                ← Back to Sign in
+              </a>
+            </div>
+          </>
+        )}
+
         {mode === "verify_otp" && (
           <>
             <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
@@ -530,7 +652,11 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
                 href="#resend"
                 onClick={(e) => {
                   e.preventDefault();
-                  handleRequestOtp();
+                  if (isResetFlow) {
+                    handleRequestResetOtp();
+                  } else {
+                    handleRequestOtp();
+                  }
                 }}
                 style={{ color: "#38bdf8", textDecoration: "none", cursor: "pointer" }}
               >
@@ -542,7 +668,7 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
                   e.preventDefault();
                   setErr("");
                   setInfo("");
-                  setMode("register_email");
+                  setMode(isResetFlow ? "reset_email" : "register_email");
                 }}
                 style={{ color: "#94a3b8", textDecoration: "none", cursor: "pointer" }}
               >
@@ -555,26 +681,81 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
         {mode === "set_password" && (
           <>
             <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
-              Create a secure password for <strong style={{ color: "#38bdf8" }}>{email}</strong>
+              {isResetFlow ? "Reset password for " : "Create a secure password for "}
+              <strong style={{ color: "#38bdf8" }}>{email}</strong>
             </div>
-            <input
-              type="password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="Create Password (min. 6 characters)"
-              disabled={loading}
-              autoFocus
-            />
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Confirm Password"
-              onKeyDown={(e) => e.key === "Enter" && handleSetPassword()}
-              disabled={loading}
-            />
+            <div style={{ position: "relative", width: "100%", margin: "6px 0" }}>
+              <input
+                type={showNewPassword ? "text" : "password"}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Create Password (min. 6 characters)"
+                disabled={loading}
+                autoFocus
+                style={{ width: "100%", paddingRight: 42, margin: 0 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowNewPassword(!showNewPassword)}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  padding: "6px",
+                  margin: 0,
+                  width: "auto",
+                  boxShadow: "none",
+                  cursor: "pointer",
+                  color: "#64748b",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title={showNewPassword ? "Hide password" : "Show password"}
+              >
+                {showNewPassword ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            </div>
+            <div style={{ position: "relative", width: "100%", margin: "6px 0" }}>
+              <input
+                type={showConfirmPassword ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm Password"
+                onKeyDown={(e) => e.key === "Enter" && handleSetPassword()}
+                disabled={loading}
+                style={{ width: "100%", paddingRight: 42, margin: 0 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  background: "transparent",
+                  border: "none",
+                  padding: "6px",
+                  margin: 0,
+                  width: "auto",
+                  boxShadow: "none",
+                  cursor: "pointer",
+                  color: "#64748b",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                title={showConfirmPassword ? "Hide password" : "Show password"}
+              >
+                {showConfirmPassword ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+            </div>
             <button onClick={handleSetPassword} disabled={loading}>
-              {loading ? "Saving Password..." : "Set Password & Sign In"}
+              {loading ? "Saving Password..." : isResetFlow ? "Reset Password & Sign In" : "Set Password & Sign In"}
             </button>
           </>
         )}

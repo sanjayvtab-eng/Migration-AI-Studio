@@ -318,6 +318,55 @@ def bootstrap_admin(data:LoginIn,db:Session=Depends(get_db)):
     if db.scalar(select(func.count()).select_from(User))>0: raise HTTPException(409,"Users already exist")
     u=User(id=uid("USR"),username=data.username,password_hash=hash_password(data.password),role="ADMIN");db.add(u);db.commit();return {"created":True}
 
+@router.post("/auth/forgot-password")
+async def forgot_password_request_otp(data: RegisterRequestIn, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Valid email address is required")
+    
+    from app.services import supabase_auth_service
+    sb_user = supabase_auth_service.get_user_by_email(email)
+    existing = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    
+    settings = get_settings()
+    is_bootstrap_email = bool(settings.brevo_sender_email and settings.brevo_sender_email.lower() == email)
+    
+    if not sb_user and not existing and not is_bootstrap_email:
+        admin_u = db.scalar(select(User).where(User.username == "admin"))
+        if not admin_u:
+            raise HTTPException(404, "No account found with this email. Please register first.")
+    
+    import random
+    from datetime import timedelta
+    otp_code = f"{random.randint(100000, 999999)}"
+    expires = datetime.utcnow() + timedelta(minutes=10)
+    
+    supabase_auth_service.upsert_user_otp(email, otp_code, expires)
+    if existing:
+        existing.otp = otp_code
+        existing.otp_expires_at = expires
+    else:
+        admin_u = db.scalar(select(User).where(User.username == "admin"))
+        if admin_u and (not admin_u.email or admin_u.email == email or is_bootstrap_email):
+            admin_u.email = email
+            admin_u.otp = otp_code
+            admin_u.otp_expires_at = expires
+    db.commit()
+    
+    from app.services.email_service import send_otp_email
+    email_sent, email_detail = await send_otp_email(email, otp_code)
+    print(f"[AUTH] Generated Reset Password OTP for {email}: {otp_code} (dispatched={email_sent})")
+    
+    msg = "Password reset code sent to your email" if email_sent else f"OTP: {otp_code} (Delivery note: {email_detail})"
+    return {
+        "message": msg,
+        "email": email,
+        "email_dispatched": email_sent,
+        "detail": email_detail,
+        "is_reset": True
+    }
+
+
 @router.post("/register/request-otp")
 async def register_request_otp(data:RegisterRequestIn,db:Session=Depends(get_db)):
     email = data.email.strip().lower()
