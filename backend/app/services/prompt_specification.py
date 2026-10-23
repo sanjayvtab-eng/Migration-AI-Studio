@@ -1903,6 +1903,8 @@ def refine_prompt_plan(db: Session, project_id: str, specification_id: str, refi
     commands = re.split(r'\s*(?:;|\n|,\s*(?=(?:move|rename|add|delete|remove)\b)|\band\s+(?=(?:move|rename|add|delete|remove)\b))\s*', refinement_prompt.strip(), flags=re.I)
     for command in commands:
         command = command.strip().rstrip('.')
+        if not command:
+            continue
         move = re.fullmatch(r'move\s+(.+?)\s+to\s+(bronze|silver|gold)(?:\s+with\s+.+)?', command, re.I)
         rename = re.fullmatch(r'rename\s+(.+?)\s+to\s+([A-Za-z_]\w*)(?:\s+with\s+.+)?', command, re.I)
         remove = re.fullmatch(r'(?:delete|remove)\s+(.+?)(?:\s+with\s+.+)?', command, re.I)
