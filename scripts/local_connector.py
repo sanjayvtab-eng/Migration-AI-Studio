@@ -238,7 +238,7 @@ class UniversalLocalAgent:
                 installed = [d for d in pyodbc.drivers() if "SQL Server" in d]
                 for alt in ["ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server", "SQL Server"]:
                     if alt in installed and alt not in cs:
-                        alt_cs = re.sub(r"DRIVER=\{[^}]+\}", f"DRIVER={{{alt}}}", cs)
+                        alt_cs = re.sub(r"DRIVER=\{[^}]+\}", lambda _, a=alt: f"DRIVER={{{a}}}", cs)
                         try:
                             conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
                             conn.timeout = 60
@@ -249,7 +249,7 @@ class UniversalLocalAgent:
             if any(k in err_str for k in ("08001", "HYT00", "network-related", "not accessible", "server is not found")):
                 if self.server.lower() in ("localhost", "127.0.0.1", ".", "localhost:1433"):
                     for candidate in [r"localhost\SQLEXPRESS", r".\SQLEXPRESS"]:
-                        alt_cs = re.sub(r"SERVER=\{?[^;}]+\}?", f"SERVER={{{candidate}}}", cs)
+                        alt_cs = re.sub(r"SERVER=\{?[^;}]+\}?", lambda _, c=candidate: f"SERVER={{{c}}}", cs)
                         try:
                             conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
                             conn.timeout = 60
@@ -273,6 +273,16 @@ class UniversalLocalAgent:
         op = task["operation"]
         data = task.get("payload", {})
         self.cleanup()
+
+        # Dynamically adapt to target engine and port if specified in task from Studio
+        if task.get("engine"):
+            task_engine = normalize_engine(task["engine"])
+            if task_engine != self.engine:
+                self.engine = task_engine
+                if not self.port or self.port in {1433, 3306, 5432, 1521}:
+                    self.port = int(task.get("port") or {"SQLSERVER": 1433, "MYSQL": 3306, "POSTGRESQL": 5432, "ORACLE": 1521}.get(self.engine, 5432))
+        if task.get("schema") and not self.schema:
+            self.schema = task["schema"]
 
         # Operation 1: TEST CONNECTION
         if op == "test":
@@ -644,7 +654,12 @@ def main():
 
     url = args.url or os.environ.get("CONNECTOR_URL") or file_cfg.get("CONNECTOR_URL")
     source = args.source or os.environ.get("CONNECTOR_SOURCE") or os.environ.get("CONNECTOR_SOURCE_ID") or file_cfg.get("CONNECTOR_SOURCE") or file_cfg.get("CONNECTOR_SOURCE_ID")
-    engine = normalize_engine(args.engine or os.environ.get("CONNECTOR_ENGINE") or file_cfg.get("CONNECTOR_ENGINE") or "SQLSERVER")
+    engine_val = args.engine or os.environ.get("CONNECTOR_ENGINE") or file_cfg.get("CONNECTOR_ENGINE")
+    if not engine_val and is_interactive and not config_path:
+        engine_prompt = input("Database Engine [SQLSERVER / MYSQL / POSTGRESQL / ORACLE] (default: SQLSERVER): ").strip()
+        engine_val = engine_prompt if engine_prompt else "SQLSERVER"
+        need_save = True
+    engine = normalize_engine(engine_val or "SQLSERVER")
     server = (args.server or os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER") or "localhost")
     if engine == "SQLSERVER":
         server = server.replace("/", "\\")
