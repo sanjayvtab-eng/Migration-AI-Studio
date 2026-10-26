@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import secrets
 import socket
@@ -242,6 +243,18 @@ class UniversalLocalAgent:
                             conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
                             conn.timeout = 60
                             self.connection_string = alt_cs
+                            return conn
+                        except Exception:
+                            continue
+            if any(k in err_str for k in ("08001", "HYT00", "network-related", "not accessible", "server is not found")):
+                if self.server.lower() in ("localhost", "127.0.0.1", ".", "localhost:1433"):
+                    for candidate in [r"localhost\SQLEXPRESS", r".\SQLEXPRESS"]:
+                        alt_cs = re.sub(r"SERVER=\{?[^;}]+\}?", f"SERVER={{{candidate}}}", cs)
+                        try:
+                            conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
+                            conn.timeout = 60
+                            self.connection_string = alt_cs
+                            self.server = candidate
                             return conn
                         except Exception:
                             continue
@@ -604,6 +617,11 @@ def find_config_path(cli_path: str | None = None) -> Path | None:
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", help="Migration AI Studio URL (e.g. https://databricks-migration-factory-9ym2.onrender.com)")
     parser.add_argument("--source", help="Migration source profile ID (e.g. SRC_xxxx)")
