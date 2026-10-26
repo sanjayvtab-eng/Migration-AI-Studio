@@ -930,17 +930,34 @@ Return ONLY a JSON object:
         resolved_refs = []
         for ref in raw_refs:
             ref_str = str(ref).strip()
+            matched = None
+            # 1. Exact match first (case-insensitive or snake_case)
             for t_low, t_info in table_map.items():
-                if t_info["name"].lower() == ref_str.lower() or f"vw_{_snake(t_info['name'])}_clean" == ref_str.lower() or _snake(t_info["name"]) in ref_str.lower():
-                    if t_info["name"] not in resolved_refs:
-                        resolved_refs.append(t_info["name"])
+                if t_info["name"].lower() == ref_str.lower() or _snake(t_info["name"]) == _snake(ref_str) or f"vw_{_snake(t_info['name'])}_clean" == ref_str.lower():
+                    matched = t_info["name"]
+                    break
+            # 2. Whole word boundary match only if no exact match (prevents Customers matching CustomerSales)
+            if not matched:
+                for t_low, t_info in table_map.items():
+                    if re.search(rf"\b{re.escape(_snake(t_info['name']))}\b", _snake(ref_str), re.I):
+                        matched = t_info["name"]
+                        break
+            if matched and matched not in resolved_refs:
+                resolved_refs.append(matched)
+
         if not resolved_refs and atype == "TABLE_COPY":
             for t_low, t_info in table_map.items():
-                if t_info["name"].lower() == name.lower():
+                if t_info["name"].lower() == name.lower() or _snake(t_info["name"]) == _snake(name):
                     resolved_refs.append(t_info["name"])
 
         if layer == "BRONZE" and atype == "TABLE_COPY":
-            name = resolved_refs[0] if resolved_refs else name
+            # Match directly to source table if name matches exactly
+            exact_tbl = next((t_info["name"] for t_low, t_info in table_map.items() if t_info["name"].lower() == name.lower() or _snake(t_info["name"]) == _snake(name)), None)
+            if exact_tbl:
+                name = exact_tbl
+                resolved_refs = [exact_tbl]
+            elif resolved_refs:
+                name = resolved_refs[0]
 
         if layer == "SILVER" and atype == "VIEW" and name.endswith("_clean"):
             if resolved_refs:
