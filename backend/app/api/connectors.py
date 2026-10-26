@@ -37,8 +37,7 @@ def status(project_id: str, source_id: str, db: Session = Depends(get_db), _=Dep
 @router.post("/projects/{project_id}/sources/{source_id}/connector")
 def register(project_id: str, source_id: str, db: Session = Depends(get_db), _=Depends(admin)):
     src = source(db, project_id, source_id)
-    if normalize_engine(src.engine) != "SQLSERVER":
-        raise HTTPException(400, "The local connector currently supports SQL Server sources only")
+
     token = secrets.token_urlsafe(48)
     row = db.get(SourceConnector, source_id)
     if not row:
@@ -76,7 +75,10 @@ def get_config(
         f"# Generated for Source: {src.profile_name} ({src.id})\n"
         f"CONNECTOR_URL={app_url}\n"
         f"CONNECTOR_SOURCE={src.id}\n"
+        f"CONNECTOR_ENGINE={src.engine}\n"
         f"CONNECTOR_SERVER={src.server_name}\n"
+        f"CONNECTOR_PORT={src.port or ''}\n"
+        f"CONNECTOR_SCHEMA={src.schema_name or ''}\n"
         f"CONNECTOR_DATABASE={src.database_name}\n"
         f"CONNECTOR_TOKEN={token}\n"
         f"CONNECTOR_DRIVER={driver}\n"
@@ -236,7 +238,8 @@ def poll(x_connector_instance: str = Header(default=""), db: Session = Depends(g
             src = db.get(MigrationSource, connector.source_id)
             result = {"id": task.id, "lease": lease, "operation": task.operation,
                       "payload": json.loads(task.payload), "source_id": src.id,
-                      "server": src.server_name, "database": src.database_name}
+                      "server": src.server_name, "database": src.database_name,
+                      "engine": src.engine, "port": src.port, "schema": src.schema_name}
     db.commit()
     return {"task": result}
 

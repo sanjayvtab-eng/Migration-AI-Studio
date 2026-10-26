@@ -920,8 +920,6 @@ def source_test(project_id:str,source_id:str,db:Session=Depends(get_db),_=Depend
     try:
         conn_meta = connector_info(src.id)
         if conn_meta["mode"] == "CONNECTOR" and conn_meta["status"] == "ONLINE":
-            if normalize_engine(src.engine) != "SQLSERVER":
-                raise ValueError("The local connector currently supports SQL Server sources only")
             result = connector_request(src.id, "test")
         else:
             try:
@@ -943,8 +941,6 @@ def discovery_live(project_id:str,source_id:str,db:Session=Depends(get_db),_=Dep
     try:
         conn_meta = connector_info(src.id)
         if conn_meta["mode"] == "CONNECTOR" and conn_meta["status"] == "ONLINE":
-            if normalize_engine(src.engine) != "SQLSERVER":
-                raise ValueError("The local connector currently supports SQL Server sources only")
             connector_request(src.id, "test")
             snap = connector_request(src.id, "discover")
         else:

@@ -15,8 +15,8 @@ export default function SourceConnectorControl({
   onlyStatus,
   onlyButton,
 }: Props) {
-  const connectorSupported = !source.engine || source.engine === "SQLSERVER";
-  const [status, setStatus] = useState(connectorSupported ? "Loading" : "DIRECT");
+  const connectorSupported = true;
+  const [status, setStatus] = useState("Loading");
   const [registration, setRegistration] = useState<{ token: string } | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -31,7 +31,6 @@ export default function SourceConnectorControl({
   useEffect(() => {
     let active = true;
     const refresh = async () => {
-      if (!connectorSupported) { if (active) setStatus("DIRECT"); return; }
       try {
         const result = await api<{ status: string }>(path);
         if (active) setStatus(result.status);
@@ -42,7 +41,7 @@ export default function SourceConnectorControl({
     void refresh();
     const timer = window.setInterval(refresh, 15000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [path, connectorSupported]);
+  }, [path]);
 
   const mutate = async (method: string) => {
     setBusy(true);
@@ -61,24 +60,28 @@ export default function SourceConnectorControl({
   const certificateOption = trustCert ? " --trust-server-certificate" : "";
   const configuredApi = import.meta.env.VITE_API_URL || "/api";
   const connectorApplicationUrl = new URL(configuredApi, window.location.origin).origin;
-  const command = `python scripts/local_connector.py --url ${quote(connectorApplicationUrl)} --source ${quote(source.id)} --server ${quote(source.server_name)} --database ${quote(source.database_name)} --driver ${quote(driver)}${certificateOption}`;
+  const engine = source.engine || "SQLSERVER";
+  const defaultPorts: Record<string, number> = { SQLSERVER: 1433, MYSQL: 3306, POSTGRESQL: 5432, ORACLE: 1521 };
+  const command = `python scripts/local_connector.py --url ${quote(connectorApplicationUrl)} --source ${quote(source.id)} --engine ${quote(engine)} --server ${quote(source.server_name)} --database ${quote(source.database_name)}${engine === "SQLSERVER" ? ` --driver ${quote(driver)}${certificateOption}` : ""}`;
 
   const downloadEnvFile = () => {
     if (!registration) return;
     const content = [
       "# Databricks Migration AI Studio - Agent Configuration",
-      `# Source: ${source.id} (${source.server_name} / ${source.database_name})`,
+      `# Source: ${source.id} (${source.server_name} / ${source.database_name} - ${engine})`,
       `CONNECTOR_URL=${connectorApplicationUrl}`,
       `CONNECTOR_SOURCE=${source.id}`,
+      `CONNECTOR_ENGINE=${engine}`,
       `CONNECTOR_SERVER=${source.server_name}`,
+      `CONNECTOR_PORT=${defaultPorts[engine] || 3306}`,
       `CONNECTOR_DATABASE=${source.database_name}`,
       `CONNECTOR_TOKEN=${registration.token}`,
-      `CONNECTOR_DRIVER=${driver}`,
-      `CONNECTOR_TRUST_CERT=${trustCert ? "true" : "false"}`,
-      "# Optional: SQL Authentication (leave blank for Windows Auth)",
+      engine === "SQLSERVER" ? `CONNECTOR_DRIVER=${driver}` : "",
+      engine === "SQLSERVER" ? `CONNECTOR_TRUST_CERT=${trustCert ? "true" : "false"}` : "",
+      "# Credentials for local desktop database (leave blank for Windows Auth on SQL Server)",
       "CONNECTOR_USERNAME=",
       "CONNECTOR_PASSWORD=",
-    ].join("\n");
+    ].filter(Boolean).join("\n");
     const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -98,7 +101,7 @@ export default function SourceConnectorControl({
   const pillClass = isOnline ? "active" : isBlocked ? "blocked" : "review";
   const statusText =
     status === "DIRECT"
-      ? connectorSupported ? "Direct Connection (Healthy)" : "Native Driver (Direct)"
+      ? "Native Driver (Direct)"
       : status === "ONLINE"
       ? "Connector Online (Ready)"
       : status === "OFFLINE"
@@ -115,7 +118,7 @@ export default function SourceConnectorControl({
   const dialogElement = open && (
     <dialog
       ref={dialog}
-      aria-label="Local SQL Server connector"
+      aria-label={`Local ${engine} connector`}
       onCancel={() => {
         setOpen(false);
         setRegistration(null);
@@ -138,21 +141,18 @@ export default function SourceConnectorControl({
           whiteSpace: "normal",
         }}
       >
-        <h2>Local SQL Server connector</h2>
+        <h2>Local {engine} Connector</h2>
         <p>
-          Run the connector on a machine that can access {source.server_name}. It
-          connects outward over HTTPS in hosted environments; loopback HTTP is
-          allowed only for local development. SQL credentials remain local.
+          Run the connector on your local machine to connect your local {engine} instance ({source.server_name} / {source.database_name}) with Migration AI Studio. It connects outward over HTTPS; your database credentials stay local on your computer.
         </p>
         <p>
           Status: <strong>{status}</strong>
         </p>
-        {error && <p role="alert">{error}</p>}
+        {error && <p role="alert" style={{ color: "#de350b" }}>{error}</p>}
         {registration ? (
           <>
             <p>
-              Registration token is shown once. You can copy it or simply
-              download the pre-configured <code>agent.env</code>:
+              Registration token generated. Copy it below or download the pre-configured <code>agent.env</code>:
             </p>
             <textarea
               aria-label="Registration token"
@@ -161,63 +161,65 @@ export default function SourceConnectorControl({
               rows={3}
               style={{ width: "100%", boxSizing: "border-box" }}
             />
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                gap: 16,
-                margin: "14px 0 8px 0",
-              }}
-            >
-              <label
+            {engine === "SQLSERVER" && (
+              <div
                 style={{
                   display: "flex",
+                  flexWrap: "wrap",
                   alignItems: "center",
-                  gap: 6,
-                  fontSize: "0.9rem",
+                  gap: 16,
+                  margin: "14px 0 8px 0",
                 }}
               >
-                <span>
-                  <strong>ODBC Driver:</strong>
-                </span>
-                <select
-                  value={driver}
-                  onChange={(e) => setDriver(e.target.value)}
+                <label
                   style={{
-                    padding: "4px 8px",
-                    borderRadius: 4,
-                    border: "1px solid #c1c7d0",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: "0.9rem",
                   }}
                 >
-                  <option value="ODBC Driver 17 for SQL Server">
-                    ODBC Driver 17 for SQL Server (Recommended)
-                  </option>
-                  <option value="ODBC Driver 18 for SQL Server">
-                    ODBC Driver 18 for SQL Server
-                  </option>
-                </select>
-              </label>
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  fontSize: "0.9rem",
-                  cursor: "pointer",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={trustCert}
-                  onChange={(e) => setTrustCert(e.target.checked)}
-                />
-                <span>
-                  Trust Server Certificate (
-                  <code>--trust-server-certificate</code>)
-                </span>
-              </label>
-            </div>
+                  <span>
+                    <strong>ODBC Driver:</strong>
+                  </span>
+                  <select
+                    value={driver}
+                    onChange={(e) => setDriver(e.target.value)}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 4,
+                      border: "1px solid #c1c7d0",
+                    }}
+                  >
+                    <option value="ODBC Driver 17 for SQL Server">
+                      ODBC Driver 17 for SQL Server (Recommended)
+                    </option>
+                    <option value="ODBC Driver 18 for SQL Server">
+                      ODBC Driver 18 for SQL Server
+                    </option>
+                  </select>
+                </label>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: "0.9rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={trustCert}
+                    onChange={(e) => setTrustCert(e.target.checked)}
+                  />
+                  <span>
+                    Trust Server Certificate (
+                    <code>--trust-server-certificate</code>)
+                  </span>
+                </label>
+              </div>
+            )}
 
             <div
               style={{
@@ -238,7 +240,7 @@ export default function SourceConnectorControl({
                   gap: 6,
                 }}
               >
-                <span>⭐ Recommended: Standalone Agent Executable (.exe)</span>
+                <span>⭐ Quick Start: Standalone Agent Executable (.exe)</span>
               </div>
               <p
                 style={{
@@ -247,8 +249,7 @@ export default function SourceConnectorControl({
                   color: "#42526e",
                 }}
               >
-                Download and run <code>migration-agent.exe</code> on your SQL Server
-                machine. No Python, VS Code, or repository setup required!
+                Download and run <code>migration-agent.exe</code> on your local computer. Place <code>agent.env</code> next to it to connect automatically.
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 <button
@@ -297,109 +298,107 @@ export default function SourceConnectorControl({
                   color: "#5e6c84",
                 }}
               >
-                💡 <strong>Configuration:</strong> Double-click{" "}
-                <code>migration-agent.exe</code> to enter your parameters
-                interactively, or pass flags like{" "}
-                <code>--database {source.database_name}</code>. You can also place
-                an <code>agent.env</code> next to it to connect automatically.
+                💡 <strong>Instructions:</strong> Save <code>agent.env</code> into the same folder as <code>migration-agent.exe</code>, enter your local database username and password in <code>agent.env</code>, and double-click the exe!
               </p>
             </div>
 
-            <details
-              style={{
-                marginTop: 12,
-                fontSize: "0.88rem",
-                color: "#42526e",
-                borderTop: "1px solid #ebecf0",
-                paddingTop: 8,
-              }}
-            >
+            <details style={{ margin: "16px 0" }}>
               <summary
                 style={{
                   cursor: "pointer",
-                  fontWeight: 500,
-                  color: "#0052cc",
-                }}
-              >
-                Advanced / Developer command-line run
-              </summary>
-              <p style={{ margin: "8px 0 6px 0", color: "#334155", fontWeight: 500 }}>
-                From the repository folder on the SQL Server machine:
-              </p>
-              <pre
-                style={{
-                  whiteSpace: "pre-wrap",
-                  overflowWrap: "anywhere",
-                  background: "#f1f5f9",
-                  color: "#0f172a",
-                  border: "1px solid #cbd5e1",
-                  padding: "12px 14px",
-                  borderRadius: "6px",
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                  fontSize: "12px",
-                  lineHeight: "1.55",
                   fontWeight: 600,
+                  color: "#0052cc",
+                  padding: "4px 0",
                 }}
               >
-                python -m pip install -r scripts/connector-requirements.txt{"\n"}
-                {command}
-              </pre>
-              <p style={{ margin: "6px 0 0 0", fontSize: "0.82rem", color: "#475569" }}>
-                Windows Authentication uses the account running this command.
-                For SQL Authentication add <code style={{ color: "#0f172a", background: "#e2e8f0", padding: "1px 4px", borderRadius: 3 }}>--username 'your-sql-login'</code>
-                ; the password is prompted locally.
-              </p>
+                🐍 Python CLI / Developer Instructions
+              </summary>
+              <div
+                style={{
+                  padding: "10px 0",
+                  fontSize: "0.88rem",
+                  color: "#42526e",
+                }}
+              >
+                <p>Alternatively run the connector via Python:</p>
+                <pre
+                  style={{
+                    background: "#172b4d",
+                    color: "#f4f5f7",
+                    padding: 10,
+                    borderRadius: 4,
+                    overflowX: "auto",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {command} --token {quote(registration.token)}
+                </pre>
+              </div>
             </details>
-
-            <p style={{ marginTop: 14 }}>
-              Keep the connector running. When its status becomes online, close
-              this panel and select Test. See <code>docs/LOCAL_CONNECTOR.md</code>{" "}
-              for certificate setup and recovery.
-            </p>
           </>
         ) : (
           <p>
-            Registration switches this source to connector mode. Registering
-            again invalidates the previous token and cancels pending connector
-            tasks.
+            Register this source to generate a token for the Local Connector Agent.
           </p>
         )}
+
         <div
           style={{
             display: "flex",
-            flexWrap: "wrap",
-            gap: 8,
-            marginTop: 16,
+            justifyContent: "space-between",
+            marginTop: 20,
+            gap: 10,
           }}
         >
-          {!registration && (
-            <button disabled={busy} onClick={() => void mutate("POST")}>
-              {status === "DIRECT"
-                ? "Register connector"
-                : "Replace registration"}
-            </button>
-          )}
-          {status !== "DIRECT" && status !== "REVOKED" && (
+          <div style={{ display: "flex", gap: 10 }}>
             <button
+              type="button"
               disabled={busy}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    "Revoke this connector and cancel its pending tasks?",
-                  )
-                )
-                  void mutate("DELETE");
+              onClick={() => mutate("POST")}
+              style={{
+                background: "#0052cc",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                padding: "8px 16px",
+                fontWeight: 600,
+                cursor: "pointer",
               }}
             >
-              Revoke connector
+              {status === "DIRECT" ? "Register Connector Agent" : "Generate New Token"}
             </button>
-          )}
+            {status !== "DIRECT" && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => mutate("DELETE")}
+                style={{
+                  background: "#de350b",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 4,
+                  padding: "8px 16px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Revoke Connector
+              </button>
+            )}
+          </div>
           <button
-            disabled={busy}
+            type="button"
             onClick={() => {
               setOpen(false);
               setRegistration(null);
               setError("");
+            }}
+            style={{
+              background: "#dfe1e6",
+              border: "none",
+              borderRadius: 4,
+              padding: "8px 16px",
+              cursor: "pointer",
             }}
           >
             Close
@@ -409,43 +408,57 @@ export default function SourceConnectorControl({
     </dialog>
   );
 
-  const manageButton = (
-    <button
-      className="btn-secondary"
-      onClick={() => setOpen(true)}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "6px 12px",
-      }}
-    >
-      <Settings size={13} />
-      Manage
-    </button>
-  );
-
   if (onlyStatus) return statusPill;
-  if (onlyButton && !connectorSupported) return null;
-  if (onlyButton)
+  if (onlyButton) {
     return (
       <>
-        {manageButton}
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={`Configure Local ${engine} Connector`}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            background: "none",
+            border: "1px solid #dfe1e6",
+            borderRadius: 6,
+            padding: "4px 8px",
+            fontSize: "0.85rem",
+            color: "#42526e",
+            cursor: "pointer",
+          }}
+        >
+          <Settings size={14} />
+          <span>Connector Agent</span>
+        </button>
         {dialogElement}
       </>
     );
+  }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "center",
-        gap: 8,
-      }}
-    >
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
       {statusPill}
-      {manageButton}
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title={`Configure Local ${engine} Connector`}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          background: "none",
+          border: "none",
+          color: "#0052cc",
+          cursor: "pointer",
+          fontSize: "0.85rem",
+          fontWeight: 500,
+        }}
+      >
+        <Settings size={14} />
+        <span>Manage Agent</span>
+      </button>
       {dialogElement}
     </div>
   );

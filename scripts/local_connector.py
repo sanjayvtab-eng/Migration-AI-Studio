@@ -1,5 +1,7 @@
-"""Run on the SQL Server network. No inbound listener or arbitrary SQL endpoint.
-Supports Standalone Binary execution, Smart Configuration (.env / agent.env), and CLI arguments.
+"""Universal Local Connector Agent for Databricks Migration AI Studio.
+Runs on the customer network. No inbound listener, open ports, or public IP needed.
+Connects outward over HTTPS to Migration AI Studio.
+Supports: SQL Server, MySQL, PostgreSQL, Oracle.
 """
 from __future__ import annotations
 
@@ -8,13 +10,12 @@ from datetime import date, datetime, time as time_type
 from decimal import Decimal
 import getpass
 import hashlib
-import socket
-import platform
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -24,10 +25,33 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 
-def quoted(value: str) -> str:
-    if not isinstance(value, str) or not value or len(value) > 128 or "\x00" in value:
-        raise ValueError("Invalid SQL identifier")
-    return "[" + value.replace("]", "]]") + "]"
+def normalize_engine(value: str | None) -> str:
+    aliases = {
+        "POSTGRES": "POSTGRESQL",
+        "PG": "POSTGRESQL",
+        "MARIADB": "MYSQL",
+        "MSSQL": "SQLSERVER",
+        "SQL_SERVER": "SQLSERVER",
+    }
+    raw = str(value or "SQLSERVER").strip().upper()
+    return aliases.get(raw, raw)
+
+
+def quote_identifier(name: str, engine: str = "SQLSERVER") -> str:
+    engine = normalize_engine(engine)
+    clean = str(name).replace("\x00", "")
+    if engine == "SQLSERVER":
+        return "[" + clean.replace("]", "]]") + "]"
+    if engine == "MYSQL":
+        return "`" + clean.replace("`", "``") + "`"
+    return '"' + clean.replace('"', '""') + '"'
+
+
+def qualified_table(schema: str | None, table: str, engine: str = "SQLSERVER") -> str:
+    t = quote_identifier(table, engine)
+    if schema and str(schema).strip():
+        return f"{quote_identifier(schema, engine)}.{t}"
+    return t
 
 
 def odbc_value(value: str) -> str:
@@ -45,10 +69,13 @@ def encode_value(value: Any) -> Any:
         return {"kind": type(value).__name__, "value": value.isoformat()}
     if isinstance(value, UUID):
         return str(value)
-    raise ValueError("Unsupported source value type")
+    return str(value)
 
 
-DISCOVERY_SQL = r"""
+# ==============================================================================
+# SQL SERVER DISCOVERY QUERIES
+# ==============================================================================
+SQLSERVER_DISCOVERY = r"""
 SELECT DB_NAME() AS database_name, s.name AS schema_name, o.name AS object_name,
        CASE o.type WHEN 'U' THEN 'TABLE' WHEN 'V' THEN 'VIEW' WHEN 'P' THEN 'PROCEDURE'
                    WHEN 'FN' THEN 'FUNCTION' WHEN 'IF' THEN 'FUNCTION' WHEN 'TF' THEN 'FUNCTION'
@@ -60,7 +87,7 @@ LEFT JOIN sys.sql_modules m ON m.object_id=o.object_id
 WHERE o.is_ms_shipped=0 AND o.type IN ('U','V','P','FN','IF','TF','TR');
 """
 
-COLUMN_SQL = r"""
+SQLSERVER_COLUMNS = r"""
 SELECT s.name schema_name,o.name object_name,c.name column_name,c.column_id,
        t.name declared_data_type, TYPE_NAME(c.system_type_id) system_data_type, t.is_user_defined,
        c.max_length,c.precision,c.scale,c.is_nullable,c.is_identity,c.is_computed,
@@ -71,35 +98,7 @@ LEFT JOIN sys.default_constraints dc ON c.default_object_id=dc.object_id
 WHERE o.is_ms_shipped=0 AND o.type IN ('U','V');
 """
 
-DEPENDENCY_SQL = r"""
-SELECT
-    d.referencing_id,
-    OBJECT_SCHEMA_NAME(d.referencing_id) AS referencing_schema_name,
-    OBJECT_NAME(d.referencing_id) AS referencing_entity_name,
-    d.referenced_id,
-    d.referenced_server_name,
-    d.referenced_database_name,
-    d.referenced_schema_name,
-    d.referenced_entity_name,
-    d.referenced_minor_id,
-    c.name AS referenced_column_name,
-    CASE
-        WHEN d.referenced_server_name IS NOT NULL THEN 'EXTERNAL_SERVER'
-        WHEN d.referenced_database_name IS NOT NULL AND d.referenced_database_name <> DB_NAME() THEN 'CROSS_DATABASE'
-        WHEN d.referenced_schema_name IS NOT NULL AND d.referenced_schema_name <> OBJECT_SCHEMA_NAME(d.referencing_id) THEN 'CROSS_SCHEMA'
-        ELSE 'LOCAL'
-    END AS dependency_scope,
-    d.is_schema_bound_reference,
-    d.is_caller_dependent,
-    d.is_ambiguous
-FROM sys.sql_expression_dependencies AS d
-LEFT JOIN sys.columns AS c
-    ON c.object_id = d.referenced_id
-   AND c.column_id = d.referenced_minor_id
-WHERE d.referenced_entity_name IS NOT NULL;
-"""
-
-KEY_CONSTRAINT_SQL = r"""
+SQLSERVER_KEYS = r"""
 SELECT s.name AS schema_name, o.name AS object_name, kc.name AS constraint_name,
        kc.type_desc AS constraint_type, ic.key_ordinal, c.name AS column_name
 FROM sys.key_constraints kc
@@ -111,23 +110,7 @@ WHERE o.is_ms_shipped=0 AND kc.type IN ('PK','UQ')
 ORDER BY s.name,o.name,kc.name,ic.key_ordinal;
 """
 
-FOREIGN_KEY_SQL = r"""
-SELECT ps.name AS schema_name, po.name AS object_name, fk.name AS constraint_name,
-       fkc.constraint_column_id AS ordinal, pc.name AS column_name,
-       rs.name AS referenced_schema, ro.name AS referenced_object, rc.name AS referenced_column
-FROM sys.foreign_keys fk
-JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id=fk.object_id
-JOIN sys.objects po ON po.object_id=fk.parent_object_id
-JOIN sys.schemas ps ON ps.schema_id=po.schema_id
-JOIN sys.columns pc ON pc.object_id=po.object_id AND pc.column_id=fkc.parent_column_id
-JOIN sys.objects ro ON ro.object_id=fk.referenced_object_id
-JOIN sys.schemas rs ON rs.schema_id=ro.schema_id
-JOIN sys.columns rc ON rc.object_id=ro.object_id AND rc.column_id=fkc.referenced_column_id
-WHERE po.is_ms_shipped=0
-ORDER BY ps.name,po.name,fk.name,fkc.constraint_column_id;
-"""
-
-TABLE_STATS_SQL = r"""
+SQLSERVER_STATS = r"""
 SELECT s.name AS schema_name,o.name AS object_name,
        SUM(CASE WHEN p.index_id IN (0,1) THEN p.row_count ELSE 0 END) AS approx_row_count
 FROM sys.objects o
@@ -137,159 +120,115 @@ WHERE o.is_ms_shipped=0 AND o.type='U'
 GROUP BY s.name,o.name;
 """
 
-PARAMETER_SQL = r"""
-SELECT s.name AS schema_name,o.name AS object_name,p.name AS parameter_name,p.parameter_id,
-       t.name AS data_type,p.max_length,p.precision,p.scale,p.is_output
-FROM sys.objects o
-JOIN sys.schemas s ON s.schema_id=o.schema_id
-JOIN sys.parameters p ON p.object_id=o.object_id
-JOIN sys.types t ON t.user_type_id=p.user_type_id
-WHERE o.is_ms_shipped=0 AND o.type IN ('P','FN','IF','TF');
-"""
 
-
-def connection_diagnostic(error: Exception) -> str:
+def connection_diagnostic(error: Exception, engine: str = "SQLSERVER") -> str:
     message = str(error).lower()
-    if "4060" in message or "cannot open database" in message or "permission" in message:
-        return "DATABASE_ACCESS: Verify the database name and grant the connector account read and metadata permissions."
-    if "28000" in message or "login failed" in message or "18456" in message:
-        return "AUTHENTICATION_FAILED: Verify the SQL login or the Windows account running the local connector."
-    if "certificate" in message or "ssl" in message:
-        return "TLS_ERROR: Verify the SQL Server certificate and encryption settings."
-    if any(word in message for word in ("timeout", "hyt00", "08001", "network-related", "server does not exist", "server is not found", "not accessible", "error locating server")):
-        return ("NETWORK_UNREACHABLE: The backend or connector could not reach SQL Server. "
-                "Check if the server/instance name is correct (e.g. SHANJI\\SQLEXPRESS or .\\SQLEXPRESS), if the service is running, and if TCP/IP or Named Pipes are enabled.")
-    if "im002" in message or "data source name not found" in message or ("driver" in message and ("can't open lib" in message or "failed to load" in message)):
-        return "DRIVER_MISSING: Install the configured Microsoft ODBC Driver on the machine running the connection."
-    return "SOURCE_OPERATION_FAILED: Check SQL Server read permissions, supported data types and connector configuration."
+    if "access denied" in message or "28000" in message or "18456" in message or "password authentication failed" in message:
+        return "AUTHENTICATION_FAILED: Verify database username and password in agent.env."
+    if "unknown database" in message or "does not exist" in message or "4060" in message:
+        return "DATABASE_NOT_FOUND: Verify database name in agent.env."
+    if any(k in message for k in ("connection refused", "timeout", "hyt00", "08001", "not accessible", "network-related")):
+        return f"NETWORK_UNREACHABLE: Could not reach {engine} server on specified host and port. Verify service is running."
+    return f"{type(error).__name__}: {error}"
 
 
-def test_sqlserver_connection(connection_string: str) -> dict[str, Any]:
-    import pyodbc
-    with pyodbc.connect(connection_string, timeout=10) as conn:
-        cur = conn.cursor()
-        row = cur.execute("SELECT @@SERVERNAME AS server_name, DB_NAME() AS database_name, CAST(SERVERPROPERTY('ProductVersion') AS varchar(128)) AS product_version").fetchone()
-        return {"ok": True, "server": row.server_name, "database": row.database_name, "product_version": row.product_version}
-
-
-def discover_sqlserver(connection_string: str) -> dict[str, Any]:
-    import pyodbc
-    try:
-        with pyodbc.connect(connection_string, timeout=20) as conn:
-            cur = conn.cursor()
-            objs = cur.execute(DISCOVERY_SQL).fetchall()
-            cols = cur.execute(COLUMN_SQL).fetchall()
-            deps = cur.execute(DEPENDENCY_SQL).fetchall()
-            params = cur.execute(PARAMETER_SQL).fetchall()
-            try:
-                key_constraints = cur.execute(KEY_CONSTRAINT_SQL).fetchall()
-            except Exception:
-                key_constraints = []
-            try:
-                foreign_keys = cur.execute(FOREIGN_KEY_SQL).fetchall()
-            except Exception:
-                foreign_keys = []
-            try:
-                table_stats = cur.execute(TABLE_STATS_SQL).fetchall()
-            except Exception:
-                table_stats = []
-            by = {(r.schema_name, r.object_name): [] for r in objs}
-            for c in cols:
-                by.setdefault((c.schema_name, c.object_name), []).append({
-                    "name": c.column_name, "ordinal": c.column_id,
-                    "type": (c.system_data_type if bool(c.is_user_defined) and c.system_data_type else c.declared_data_type),
-                    "declared_type": c.declared_data_type, "system_type": c.system_data_type, "is_user_defined": bool(c.is_user_defined),
-                    "max_length": c.max_length, "precision": c.precision, "scale": c.scale,
-                    "nullable": bool(c.is_nullable), "identity": bool(c.is_identity),
-                    "computed": bool(c.is_computed), "default": c.default_definition,
-                    "collation": c.collation_name
-                })
-            dep_by: dict[tuple[str, str], list[dict[str, Any]]] = {}
-            for d in deps:
-                dep_by.setdefault((d.referencing_schema_name, d.referencing_entity_name), []).append({
-                    "server": d.referenced_server_name, "database": d.referenced_database_name,
-                    "schema": d.referenced_schema_name, "object": d.referenced_entity_name,
-                    "column": d.referenced_column_name, "referenced_minor_id": d.referenced_minor_id,
-                    "type": d.dependency_scope, "is_schema_bound_reference": bool(d.is_schema_bound_reference),
-                    "is_caller_dependent": bool(d.is_caller_dependent), "is_ambiguous": bool(d.is_ambiguous),
-                })
-            par_by: dict[tuple[str, str], list[dict[str, Any]]] = {}
-            for p in params:
-                par_by.setdefault((p.schema_name, p.object_name), []).append({
-                    "name": p.parameter_name, "ordinal": p.parameter_id, "type": p.data_type,
-                    "max_length": p.max_length, "precision": p.precision, "scale": p.scale,
-                    "is_output": bool(p.is_output)
-                })
-            constraint_by: dict[tuple[str, str], list[dict[str, Any]]] = {}
-            grouped_keys: dict[tuple[str, str, str], dict[str, Any]] = {}
-            for k in key_constraints:
-                key = (k.schema_name, k.object_name, k.constraint_name)
-                row = grouped_keys.setdefault(key, {
-                    "name": k.constraint_name,
-                    "type": "PRIMARY_KEY" if str(k.constraint_type).upper().startswith("PRIMARY") else "UNIQUE",
-                    "columns": [],
-                })
-                row["columns"].append(k.column_name)
-            for (sch, obj, _), row in grouped_keys.items():
-                constraint_by.setdefault((sch, obj), []).append(row)
-            grouped_fks: dict[tuple[str, str, str], dict[str, Any]] = {}
-            for f in foreign_keys:
-                key = (f.schema_name, f.object_name, f.constraint_name)
-                row = grouped_fks.setdefault(key, {
-                    "name": f.constraint_name, "type": "FOREIGN_KEY", "columns": [],
-                    "referenced_schema": f.referenced_schema, "referenced_object": f.referenced_object,
-                    "referenced_columns": [],
-                })
-                row["columns"].append(f.column_name)
-                row["referenced_columns"].append(f.referenced_column)
-            for (sch, obj, _), row in grouped_fks.items():
-                constraint_by.setdefault((sch, obj), []).append(row)
-            stats_by = {(r.schema_name, r.object_name): int(r.approx_row_count or 0) for r in table_stats}
-            return {
-                "database": objs[0].database_name if objs else "",
-                "objects": [{
-                    "database": r.database_name, "schema": r.schema_name, "name": r.object_name,
-                    "type": r.object_type, "definition": r.definition,
-                    "columns": by.get((r.schema_name, r.object_name), []),
-                    "dependencies": dep_by.get((r.schema_name, r.object_name), []),
-                    "parameters": par_by.get((r.schema_name, r.object_name), []),
-                    "constraints": constraint_by.get((r.schema_name, r.object_name), []),
-                    "approx_row_count": stats_by.get((r.schema_name, r.object_name))
-                } for r in objs]
-            }
-    except Exception as e:
-        raise RuntimeError(connection_diagnostic(e)) from e
-
-
-def source_select_expression(column: Any) -> str:
-    name = quoted(str(column.column_name))
-    raw_type = (getattr(column, "data_type", "") or "").lower().strip()
-    if raw_type in {"binary", "varbinary", "image", "timestamp", "rowversion"}:
-        return f"CONVERT(VARCHAR(MAX), CONVERT(VARBINARY(MAX), {name}), 2) AS {name}"
-    if raw_type in {"uniqueidentifier"}:
-        return f"CONVERT(VARCHAR(36), {name}) AS {name}"
-    if raw_type in {"xml", "sql_variant", "time", "datetimeoffset"}:
-        return f"CONVERT(NVARCHAR(MAX), {name}) AS {name}"
-    if raw_type in {"hierarchyid"}:
-        return f"CASE WHEN {name} IS NULL THEN NULL ELSE {name}.ToString() END AS {name}"
-    if raw_type in {"geography", "geometry"}:
-        return (
-            f"CASE WHEN {name} IS NULL THEN NULL ELSE "
-            f"CONCAT('SRID=', {name}.STSrid, ';', {name}.STAsText()) END AS {name}"
-        )
-    return name
-
-
-class LocalAgent:
-    def __init__(self, source_id: str, server: str, database: str, connection_string: str):
-        self.source_id, self.server, self.database = source_id, server, database
+# ==============================================================================
+# UNIVERSAL LOCAL AGENT CLASS
+# ==============================================================================
+class UniversalLocalAgent:
+    def __init__(
+        self,
+        source_id: str,
+        engine: str,
+        server: str,
+        port: int | None,
+        database: str,
+        schema: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        connection_string: str | None = None,
+        driver: str | None = None,
+        trust_cert: bool = True,
+    ):
+        self.source_id = source_id
+        self.engine = normalize_engine(engine)
+        self.server = server
+        self.port = port or {"SQLSERVER": 1433, "MYSQL": 3306, "POSTGRESQL": 5432, "ORACLE": 1521}.get(self.engine, 3306)
+        self.database = database
+        self.schema = schema or ("public" if self.engine == "POSTGRESQL" else database if self.engine == "MYSQL" else "")
+        self.username = username
+        self.password = password
         self.connection_string = connection_string
+        self.driver = driver or "ODBC Driver 18 for SQL Server"
+        self.trust_cert = trust_cert
         self.streams: dict[str, list[Any]] = {}
 
     def connect(self):
-        import pyodbc
+        eng = self.engine
+        if eng == "SQLSERVER":
+            try:
+                import pyodbc
+            except ImportError:
+                raise RuntimeError("pyodbc module missing. Install with: pip install pyodbc")
+            return self._connect_sqlserver(pyodbc)
+
+        if eng == "MYSQL":
+            try:
+                import pymysql
+                import pymysql.cursors
+            except ImportError:
+                raise RuntimeError("pymysql module missing. Install with: pip install pymysql")
+            return pymysql.connect(
+                host=self.server,
+                port=int(self.port or 3306),
+                user=self.username or "root",
+                password=self.password or "",
+                database=self.database,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.SSCursor,
+                connect_timeout=10,
+                autocommit=True,
+            )
+
+        if eng == "POSTGRESQL":
+            try:
+                import psycopg2
+            except ImportError:
+                raise RuntimeError("psycopg2 module missing. Install with: pip install psycopg2-binary")
+            return psycopg2.connect(
+                host=self.server,
+                port=int(self.port or 5432),
+                user=self.username or "postgres",
+                password=self.password or "",
+                dbname=self.database,
+                connect_timeout=10,
+            )
+
+        if eng == "ORACLE":
+            try:
+                import oracledb
+            except ImportError:
+                raise RuntimeError("oracledb module missing. Install with: pip install oracledb")
+            dsn = oracledb.makedsn(self.server, int(self.port or 1521), service_name=self.database)
+            return oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
+
+        raise ValueError(f"Unsupported database engine: {eng}")
+
+    def _connect_sqlserver(self, pyodbc):
+        cs = self.connection_string
+        if not cs:
+            credentials = "Trusted_Connection=yes;"
+            if self.username:
+                credentials = f"UID={odbc_value(self.username)};PWD={odbc_value(self.password or '')};"
+            clean_driver = self.driver.strip("\"'{}")
+            port_str = f",{self.port}" if self.port and "\\" not in self.server else ""
+            cs = (f"DRIVER={odbc_value(clean_driver)};SERVER={odbc_value(self.server + port_str)};"
+                  f"DATABASE={odbc_value(self.database)};{credentials}Encrypt=yes;"
+                  f"TrustServerCertificate={'yes' if self.trust_cert else 'no'};")
+            self.connection_string = cs
+
         try:
-            conn = pyodbc.connect(self.connection_string, timeout=10, autocommit=True)
+            conn = pyodbc.connect(cs, timeout=10, autocommit=True)
             conn.timeout = 60
             return conn
         except pyodbc.Error as exc:
@@ -297,38 +236,12 @@ class LocalAgent:
             if "IM002" in err_str:
                 installed = [d for d in pyodbc.drivers() if "SQL Server" in d]
                 for alt in ["ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server", "SQL Server"]:
-                    if alt in installed and alt not in self.connection_string:
-                        alt_cs = re.sub(r"DRIVER=\{[^}]+\}", f"DRIVER={{{alt}}}", self.connection_string)
+                    if alt in installed and alt not in cs:
+                        alt_cs = re.sub(r"DRIVER=\{[^}]+\}", f"DRIVER={{{alt}}}", cs)
                         try:
                             conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
                             conn.timeout = 60
                             self.connection_string = alt_cs
-                            return conn
-                        except Exception:
-                            continue
-            # Automatic fallback if plain localhost/127.0.0.1 is used on a named instance machine
-            if any(k in err_str for k in ("08001", "HYT00", "network-related", "not accessible", "server is not found")):
-                server_m = re.search(r"SERVER=\{?([^};]+)\}?", self.connection_string)
-                current_server = (server_m.group(1) if server_m else "").strip("{}'\"")
-                if "/" in current_server:
-                    fixed_srv = current_server.replace("/", "\\")
-                    alt_cs = re.sub(r"SERVER=\{?[^;}]+\}?", "SERVER={" + fixed_srv + "}", self.connection_string)
-                    try:
-                        conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
-                        conn.timeout = 60
-                        self.connection_string = alt_cs
-                        self.server = fixed_srv
-                        return conn
-                    except Exception:
-                        pass
-                if current_server.lower() in ("localhost", "127.0.0.1", ".", "localhost:1433", "127.0.0.1:1433"):
-                    for candidate in [r"localhost\SQLEXPRESS", r".\SQLEXPRESS", r"SHANJI\SQLEXPRESS"]:
-                        alt_cs = re.sub(r"SERVER=\{?[^};]+\}?", f"SERVER={{{candidate}}}", self.connection_string)
-                        try:
-                            conn = pyodbc.connect(alt_cs, timeout=10, autocommit=True)
-                            conn.timeout = 60
-                            self.connection_string = alt_cs
-                            self.server = candidate
                             return conn
                         except Exception:
                             continue
@@ -344,37 +257,106 @@ class LocalAgent:
                     self.streams.pop(key, None)
 
     def handle(self, task: dict[str, Any]) -> dict[str, Any]:
-        def _match_server(s1: str, s2: str) -> bool:
-            if s1 == s2:
-                return True
-            n1 = (s1 or "").lower().replace(r".\\", "localhost\\").replace("127.0.0.1", "localhost").split(":")[0]
-            n2 = (s2 or "").lower().replace(r".\\", "localhost\\").replace("127.0.0.1", "localhost").split(":")[0]
-            if n1 == n2:
-                return True
-            local_aliases = {"localhost", "localhost\\sqlexpress", "shanji\\sqlexpress", ".\\sqlexpress"}
-            return n1 in local_aliases and n2 in local_aliases
-
-        if task.get("source_id") != self.source_id or task.get("database") != self.database or not _match_server(task.get("server", ""), self.server):
-            raise ValueError("Source identity mismatch; verify the registered source profile")
-        op, data = task["operation"], task.get("payload", {})
+        op = task["operation"]
+        data = task.get("payload", {})
         self.cleanup()
+
+        # Operation 1: TEST CONNECTION
         if op == "test":
             conn = self.connect()
-            conn.close()
-            return test_sqlserver_connection(self.connection_string)
+            try:
+                if self.engine == "SQLSERVER":
+                    cur = conn.cursor()
+                    cur.execute("SELECT DB_NAME(), SUSER_SNAME(), @@VERSION")
+                    row = cur.fetchone()
+                    return {"ok": True, "engine": "SQLSERVER", "database": row[0], "user": row[1], "product_version": row[2]}
+                elif self.engine == "MYSQL":
+                    cur = conn.cursor()
+                    cur.execute("SELECT DATABASE(), CURRENT_USER(), VERSION()")
+                    row = cur.fetchone()
+                    return {"ok": True, "engine": "MYSQL", "database": row[0], "user": row[1], "product_version": row[2]}
+                elif self.engine == "POSTGRESQL":
+                    cur = conn.cursor()
+                    cur.execute("SELECT current_database(), current_user, version()")
+                    row = cur.fetchone()
+                    return {"ok": True, "engine": "POSTGRESQL", "database": row[0], "user": row[1], "product_version": row[2]}
+                elif self.engine == "ORACLE":
+                    cur = conn.cursor()
+                    cur.execute("SELECT SYS_CONTEXT('USERENV','DB_NAME'), USER FROM dual")
+                    row = cur.fetchone()
+                    return {"ok": True, "engine": "ORACLE", "database": row[0], "user": row[1], "product_version": "Oracle"}
+            finally:
+                conn.close()
+
+        # Operation 2: DISCOVER CATALOG
         if op == "discover":
+            return self.discover_catalog()
+
+        # Operation 3: COUNT ROWS
+        if op == "count":
+            schema = data.get("schema") or self.schema
+            table = data.get("table")
+            table_sql = qualified_table(schema, table, self.engine)
             conn = self.connect()
-            conn.close()
-            return discover_sqlserver(self.connection_string)
-        if op == "close":
-            item = self.streams.pop(data.get("stream_id"), None)
-            if item:
-                item[0].close()
-            return {"closed": True}
+            try:
+                cur = conn.cursor()
+                count_sql = f"SELECT COUNT(*) FROM {table_sql}"
+                cur.execute(count_sql)
+                row = cur.fetchone()
+                return {"count": int(row[0]) if row else 0}
+            finally:
+                conn.close()
+
+        # Operation 4: OPEN STREAM
+        if op == "open":
+            schema = data.get("schema") or self.schema
+            table = data.get("table")
+            table_key = f"{schema}.{table}"
+            # Smart eviction of old stream on same table
+            for existing_id, existing_item in list(self.streams.items()):
+                if len(existing_item) > 4 and existing_item[4] == table_key:
+                    try:
+                        existing_item[0].close()
+                    finally:
+                        self.streams.pop(existing_id, None)
+
+            if len(self.streams) >= 32:
+                raise ValueError("Connector stream capacity reached")
+
+            conn = self.connect()
+            try:
+                cur = conn.cursor()
+                requested = data.get("columns") or ["*"]
+                proj = ",".join(quote_identifier(c, self.engine) for c in requested) if requested != ["*"] else "*"
+                limit = data.get("max_rows")
+                table_sql = qualified_table(schema, table, self.engine)
+
+                if self.engine == "SQLSERVER":
+                    top = f"TOP ({int(limit)}) " if limit else ""
+                    sql = f"SELECT {top}{proj} FROM {table_sql}"
+                elif self.engine in {"MYSQL", "POSTGRESQL"}:
+                    lim = f" LIMIT {int(limit)}" if limit else ""
+                    sql = f"SELECT {proj} FROM {table_sql}{lim}"
+                elif self.engine == "ORACLE":
+                    lim = f" FETCH FIRST {int(limit)} ROWS ONLY" if limit else ""
+                    sql = f"SELECT {proj} FROM {table_sql}{lim}"
+                else:
+                    sql = f"SELECT {proj} FROM {table_sql}"
+
+                cur.execute(sql)
+                stream_id = secrets.token_hex(24)
+                self.streams[stream_id] = [conn, cur, time.monotonic(), None, table_key]
+                conn = None  # Handed off to streams
+                return {"stream_id": stream_id}
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        # Operation 5: FETCH BATCH
         if op == "fetch":
             stream = self.streams.get(data.get("stream_id"))
             if not stream:
-                raise ValueError("Source stream expired; restart the deployment after reviewing partial target data")
+                raise ValueError("Source stream expired; restart operation")
             stream[2] = time.monotonic()
             size = min(max(int(data.get("size", 5000)), 1), 5000)
             rows, byte_count = [], 0
@@ -393,51 +375,180 @@ class LocalAgent:
                 rows.append(encoded)
                 byte_count += length
             return {"rows": rows}
-        if op not in {"count", "open"}:
-            raise ValueError("Unsupported operation")
-        schema, table = data.get("schema"), data.get("table")
-        table_sql = quoted(schema) + "." + quoted(table)
-        table_key = f"{schema}.{table}"
-        if op == "open":
-            # Smart auto-eviction: if an old stream exists for this same table, close it immediately
-            for existing_id, existing_item in list(self.streams.items()):
-                if len(existing_item) > 4 and existing_item[4] == table_key:
-                    try:
-                        existing_item[0].close()
-                    finally:
-                        self.streams.pop(existing_id, None)
-            if len(self.streams) >= 32:
-                raise ValueError("Connector stream capacity reached")
+
+        # Operation 6: CLOSE STREAM
+        if op == "close":
+            item = self.streams.pop(data.get("stream_id"), None)
+            if item:
+                item[0].close()
+            return {"closed": True}
+
+        raise ValueError(f"Unsupported connector operation: {op}")
+
+    def discover_catalog(self) -> dict[str, Any]:
+        eng = self.engine
         conn = self.connect()
         try:
             cur = conn.cursor()
-            found = cur.execute("SELECT t.object_id FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id "
-                                "WHERE s.name=? AND t.name=? AND t.is_ms_shipped=0", schema, table).fetchone()
-            if not found:
-                raise ValueError("Source table not found or read permission missing")
-            if op == "count":
-                return {"count": int(cur.execute("SELECT COUNT_BIG(*) FROM " + table_sql).fetchone()[0])}
-            metadata = cur.execute("SELECT c.name, CASE WHEN t.is_user_defined=1 THEN TYPE_NAME(c.system_type_id) "
-                                   "ELSE t.name END, c.precision, c.scale FROM sys.columns c "
-                                   "JOIN sys.types t ON t.user_type_id=c.user_type_id "
-                                   "WHERE c.object_id=? AND c.is_computed=0", found[0]).fetchall()
-            columns = {r[0]: SimpleNamespace(column_name=r[0], data_type=r[1], precision=r[2], scale=r[3]) for r in metadata}
-            requested = data.get("columns")
-            if not isinstance(requested, list) or not requested or any(name not in columns for name in requested):
-                raise ValueError("Source columns changed; repeat discovery before deployment")
-            limit = data.get("max_rows")
-            if limit is not None and (type(limit) is not int or limit < 1):
-                raise ValueError("Invalid source row limit")
-            top = f"TOP ({limit}) " if limit is not None else ""
-            projection = ",".join(source_select_expression(columns[name]) for name in requested)
-            cur.execute("SELECT " + top + projection + " FROM " + table_sql)
-            stream_id = secrets.token_hex(24)
-            self.streams[stream_id] = [conn, cur, time.monotonic(), None, table_key]
-            conn = None
-            return {"stream_id": stream_id}
+            if eng == "SQLSERVER":
+                cur.execute(SQLSERVER_DISCOVERY)
+                objs = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                cur.execute(SQLSERVER_COLUMNS)
+                cols = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                cur.execute(SQLSERVER_KEYS)
+                keys = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                cur.execute(SQLSERVER_STATS)
+                stats = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                return self._build_canonical(self.database, objs, cols, keys, stats)
+
+            elif eng == "MYSQL":
+                cur.execute(
+                    """SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name,
+                       CASE TABLE_TYPE WHEN 'BASE TABLE' THEN 'TABLE' ELSE 'VIEW' END AS object_type
+                       FROM information_schema.TABLES WHERE TABLE_SCHEMA=%s ORDER BY TABLE_NAME""",
+                    (self.database,),
+                )
+                objs = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+
+                cur.execute(
+                    """SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, COLUMN_NAME AS column_name,
+                       ORDINAL_POSITION AS ordinal, DATA_TYPE AS data_type, CHARACTER_MAXIMUM_LENGTH AS max_length,
+                       NUMERIC_PRECISION AS `precision`, NUMERIC_SCALE AS `scale`, IS_NULLABLE AS is_nullable,
+                       COLUMN_DEFAULT AS column_default, COLUMN_KEY AS column_key, EXTRA AS extra
+                       FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s ORDER BY TABLE_NAME, ORDINAL_POSITION""",
+                    (self.database,),
+                )
+                cols = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+
+                cur.execute(
+                    """SELECT TABLE_SCHEMA AS schema_name, TABLE_NAME AS object_name, CONSTRAINT_NAME AS constraint_name,
+                       'PRIMARY KEY' AS constraint_type, COLUMN_NAME AS column_name, ORDINAL_POSITION AS ordinal
+                       FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=%s AND CONSTRAINT_NAME='PRIMARY'""",
+                    (self.database,),
+                )
+                keys = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                return self._build_canonical(self.database, objs, cols, keys, [])
+
+            elif eng == "POSTGRESQL":
+                schema = self.schema or "public"
+                cur.execute(
+                    """SELECT table_schema AS schema_name, table_name AS object_name,
+                       CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE 'VIEW' END AS object_type
+                       FROM information_schema.tables WHERE table_schema=%s ORDER BY table_name""",
+                    (schema,),
+                )
+                objs = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+
+                cur.execute(
+                    """SELECT table_schema AS schema_name, table_name AS object_name, column_name,
+                       ordinal_position AS ordinal, data_type, character_maximum_length AS max_length,
+                       numeric_precision AS "precision", numeric_scale AS "scale", is_nullable, column_default
+                       FROM information_schema.columns WHERE table_schema=%s ORDER BY table_name, ordinal_position""",
+                    (schema,),
+                )
+                cols = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+
+                cur.execute(
+                    """SELECT tc.table_schema AS schema_name, tc.table_name AS object_name, tc.constraint_name AS constraint_name,
+                       tc.constraint_type AS constraint_type, kcu.column_name AS column_name, kcu.ordinal_position AS ordinal
+                       FROM information_schema.table_constraints tc
+                       JOIN information_schema.key_column_usage kcu
+                         ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema
+                       WHERE tc.table_schema=%s AND tc.constraint_type IN ('PRIMARY KEY','UNIQUE')""",
+                    (schema,),
+                )
+                keys = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                return self._build_canonical(self.database, objs, cols, keys, [])
+
+            elif eng == "ORACLE":
+                schema = (self.schema or self.username or "").upper()
+                cur.execute(
+                    """SELECT OWNER AS schema_name, TABLE_NAME AS object_name, 'TABLE' AS object_type
+                       FROM ALL_TABLES WHERE OWNER=:schema
+                       UNION ALL
+                       SELECT OWNER, VIEW_NAME, 'VIEW' FROM ALL_VIEWS WHERE OWNER=:schema ORDER BY 2""",
+                    {"schema": schema},
+                )
+                objs = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+
+                cur.execute(
+                    """SELECT OWNER AS schema_name, TABLE_NAME AS object_name, COLUMN_NAME AS column_name,
+                       COLUMN_ID AS ordinal, DATA_TYPE AS data_type, DATA_LENGTH AS max_length,
+                       DATA_PRECISION AS "precision", DATA_SCALE AS "scale", NULLABLE AS is_nullable,
+                       DATA_DEFAULT AS column_default
+                       FROM ALL_TAB_COLUMNS WHERE OWNER=:schema ORDER BY TABLE_NAME, COLUMN_ID""",
+                    {"schema": schema},
+                )
+                cols = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+
+                cur.execute(
+                    """SELECT c.OWNER AS schema_name, c.TABLE_NAME AS object_name, c.CONSTRAINT_NAME AS constraint_name,
+                       CASE c.CONSTRAINT_TYPE WHEN 'P' THEN 'PRIMARY KEY' ELSE 'UNIQUE' END AS constraint_type,
+                       cc.COLUMN_NAME AS column_name, cc.POSITION AS ordinal
+                       FROM ALL_CONSTRAINTS c
+                       JOIN ALL_CONS_COLUMNS cc ON c.OWNER=cc.OWNER AND c.CONSTRAINT_NAME=cc.CONSTRAINT_NAME
+                       WHERE c.OWNER=:schema AND c.CONSTRAINT_TYPE IN ('P','U')""",
+                    {"schema": schema},
+                )
+                keys = [dict(zip([d[0].lower() for d in cur.description], r)) for r in cur.fetchall()]
+                return self._build_canonical(self.database, objs, cols, keys, [])
+
         finally:
-            if conn is not None:
-                conn.close()
+            conn.close()
+
+    def _build_canonical(self, database: str, objs: list[dict], cols: list[dict], keys: list[dict], stats: list[dict]) -> dict[str, Any]:
+        by_object: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for column in cols:
+            key = (str(column["schema_name"]), str(column["object_name"]))
+            data_type = str(column.get("data_type") or column.get("declared_data_type") or "").lower()
+            if self.engine in {"POSTGRESQL", "MYSQL", "ORACLE"} and data_type.startswith("timestamp"):
+                data_type = "datetime"
+            default = column.get("column_default") or column.get("default_definition")
+            extra_val = str(column.get("extra") or "").lower()
+            is_ident = bool(column.get("is_identity")) or "auto_increment" in extra_val or "nextval" in str(default or "").lower()
+            by_object.setdefault(key, []).append({
+                "name": str(column["column_name"]),
+                "ordinal": int(column.get("ordinal") or column.get("column_id") or 0),
+                "type": data_type,
+                "declared_type": data_type,
+                "system_type": data_type,
+                "max_length": column.get("max_length"),
+                "precision": column.get("precision"),
+                "scale": column.get("scale"),
+                "nullable": str(column.get("is_nullable", "YES")).upper() in {"YES", "Y", "TRUE", "1"},
+                "identity": is_ident,
+                "computed": bool(column.get("is_computed")),
+                "default": None if default is None else str(default),
+            })
+
+        grouped: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        for item in keys:
+            k = (str(item["schema_name"]), str(item["object_name"]))
+            name = str(item["constraint_name"])
+            target = grouped.setdefault(k, {}).setdefault(name, {
+                "name": name,
+                "type": "PRIMARY_KEY" if str(item.get("constraint_type", "")).upper().startswith("P") else "UNIQUE",
+                "columns": [],
+            })
+            target["columns"].append(str(item["column_name"]))
+
+        stats_by = {(r["schema_name"], r["object_name"]): int(r.get("approx_row_count") or 0) for r in stats}
+
+        return {
+            "database": database,
+            "objects": [{
+                "database": database,
+                "schema": str(obj["schema_name"]),
+                "name": str(obj["object_name"]),
+                "type": str(obj["object_type"]).upper(),
+                "definition": obj.get("definition") or "",
+                "columns": by_object.get((str(obj["schema_name"]), str(obj["object_name"])), []),
+                "dependencies": [],
+                "parameters": [],
+                "constraints": list(grouped.get((str(obj["schema_name"]), str(obj["object_name"])), {}).values()),
+                "approx_row_count": stats_by.get((str(obj["schema_name"]), str(obj["object_name"]))),
+            } for obj in objs]
+        }
 
 
 def validate_url(url: str) -> str:
@@ -483,11 +594,9 @@ def find_config_path(cli_path: str | None = None) -> Path | None:
         dirs.append(base_dir)
 
     for d in dirs:
-        # Detect browser numbered downloads like agent (1).env or connector (1).env and pick the newest
         all_env = list(d.glob("agent*.env")) + list(d.glob("connector*.env")) + list(d.glob(".env*"))
         existing_env = [f for f in all_env if f.is_file() and f.stat().st_size > 0]
         if existing_env:
-            # Sort by modification time descending so latest download is always used
             existing_env.sort(key=lambda x: x.stat().st_mtime, reverse=True)
             return existing_env[0]
 
@@ -496,13 +605,16 @@ def find_config_path(cli_path: str | None = None) -> Path | None:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", help="Migration AI Studio URL (e.g. https://databricks-migration-factory-819s.onrender.com)")
+    parser.add_argument("--url", help="Migration AI Studio URL (e.g. https://databricks-migration-factory-9ym2.onrender.com)")
     parser.add_argument("--source", help="Migration source profile ID (e.g. SRC_xxxx)")
-    parser.add_argument("--server", help="Local SQL Server instance (e.g. localhost\\SQLEXPRESS or SHANJI\\SQLEXPRESS)")
+    parser.add_argument("--engine", default="SQLSERVER", help="Source database engine: SQLSERVER, MYSQL, POSTGRESQL, ORACLE")
+    parser.add_argument("--server", help="Local database host/server (e.g. localhost, 127.0.0.1, or localhost\\SQLEXPRESS)")
+    parser.add_argument("--port", type=int, help="Database port (e.g. 3306, 5432, 1433, 1521)")
     parser.add_argument("--database", help="Target source database name")
-    parser.add_argument("--driver", default=None, help="ODBC Driver (default: ODBC Driver 17 for SQL Server)")
-    parser.add_argument("--username", help="SQL login (omit to use current Windows account)")
-    parser.add_argument("--password", help="SQL login password")
+    parser.add_argument("--schema", help="Source schema name (e.g. public)")
+    parser.add_argument("--driver", default=None, help="ODBC Driver for SQL Server (default: ODBC Driver 18 for SQL Server)")
+    parser.add_argument("--username", help="Database login username")
+    parser.add_argument("--password", help="Database login password")
     parser.add_argument("--trust-server-certificate", dest="trust_cert", action="store_true", default=None, help="Trust SQL Server certificate")
     parser.add_argument("--no-trust-server-certificate", dest="trust_cert", action="store_false", help="Do not trust SQL Server certificate")
     parser.add_argument("--token", help="Connector registration token")
@@ -514,10 +626,17 @@ def main():
 
     url = args.url or os.environ.get("CONNECTOR_URL") or file_cfg.get("CONNECTOR_URL")
     source = args.source or os.environ.get("CONNECTOR_SOURCE") or os.environ.get("CONNECTOR_SOURCE_ID") or file_cfg.get("CONNECTOR_SOURCE") or file_cfg.get("CONNECTOR_SOURCE_ID")
-    server = (args.server or os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER") or "").replace("/", "\\")
+    engine = normalize_engine(args.engine or os.environ.get("CONNECTOR_ENGINE") or file_cfg.get("CONNECTOR_ENGINE") or "SQLSERVER")
+    server = (args.server or os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER") or "localhost")
+    if engine == "SQLSERVER":
+        server = server.replace("/", "\\")
+
+    port_val = args.port or os.environ.get("CONNECTOR_PORT") or file_cfg.get("CONNECTOR_PORT")
+    port = int(port_val) if port_val and str(port_val).isdigit() else None
     database = args.database or os.environ.get("CONNECTOR_DATABASE") or file_cfg.get("CONNECTOR_DATABASE")
+    schema = args.schema or os.environ.get("CONNECTOR_SCHEMA") or file_cfg.get("CONNECTOR_SCHEMA")
     token = args.token or os.environ.get("CONNECTOR_TOKEN") or file_cfg.get("CONNECTOR_TOKEN")
-    driver = args.driver or os.environ.get("CONNECTOR_DRIVER") or file_cfg.get("CONNECTOR_DRIVER") or "ODBC Driver 17 for SQL Server"
+    driver = args.driver or os.environ.get("CONNECTOR_DRIVER") or file_cfg.get("CONNECTOR_DRIVER") or "ODBC Driver 18 for SQL Server"
 
     if args.trust_cert is not None:
         trust_cert = args.trust_cert
@@ -529,7 +648,7 @@ def main():
         trust_cert = True
 
     username = args.username or os.environ.get("CONNECTOR_USERNAME") or file_cfg.get("CONNECTOR_USERNAME")
-    password = args.password or os.environ.get("CONNECTOR_SQL_PASSWORD") or os.environ.get("CONNECTOR_PASSWORD") or file_cfg.get("CONNECTOR_PASSWORD")
+    password = args.password or os.environ.get("CONNECTOR_PASSWORD") or os.environ.get("CONNECTOR_SQL_PASSWORD") or file_cfg.get("CONNECTOR_PASSWORD")
 
     is_interactive = sys.stdin.isatty()
     need_save = False
@@ -548,26 +667,19 @@ def main():
         else:
             raise SystemExit("Error: --source or CONNECTOR_SOURCE is required.")
 
-    if not server:
-        if is_interactive:
-            server = input(r"SQL Server instance name (e.g. localhost\SQLEXPRESS): ").strip().replace("/", "\\")
-            need_save = True
-        else:
-            raise SystemExit("Error: --server or CONNECTOR_SERVER is required.")
-
     if not database:
         if is_interactive:
-            database = input("Database name to migrate: ").strip()
+            database = input(f"Target {engine} Database name: ").strip()
             need_save = True
         else:
             raise SystemExit("Error: --database or CONNECTOR_DATABASE is required.")
 
     if not token:
         if is_interactive:
-            token = getpass.getpass("Connector registration token: ").strip()
+            token = getpass.getpass("Connector registration token (from Studio UI): ").strip()
             need_save = True
         else:
-            raise SystemExit("Error: Registration token is required via --token, CONNECTOR_TOKEN or interactive prompt.")
+            raise SystemExit("Error: Registration token is required via --token or CONNECTOR_TOKEN.")
 
     if need_save and is_interactive and not config_path:
         save_choice = input("\nSave these settings to 'agent.env' for automatic connection next time? [Y/n]: ").strip().lower()
@@ -578,53 +690,67 @@ def main():
                     f.write("# Databricks Migration AI Studio - Saved Agent Configuration\n")
                     f.write(f"CONNECTOR_URL={url}\n")
                     f.write(f"CONNECTOR_SOURCE={source}\n")
+                    f.write(f"CONNECTOR_ENGINE={engine}\n")
                     f.write(f"CONNECTOR_SERVER={server}\n")
+                    if port:
+                        f.write(f"CONNECTOR_PORT={port}\n")
                     f.write(f"CONNECTOR_DATABASE={database}\n")
+                    if schema:
+                        f.write(f"CONNECTOR_SCHEMA={schema}\n")
                     f.write(f"CONNECTOR_TOKEN={token}\n")
-                    f.write(f"CONNECTOR_DRIVER={driver}\n")
-                    f.write(f"CONNECTOR_TRUST_CERT={'true' if trust_cert else 'false'}\n")
                     if username:
                         f.write(f"CONNECTOR_USERNAME={username}\n")
+                    if password:
+                        f.write(f"CONNECTOR_PASSWORD={password}\n")
                 print(f"[OK] Configuration saved to {save_target.name}")
             except Exception as e:
                 print(f"[Notice] Could not save agent.env: {e}")
 
     base = validate_url(url)
-    credentials = "Trusted_Connection=yes;"
-    if username:
-        if not password and is_interactive:
-            password = getpass.getpass("SQL Server password: ")
-        credentials = f"UID={odbc_value(username)};PWD={odbc_value(password or '')};"
 
-    clean_driver = driver.strip("\"'{}")
-    connection = (f"DRIVER={odbc_value(clean_driver)};SERVER={odbc_value(server)};"
-                  f"DATABASE={odbc_value(database)};{credentials}Encrypt=yes;"
-                  f"TrustServerCertificate={'yes' if trust_cert else 'no'};")
+    agent = UniversalLocalAgent(
+        source_id=source,
+        engine=engine,
+        server=server,
+        port=port,
+        database=database,
+        schema=schema,
+        username=username,
+        password=password,
+        driver=driver,
+        trust_cert=trust_cert,
+    )
 
-    agent = LocalAgent(source, server, database, connection)
-    import httpx
+    try:
+        import httpx
+    except ImportError:
+        raise SystemExit("httpx module missing. Install with: pip install httpx")
+
     stopped = threading.Event()
-    # Use deterministic instance ID based on machine and source so agent restarts immediately claim without lockout
-    import socket, platform, hashlib
     instance_id = hashlib.sha256(f"{source}_{socket.gethostname()}_{platform.node()}".encode()).hexdigest()[:32]
 
     print("\n" + "=" * 68)
-    print("      Databricks Migration AI Studio - Local Agent Online")
+    print("      Databricks Migration AI Studio - Universal Agent Online")
     print("=" * 68)
-    print(f"  Target Studio: {url}")
-    print(f"  Source Profile: {source}")
-    print(f"  SQL Server:     {server}")
-    print(f"  Database:       {database}")
-    print(f"  Driver:         {clean_driver}")
-    print(f"  Authentication: {'SQL Login (' + username + ')' if username else 'Windows Authentication'}")
-    print(f"  SSL Cert:       {'TrustServerCertificate=yes' if trust_cert else 'Standard validation'}")
+    print(f"  Target Studio:   {url}")
+    print(f"  Source Profile:  {source}")
+    print(f"  Database Engine: {engine}")
+    print(f"  Host / Server:   {server}:{agent.port}")
+    print(f"  Database Name:   {database}")
+    if schema:
+        print(f"  Target Schema:   {schema}")
+    print(f"  Authentication:  {'User (' + username + ')' if username else 'Default / Trusted'}")
     print("-" * 68)
-    print("Connector started. Keep this process running; SQL credentials stay on this machine.")
+    print("Universal Connector started. Keep this process running.")
     print("Press Ctrl+C to stop.")
     print("=" * 68 + "\n")
 
     try:
-        with httpx.Client(headers={"Authorization": "Bearer " + token, "X-Connector-Instance": instance_id}, timeout=30, follow_redirects=False) as client:
+        with httpx.Client(
+            headers={"Authorization": "Bearer " + token, "X-Connector-Instance": instance_id},
+            timeout=30,
+            follow_redirects=False,
+        ) as client:
             def keep_alive():
                 while not stopped.wait(15):
                     try:
@@ -634,8 +760,10 @@ def main():
                             stopped.set()
                     except httpx.HTTPError:
                         pass
+
             worker = threading.Thread(target=keep_alive, daemon=True)
             worker.start()
+
             while not stopped.is_set():
                 agent.cleanup()
                 try:
@@ -652,8 +780,9 @@ def main():
                                 raise ValueError("Result exceeds connector payload limit; reduce the source scope")
                         except Exception as error:
                             ok = False
-                            message = str(error) if isinstance(error, (ValueError, RuntimeError)) else connection_diagnostic(error)
+                            message = str(error) if isinstance(error, (ValueError, RuntimeError)) else connection_diagnostic(error, engine)
                             result = {"error": message}
+
                         payload = {"lease": task["lease"], "ok": ok, "result": result}
                         for attempt in range(3):
                             try:
@@ -666,7 +795,8 @@ def main():
                                 if attempt == 2:
                                     raise
                                 time.sleep(1)
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {task['operation']}: {'completed' if ok else 'failed'}")
+                        status_str = "completed" if ok else "failed"
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] {task['operation']}: {status_str}")
                     else:
                         time.sleep(2)
                 except httpx.HTTPError:
@@ -676,7 +806,7 @@ def main():
         print("\nConnector stopped by user.")
     except SystemExit as e:
         print(f"\n[Connector Stopped] {e}")
-        print("Tip: If you re-registered or replaced registration in Studio, open 'agent.env' in Notepad and update CONNECTOR_TOKEN.")
+        print("Tip: If you re-registered in Studio, update CONNECTOR_TOKEN in 'agent.env'.")
     except Exception as e:
         print(f"\n[Error] {e}")
     finally:
