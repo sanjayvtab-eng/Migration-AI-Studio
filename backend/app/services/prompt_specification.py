@@ -653,7 +653,7 @@ def _required_columns(
 
     param_names = set()
     for p in structured.get("parameters", []):
-        pname = p.get("name", "").lower()
+        pname = p.get("name", "").lower() if isinstance(p, dict) else str(p).split()[0].lower()
         param_names.add(pname)
         param_names.add(_snake(pname))
         if not pname.startswith("p_"):
@@ -680,16 +680,31 @@ def _required_columns(
         if artifact_type == "FUNCTION":
             for token in filtered_tokens:
                 token_snake = _snake(token)
+                token_norm = token_snake.replace("_", "")
                 canonical = "".join(part.capitalize() for part in token_snake.split("_"))
                 if canonical.endswith("Id"):
                     canonical = canonical[:-2] + "ID"
-                if token_snake in table_cols:
-                    req_for_table.append(table_cols[token_snake])
+
+                matched_col = None
+                for c in table.get("columns", []):
+                    c_norm = c["target_name"].replace("_", "")
+                    if c["target_name"] == token_snake or c_norm == token_norm:
+                        matched_col = c["name"]
+                        break
+                if matched_col:
+                    req_for_table.append(matched_col)
                 else:
-                    other_has = any(
-                        token_snake in {c["target_name"] for c in table_map.get(s.lower(), {}).get("columns", [])}
-                        for s in source_refs if s.lower() != source_ref.lower()
-                    )
+                    other_has = False
+                    for s in source_refs:
+                        if s.lower() == source_ref.lower():
+                            continue
+                        s_tbl = table_map.get(s.lower(), {})
+                        for sc in s_tbl.get("columns", []):
+                            if sc["target_name"] == token_snake or sc["target_name"].replace("_", "") == token_norm:
+                                other_has = True
+                                break
+                        if other_has:
+                            break
                     if not other_has:
                         req_for_table.append(canonical)
 
