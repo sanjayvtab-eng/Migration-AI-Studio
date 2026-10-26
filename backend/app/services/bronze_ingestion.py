@@ -488,6 +488,15 @@ def _load_table(
         expected_catalog=plan.catalog_name,
     )
     target_catalog, target_schema, _ = _parse_fqn(target)
+    try:
+        environment_provisioning.project_execute(
+            db, project_id, f"CREATE CATALOG IF NOT EXISTS `{target_catalog}`", safe_retry=True
+        )
+        environment_provisioning.project_execute(
+            db, project_id, f"CREATE SCHEMA IF NOT EXISTS `{target_catalog}`.`{target_schema}`", safe_retry=True
+        )
+    except Exception:
+        pass
     connection = connector_info(source.id)
     if connection["mode"] == "CONNECTOR":
         connector_request(source.id, "test")

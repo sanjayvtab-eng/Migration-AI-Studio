@@ -2116,6 +2116,13 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
 
     config = environment_provisioning.get_configuration(db, project_id)
     active_cat = f"{config.catalog_prefix}_{env.lower()}" if config and config.catalog_prefix else None
+    if active_cat:
+        try:
+            execute_sql(f"CREATE CATALOG IF NOT EXISTS `{active_cat}`", safe_retry=True)
+            for s in ("bronze", "silver", "gold"):
+                execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{active_cat}`.`{s}`", safe_retry=True)
+        except Exception:
+            pass
     node_by_id = {n.id: n for n in db.scalars(select(MigrationMedallionNode).where(
         MigrationMedallionNode.project_id == project_id,
         MigrationMedallionNode.environment == env,
