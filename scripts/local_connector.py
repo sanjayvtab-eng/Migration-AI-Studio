@@ -25,6 +25,25 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
 
+# Explicit imports so PyInstaller bundles all drivers into migration-agent.exe
+try:
+    import pyodbc
+except ImportError:
+    pyodbc = None
+try:
+    import pymysql
+    import pymysql.cursors
+except ImportError:
+    pymysql = None
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
+try:
+    import oracledb
+except ImportError:
+    oracledb = None
+
 
 def normalize_engine(value: str | None) -> str:
     aliases = {

@@ -29,6 +29,11 @@ def build():
         "--noconfirm",
         "--onefile",
         "--name", "migration-agent",
+        "--hidden-import", "psycopg2",
+        "--hidden-import", "pymysql",
+        "--hidden-import", "pyodbc",
+        "--hidden-import", "oracledb",
+        "--hidden-import", "httpx",
         "--distpath", str(dist_dir),
         "--workpath", str(build_dir),
         str(local_connector_py)
