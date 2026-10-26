@@ -1779,13 +1779,14 @@ export default function App() {
     setPromptSpecTrace(trace);
   }
   async function submitPromptSpecification() {
-    if (!pid || !promptNativeText.trim()) return;
+    const textToSubmit = (promptNativeText || masterPrompt).trim();
+    if (!pid || !textToSubmit) return;
     setBusy(true);
     setMsg("Parsing and grounding the business prompt against the discovery snapshot...");
     try {
       const result: any = await api(`/projects/${pid}/prompt-specifications`, {
         method: "POST",
-        body: JSON.stringify({ prompt: promptNativeText, source_id: promptSourceId || undefined }),
+        body: JSON.stringify({ prompt: textToSubmit, source_id: promptSourceId || undefined }),
       });
       setPromptAnswers({});
       await loadPromptSpecification(result.id);
@@ -1797,11 +1798,12 @@ export default function App() {
     }
   }
   async function analyzePromptSpecification() {
-    if (!pid || !promptNativeText.trim()) return;
+    const textToAnalyze = (promptNativeText || masterPrompt).trim();
+    if (!pid || !textToAnalyze) return;
     setBusy(true);
     try {
       const analysis = await api(`/projects/${pid}/prompt-specifications/analyze`, {
-        method: "POST", body: JSON.stringify({ prompt: promptNativeText, source_id: promptSourceId || undefined }),
+        method: "POST", body: JSON.stringify({ prompt: textToAnalyze, source_id: promptSourceId || undefined }),
       });
       setPromptAnalysis(analysis);
     } catch (e: any) { setMsg(e.message); }
@@ -3553,13 +3555,12 @@ export default function App() {
                       disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()}
                       onClick={() => {
                         submitPromptSpecification();
-                        if (masterPrompt.trim()) generateMasterPlan();
                       }}
                       style={{ padding: "8px 16px" }}
                     >
                       <Command size={14} /> Parse and Ground Prompt
                     </button>
-                    <button className="btn-secondary" disabled={!pid || busy || !promptNativeText.trim()} onClick={analyzePromptSpecification}>Analyze Prompt</button>
+                    <button className="btn-secondary" disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()} onClick={analyzePromptSpecification}>Analyze Prompt</button>
                   </div>
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
