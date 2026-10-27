@@ -255,10 +255,17 @@ async def complete(task_id: str, request: Request, x_connector_instance: str = H
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
-        if len(body) > 4 * 1024 * 1024:
-            raise HTTPException(413, "Connector response exceeds 4 MiB; reduce source row size")
+        if len(body) > 16 * 1024 * 1024:
+            raise HTTPException(413, "Connector response exceeds 16 MiB; reduce source row size")
+    raw_payload = bytes(body)
+    if raw_payload.startswith(b"\x1f\x8b") or request.headers.get("content-encoding") == "gzip":
+        import gzip
+        try:
+            raw_payload = gzip.decompress(raw_payload)
+        except Exception as exc:
+            raise HTTPException(422, f"Failed to decompress gzip connector payload: {exc}")
     try:
-        data = ResultIn.model_validate_json(body)
+        data = ResultIn.model_validate_json(raw_payload)
     except ValueError:
         raise HTTPException(422, "Invalid connector result")
     task = db.get(ConnectorTask, task_id)
