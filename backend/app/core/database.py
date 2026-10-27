@@ -1,7 +1,8 @@
+import os
 import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import StaticPool, NullPool
 from .config import get_settings
 
 class Base(DeclarativeBase): pass
@@ -61,9 +62,21 @@ engine_options = {"future": True, "connect_args": connect_args}
 
 if db_url in {"sqlite://", "sqlite:///:memory:"}:
     engine_options["poolclass"] = StaticPool
-elif db_url.startswith("postgresql"):
+elif db_url.startswith("postgresql") or db_url.startswith("postgres"):
     engine_options["pool_pre_ping"] = True
     engine_options["pool_recycle"] = 300
+    if os.getenv("DATABASE_USE_NULLPOOL", "false").lower() in ("true", "1", "yes"):
+        engine_options["poolclass"] = NullPool
+    else:
+        engine_options["pool_size"] = int(os.getenv("DATABASE_POOL_SIZE", "30"))
+        engine_options["max_overflow"] = int(os.getenv("DATABASE_MAX_OVERFLOW", "30"))
+        engine_options["pool_timeout"] = int(os.getenv("DATABASE_POOL_TIMEOUT", "60"))
+elif db_url.startswith("mysql"):
+    engine_options["pool_pre_ping"] = True
+    engine_options["pool_recycle"] = 300
+    engine_options["pool_size"] = int(os.getenv("DATABASE_POOL_SIZE", "30"))
+    engine_options["max_overflow"] = int(os.getenv("DATABASE_MAX_OVERFLOW", "30"))
+    engine_options["pool_timeout"] = int(os.getenv("DATABASE_POOL_TIMEOUT", "60"))
 
 engine = create_engine(db_url, **engine_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)

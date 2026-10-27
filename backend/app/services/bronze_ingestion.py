@@ -752,7 +752,18 @@ def run(
             finally:
                 worker_db.close()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(tables), 4)) as executor:
+        is_connector = False
+        for t in tables:
+            try:
+                from app.services.source_connector import connector_info
+                if connector_info(t.source_id).get("mode") == "CONNECTOR":
+                    is_connector = True
+                    break
+            except Exception:
+                pass
+        max_workers = 1 if is_connector else min(len(tables), 4)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_id = {executor.submit(_worker_ingest, table.id): table.id for table in tables}
             table_outcomes = {}
             for future in concurrent.futures.as_completed(future_to_id):

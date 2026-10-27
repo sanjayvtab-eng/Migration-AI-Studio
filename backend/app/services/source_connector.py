@@ -59,15 +59,18 @@ def _request(source_id, operation, payload=None):
                     raise RuntimeError(json.loads(task.result)["error"])
                 if task.status == "COMPLETED":
                     return json.loads(task.result)
-            time.sleep(0.25)
+            time.sleep(0.5)
         raise RuntimeError("CONNECTOR_TIMEOUT: No result received. Check the local connector and retry the operation.")
     finally:
         # Source rows are transient transport data, not permanent application logs.
-        with SessionLocal() as db:
-            task = db.get(ConnectorTask, task_id)
-            if task:
-                db.delete(task)
-                db.commit()
+        try:
+            with SessionLocal() as db:
+                task = db.get(ConnectorTask, task_id)
+                if task:
+                    db.delete(task)
+                    db.commit()
+        except Exception:
+            pass
 
 
 def decode_value(value):
