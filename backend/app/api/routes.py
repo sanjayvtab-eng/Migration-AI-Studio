@@ -283,7 +283,22 @@ def _environment_log_rows(db: Session, project_id: str, environment: str) -> lis
 
 
 def _dev_log_rows(db: Session, project_id: str) -> list[dict]:
-    return _environment_log_rows(db,project_id,"DEV")
+    raw_rows = _environment_log_rows(db,project_id,"DEV")
+    completed_runs = {
+        r.get("run_id") for r in raw_rows
+        if r.get("details", {}).get("medallion_run_complete")
+    }
+    runs_with_artifact_failures = {
+        r.get("run_id") for r in raw_rows
+        if r.get("status") == "FAILED" and r.get("details", {}).get("medallion_node_id")
+    }
+    clean_runs = completed_runs - runs_with_artifact_failures
+    if clean_runs:
+        return [
+            r for r in raw_rows
+            if not (r.get("run_id") in clean_runs and r.get("status") == "FAILED" and r.get("details", {}).get("timeout"))
+        ]
+    return raw_rows
 
 
 def _sqlserver_conn_for_source(src: MigrationSource) -> str:
@@ -1752,11 +1767,15 @@ def _medallion_run_log_rows(db:Session,project_id:str,run_id:str) -> list[dict]:
 def medallion_deployment_logs(project_id:str,run_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     if not db.get(MigrationProject,project_id): raise HTTPException(404,"Project not found")
     rows=_medallion_run_log_rows(db,project_id,run_id)
+    is_run_complete = any(row.get("details", {}).get("medallion_run_complete") for row in rows)
+    actual_failed_artifacts = sum(1 for row in rows if row.get("status")=="FAILED" and row.get("details", {}).get("medallion_node_id"))
+    failed_count = actual_failed_artifacts if is_run_complete else (
+        actual_failed_artifacts or int(any(row.get("status")=="FAILED" for row in rows))
+    )
     return {
         "project_id":project_id,"environment":"DEV","run_id":run_id,"count":len(rows),
-        "passed":sum(1 for row in rows if row.get("status")=="PASSED" and row["details"].get("medallion_node_id")),
-        "failed":sum(1 for row in rows if row.get("status")=="FAILED" and row["details"].get("medallion_node_id"))
-                  or int(any(row.get("status")=="FAILED" for row in rows)),"logs":rows,
+        "passed":sum(1 for row in rows if row.get("status")=="PASSED" and row.get("details", {}).get("medallion_node_id")),
+        "failed":failed_count,"logs":rows,
     }
 
 

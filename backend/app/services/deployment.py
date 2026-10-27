@@ -763,6 +763,7 @@ def medallion_deployment_status(
         run_id = _payload(attempts[0]).get("run_id")
         run_rows = [row for row in attempts if _payload(row).get("run_id") == run_id]
         objects = [row for row in run_rows if _payload(row).get("medallion_node_id")]
+        artifact_failures = [row for row in objects if row.status == "FAILED"]
         failure = next((row for row in run_rows if row.status == "FAILED"), None)
         complete = any(_payload(row).get("medallion_run_complete") for row in run_rows)
         is_started = any(_payload(row).get("medallion_run_started") for row in run_rows)
@@ -791,16 +792,31 @@ def medallion_deployment_status(
                 failure = timeout_record
                 run_rows.append(timeout_record)
 
-        status = "FAILED" if failure else "PASSED" if complete else "RUNNING" if is_started else "INCOMPLETE"
+        if complete and not artifact_failures:
+            # The run successfully deployed all planned artifacts; clean up any premature watchdog timeout record
+            stale_timeout_rows = [r for r in run_rows if r.status == "FAILED" and _payload(r).get("timeout")]
+            if stale_timeout_rows:
+                for r in stale_timeout_rows:
+                    db.delete(r)
+                db.commit()
+                run_rows = [r for r in run_rows if r not in stale_timeout_rows]
+            failure = None
+            status = "PASSED"
+        else:
+            status = "FAILED" if failure else "PASSED" if complete else "RUNNING" if is_started else "INCOMPLETE"
+
         # Accept complete manifests recorded before explicit run markers were added.
         previous = _latest_successful_medallion_run(db, project_id, env)
         if not failure and previous and previous[0] == run_id:
             status = "PASSED"
         failed_payload = _payload(failure) if failure else {}
+        failed_count = len(artifact_failures) if (complete and not artifact_failures) else (
+            sum(row.status == "FAILED" for row in objects) or int(failure is not None)
+        )
         return {
             "environment": env, "status": status, "run_id": run_id,
             "deployed": sum(row.status == "PASSED" for row in objects),
-            "failed": sum(row.status == "FAILED" for row in objects) or int(failure is not None),
+            "failed": failed_count,
             "failed_target": failed_payload.get("failed_target") or failed_payload.get("target_fqn"),
             "error": failed_payload.get("error"),
         }
