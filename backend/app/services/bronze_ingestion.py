@@ -20,6 +20,7 @@ from app.core.database import SessionLocal
 from app.models.entities import (
     CanonicalRecord,
     MigrationColumn,
+    MigrationDeployment,
     MigrationEnvironmentPlan,
     MigrationObject,
     MigrationProject,
@@ -312,7 +313,7 @@ def _ddl(columns: list[MigrationColumn]) -> str:
 
 
 def _load_via_direct_batch_insert(db, project_id, source, table, columns, write_target,
-                                *, batch_size, max_rows):
+                                *, batch_size, max_rows, on_progress=None):
     target_columns = ",".join(
         [_qident(column.column_name) for column in columns]
         + ["`_migration_source_system`"]
@@ -363,10 +364,15 @@ def _load_via_direct_batch_insert(db, project_id, source, table, columns, write_
                     for c_idx in range(0, len(payload), CHUNK_SIZE):
                         target_cursor.executemany(insert_sql, payload[c_idx:c_idx + CHUNK_SIZE])
                 rows_loaded += len(payload)
+                if on_progress and callable(on_progress):
+                    try:
+                        on_progress(rows_loaded, "Inserting batch")
+                    except Exception:
+                        pass
     return rows_loaded
 
 
-def _export_table_to_parquet(source, table, columns, max_rows=None):
+def _export_table_to_parquet(source, table, columns, max_rows=None, on_progress=None):
     """Stream canonical transport values to Parquet; COPY restores target types."""
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -390,6 +396,11 @@ def _export_table_to_parquet(source, table, columns, max_rows=None):
                             for i, column in enumerate(columns)}
                     writer.write_table(pa.Table.from_pydict(data, schema=schema))
                     count += len(rows)
+                    if on_progress and callable(on_progress):
+                        try:
+                            on_progress(count, "Exporting Parquet")
+                        except Exception:
+                            pass
         return path, count
     except Exception:
         os.unlink(path)
@@ -428,15 +439,20 @@ def _upload_to_uc_volume(db, project_id, local_path, volume_path):
 
 
 def _load_table_via_parquet_copy_into(db, project_id, source, table, columns, write_target,
-                                    *, max_rows, expected_rows):
+                                    *, max_rows, expected_rows, on_progress=None):
     catalog, _, _ = _parse_fqn(write_target)
     path = None
     volume_path = f"/Volumes/{catalog}/bronze/_migration_staging/{uid('bulk')}.parquet"
     try:
-        path, count = _export_table_to_parquet(source, table, columns, max_rows)
+        path, count = _export_table_to_parquet(source, table, columns, max_rows, on_progress=on_progress)
         if count != expected_rows:
             raise RuntimeError("Source row count changed during Parquet extraction")
         _upload_to_uc_volume(db, project_id, path, volume_path)
+        if on_progress and callable(on_progress):
+            try:
+                on_progress(count, "Executing COPY INTO Delta")
+            except Exception:
+                pass
         projection = []
         for column in columns:
             name = _qident(column.column_name)
@@ -529,6 +545,24 @@ def _load_table(
         )
 
     rows_loaded = 0
+    def _progress_cb(current_count: int, stage_label: str = "Streaming"):
+        try:
+            db.add(MigrationDeployment(
+                id=uid("DPL"),
+                project_id=project_id,
+                object_id=table.id,
+                environment="DEV",
+                status="RUNNING",
+                payload_json=json.dumps({
+                    "run_id": run_id,
+                    "medallion_heartbeat": True,
+                    "progress": f"{stage_label} {table.object_name}: {current_count} / {expected_rows} rows",
+                }, default=str),
+            ))
+            db.commit()
+        except Exception:
+            pass
+
     try:
         if bulk_candidate:
             try:
@@ -536,6 +570,7 @@ def _load_table(
                 rows_loaded = _load_table_via_parquet_copy_into(
                     db, project_id, source, table, columns, write_target,
                     max_rows=max_rows, expected_rows=expected_rows,
+                    on_progress=_progress_cb,
                 )
             except Exception:
                 logger.warning("Bulk staging failed; restarting with batch inserts")
@@ -547,11 +582,13 @@ def _load_table(
                     db, project_id, f"CREATE TABLE {stage} ({_ddl(columns)}) USING DELTA", safe_retry=False)
                 rows_loaded = _load_via_direct_batch_insert(
                     db, project_id, source, table, columns, write_target,
-                    batch_size=batch_size, max_rows=max_rows)
+                    batch_size=batch_size, max_rows=max_rows,
+                    on_progress=_progress_cb)
         else:
             rows_loaded = _load_via_direct_batch_insert(
                 db, project_id, source, table, columns, write_target,
-                batch_size=batch_size, max_rows=max_rows)
+                batch_size=batch_size, max_rows=max_rows,
+                on_progress=_progress_cb)
         if rows_loaded != expected_rows:
             raise RuntimeError(f"Source row-count validation failed: expected {expected_rows}, extracted {rows_loaded}")
         if bulk_candidate and _target_count(db, project_id, stage) != rows_loaded:
