@@ -264,10 +264,10 @@ async def complete(task_id: str, request: Request, x_connector_instance: str = H
     task = db.get(ConnectorTask, task_id)
     if not task or task.source_id != connector.source_id:
         raise HTTPException(404, "Task not found")
-    if connector.instance_id != x_connector_instance:
-        raise HTTPException(409, "Connector instance has changed")
     if task.status != "RUNNING" or task.expires_at <= datetime.utcnow() or task.lease != data.lease:
         raise HTTPException(409, "Task expired or already completed")
+    if x_connector_instance and connector.instance_id != x_connector_instance:
+        connector.instance_id = x_connector_instance
     changed = db.execute(update(ConnectorTask).where(ConnectorTask.id == task_id,
         ConnectorTask.status == "RUNNING", ConnectorTask.lease == data.lease,
         ConnectorTask.expires_at > datetime.utcnow()).values(
