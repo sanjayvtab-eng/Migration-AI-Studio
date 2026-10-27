@@ -729,7 +729,7 @@ class UniversalLocalAgent:
             if not stream:
                 raise ValueError("Source stream expired; restart operation")
             stream[2] = time.monotonic()
-            size = min(max(int(data.get("size", 10000)), 1), 10000)
+            size = min(max(int(data.get("size", 20000)), 1), 20000)
             rows, byte_count = [], 0
             for _ in range(size):
                 row = stream[3] if stream[3] is not None else stream[1].fetchone()

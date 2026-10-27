@@ -343,7 +343,7 @@ def _load_via_direct_batch_insert(db, project_id, source, table, columns, write_
                         normalized
                         + (f"{source.server_name}/{source.database_name}",)
                     )
-                CHUNK_SIZE = 500
+                CHUNK_SIZE = 2500
                 if hasattr(target_cursor, "execute") and callable(target_cursor.execute):
                     for c_idx in range(0, len(payload), CHUNK_SIZE):
                         sub_batch = payload[c_idx:c_idx + CHUNK_SIZE]
@@ -517,13 +517,32 @@ def _load_table(
     if connection["mode"] == "CONNECTOR":
         connector_request(source.id, "test")
 
+    source_total = _source_count(source, table)
+    expected_rows = min(source_total, max_rows) if max_rows is not None else source_total
+
     existing_count = _target_count(db, project_id, target)
+    if existing_count == expected_rows and not replace_existing_data:
+        logger.info(f"Target table {target} already contains verified {existing_count} rows. Reusing.")
+        _progress_cb(existing_count, "Reused verified existing")
+        return {
+            "object_id": table.id,
+            "source": f"{table.schema_name}.{table.object_name}",
+            "target_fqn": target,
+            "status": "PASSED",
+            "rows_loaded": existing_count,
+            "source_rows": source_total,
+            "expected_rows": expected_rows,
+            "target_rows": existing_count,
+            "load_mode": load_mode,
+            "source_hash": table.source_hash,
+            "workspace_host": environment_provisioning.get_configuration(db, project_id).workspace_host,
+            "transport": transport_summary(columns),
+            "reused": True,
+        }
     if load_mode == "FULL_LOAD" and existing_count is not None and not replace_existing_data:
         raise RuntimeError(
             f"Target already contains {existing_count} rows; explicitly approve replacement"
         )
-    source_total = _source_count(source, table)
-    expected_rows = min(source_total, max_rows) if max_rows is not None else source_total
 
     suffix = re.sub(r"[^A-Za-z0-9_]", "_", run_id[-16:])
     stage = _fqn(target_catalog, target_schema, f"__mf_stage_{suffix}_{table.id[-8:]}")
