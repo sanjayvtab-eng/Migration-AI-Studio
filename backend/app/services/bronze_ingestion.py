@@ -17,10 +17,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
+from app.models.canonical import MigrationDeployment
 from app.models.entities import (
     CanonicalRecord,
     MigrationColumn,
-    MigrationDeployment,
     MigrationEnvironmentPlan,
     MigrationObject,
     MigrationProject,
@@ -520,6 +520,24 @@ def _load_table(
     source_total = _source_count(source, table)
     expected_rows = min(source_total, max_rows) if max_rows is not None else source_total
 
+    def _progress_cb(current_count: int, stage_label: str = "Streaming"):
+        try:
+            db.add(MigrationDeployment(
+                id=uid("DPL"),
+                project_id=project_id,
+                object_id=table.id,
+                environment="DEV",
+                status="RUNNING",
+                payload_json=json.dumps({
+                    "run_id": run_id,
+                    "medallion_heartbeat": True,
+                    "progress": f"{stage_label} {table.object_name}: {current_count} / {expected_rows} rows",
+                }, default=str),
+            ))
+            db.commit()
+        except Exception:
+            pass
+
     existing_count = _target_count(db, project_id, target)
     if existing_count == expected_rows and not replace_existing_data:
         logger.info(f"Target table {target} already contains verified {existing_count} rows. Reusing.")
@@ -564,24 +582,6 @@ def _load_table(
         )
 
     rows_loaded = 0
-    def _progress_cb(current_count: int, stage_label: str = "Streaming"):
-        try:
-            db.add(MigrationDeployment(
-                id=uid("DPL"),
-                project_id=project_id,
-                object_id=table.id,
-                environment="DEV",
-                status="RUNNING",
-                payload_json=json.dumps({
-                    "run_id": run_id,
-                    "medallion_heartbeat": True,
-                    "progress": f"{stage_label} {table.object_name}: {current_count} / {expected_rows} rows",
-                }, default=str),
-            ))
-            db.commit()
-        except Exception:
-            pass
-
     try:
         if bulk_candidate:
             try:
