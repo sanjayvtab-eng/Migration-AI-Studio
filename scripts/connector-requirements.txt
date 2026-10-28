@@ -3,3 +3,4 @@ pyodbc==5.2.0
 pymysql==1.1.1
 psycopg2-binary==2.9.10
 oracledb==2.5.1
+pyarrow>=14.0.0

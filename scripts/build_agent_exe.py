@@ -34,6 +34,8 @@ def build():
         "--hidden-import", "pyodbc",
         "--hidden-import", "oracledb",
         "--hidden-import", "httpx",
+        "--hidden-import", "pyarrow",
+        "--hidden-import", "pyarrow.parquet",
         "--distpath", str(dist_dir),
         "--workpath", str(build_dir),
         str(local_connector_py)

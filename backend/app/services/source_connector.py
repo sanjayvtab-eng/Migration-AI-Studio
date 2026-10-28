@@ -9,8 +9,9 @@ from decimal import Decimal
 from app.core.database import SessionLocal
 from app.models.connector import SourceConnector, ConnectorTask
 
-OPERATIONS = {"test", "discover", "count", "open", "fetch", "close"}
+OPERATIONS = {"test", "discover", "count", "open", "fetch", "close", "stage_and_upload"}
 TASK_TIMEOUT = 120
+DIRECT_STAGE_TIMEOUT = 900
 _waiting = BoundedSemaphore(8)
 
 
@@ -43,12 +44,13 @@ def _request(source_id, operation, payload=None):
     if connector_info(source_id)["status"] != "ONLINE":
         raise RuntimeError("CONNECTOR_OFFLINE: Start the registered local connector, then test the source again.")
     task_id = secrets.token_hex(16)
+    effective_timeout = DIRECT_STAGE_TIMEOUT if operation == "stage_and_upload" else TASK_TIMEOUT
     with SessionLocal() as db:
         db.add(ConnectorTask(id=task_id, source_id=source_id, operation=operation,
                             payload=json.dumps(payload or {}), status="QUEUED",
-                            expires_at=datetime.utcnow() + timedelta(seconds=TASK_TIMEOUT)))
+                            expires_at=datetime.utcnow() + timedelta(seconds=effective_timeout)))
         db.commit()
-    deadline = time.monotonic() + TASK_TIMEOUT
+    deadline = time.monotonic() + effective_timeout
     try:
         while time.monotonic() < deadline:
             with SessionLocal() as db:

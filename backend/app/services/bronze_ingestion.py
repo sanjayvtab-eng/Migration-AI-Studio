@@ -442,17 +442,41 @@ def _load_table_via_parquet_copy_into(db, project_id, source, table, columns, wr
                                     *, max_rows, expected_rows, on_progress=None):
     catalog, _, _ = _parse_fqn(write_target)
     path = None
-    volume_path = f"/Volumes/{catalog}/bronze/_migration_staging/{uid('bulk')}.parquet"
+    volume_path = f"/Volumes/{catalog}/bronze/_migration_staging/{project_id}/{table.object_name}_{uid('bulk')}.parquet"
+    count = 0
     try:
-        path, count = _export_table_to_parquet(source, table, columns, max_rows, on_progress=on_progress)
+        connection = connector_info(source.id)
+        if connection.get("mode") == "CONNECTOR":
+            config = environment_provisioning.get_configuration(db, project_id)
+            db_token = environment_provisioning._token(config)
+            agent_req = {
+                "source_schema": table.schema_name,
+                "table": table.object_name,
+                "columns": [c.column_name for c in columns],
+                "max_rows": max_rows,
+                "target_volume_file": volume_path,
+                "databricks_host": config.workspace_host,
+                "databricks_token": db_token,
+            }
+            if on_progress:
+                on_progress(0, "Direct Staging (Agent -> Databricks Volume)")
+            res = connector_request(source.id, "stage_and_upload", agent_req)
+            count = int(res.get("row_count", 0))
+            volume_path = res.get("volume_path", volume_path)
+            if on_progress:
+                on_progress(count, "Parquet Staged; Executing Databricks COPY INTO")
+        else:
+            path, count = _export_table_to_parquet(source, table, columns, max_rows, on_progress=on_progress)
+            _upload_to_uc_volume(db, project_id, path, volume_path)
+            if on_progress and callable(on_progress):
+                try:
+                    on_progress(count, "Executing COPY INTO Delta")
+                except Exception:
+                    pass
+
         if count != expected_rows:
-            raise RuntimeError("Source row count changed during Parquet extraction")
-        _upload_to_uc_volume(db, project_id, path, volume_path)
-        if on_progress and callable(on_progress):
-            try:
-                on_progress(count, "Executing COPY INTO Delta")
-            except Exception:
-                pass
+            raise RuntimeError(f"Source row count mismatch: expected {expected_rows}, staged {count}")
+
         projection = []
         for column in columns:
             name = _qident(column.column_name)
@@ -469,7 +493,7 @@ def _load_table_via_parquet_copy_into(db, project_id, source, table, columns, wr
             raise RuntimeError("Bulk staging row-count validation failed")
         return count
     finally:
-        if path:
+        if path and os.path.exists(path):
             try:
                 os.unlink(path)
             except OSError:

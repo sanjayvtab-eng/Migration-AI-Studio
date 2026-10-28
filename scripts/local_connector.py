@@ -747,7 +747,99 @@ class UniversalLocalAgent:
                 byte_count += length
             return {"rows": rows}
 
-        # Operation 6: CLOSE STREAM
+        # Operation 6: DIRECT STAGE AND UPLOAD TO DATABRICKS VOLUME
+        if op == "stage_and_upload":
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            from urllib.parse import quote
+            import httpx
+
+            schema = data.get("source_schema") or self.schema
+            table = data.get("table")
+            columns = data.get("columns") or ["*"]
+            max_rows = data.get("max_rows")
+            target_volume_file = data.get("target_volume_file")
+            databricks_host = data.get("databricks_host")
+            databricks_token = data.get("databricks_token")
+
+            if not (target_volume_file and databricks_host and databricks_token):
+                raise ValueError("Missing direct staging parameters: target_volume_file, databricks_host, or databricks_token")
+
+            table_sql = qualified_table(schema, table, self.engine)
+            proj = ",".join(quote_identifier(c, self.engine) for c in columns) if columns != ["*"] else "*"
+
+            if self.engine == "SQLSERVER":
+                top = f"TOP ({int(max_rows)}) " if max_rows else ""
+                sql = f"SELECT {top}{proj} FROM {table_sql}"
+            elif self.engine in {"MYSQL", "POSTGRESQL"}:
+                lim = f" LIMIT {int(max_rows)}" if max_rows else ""
+                sql = f"SELECT {proj} FROM {table_sql}{lim}"
+            elif self.engine == "ORACLE":
+                lim = f" FETCH FIRST {int(max_rows)} ROWS ONLY" if max_rows else ""
+                sql = f"SELECT {proj} FROM {table_sql}{lim}"
+            else:
+                sql = f"SELECT {proj} FROM {table_sql}"
+
+            handle = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
+            local_parquet_path = handle.name
+            handle.close()
+
+            count = 0
+            file_size = 0
+            conn = self.connect()
+            try:
+                cur = conn.cursor()
+                cur.execute(sql)
+                col_names = [desc[0] for desc in cur.description]
+                arrow_schema = pa.schema([(c, pa.string()) for c in col_names])
+
+                with pq.ParquetWriter(local_parquet_path, arrow_schema, compression="snappy") as writer:
+                    while True:
+                        rows = cur.fetchmany(50000)
+                        if not rows:
+                            break
+                        data_dict = {
+                            col_names[idx]: [None if r[idx] is None else str(r[idx]) for r in rows]
+                            for idx in range(len(col_names))
+                        }
+                        writer.write_table(pa.Table.from_pydict(data_dict, schema=arrow_schema))
+                        count += len(rows)
+
+                file_size = os.path.getsize(local_parquet_path)
+                upload_url = f"https://{databricks_host}/api/2.0/fs/files{quote(target_volume_file, safe='/')}"
+                headers = {
+                    "Authorization": f"Bearer {databricks_token}",
+                    "Content-Type": "application/octet-stream",
+                    "Content-Length": str(file_size),
+                }
+
+                with httpx.Client(timeout=httpx.Timeout(900, connect=30), follow_redirects=False) as upload_client:
+                    with open(local_parquet_path, "rb") as f_stream:
+                        resp = upload_client.put(upload_url, headers=headers, content=f_stream)
+                    if resp.status_code >= 300:
+                        raise RuntimeError(f"Databricks Volume upload failed (HTTP {resp.status_code}): {resp.text}")
+
+                return {
+                    "ok": True,
+                    "row_count": count,
+                    "volume_path": target_volume_file,
+                    "file_size_bytes": file_size,
+                    "manifest": {
+                        "table": table,
+                        "row_count": count,
+                        "volume_path": target_volume_file,
+                        "file_size": file_size,
+                    }
+                }
+            finally:
+                conn.close()
+                if os.path.exists(local_parquet_path):
+                    try:
+                        os.unlink(local_parquet_path)
+                    except OSError:
+                        pass
+
+        # Operation 7: CLOSE STREAM
         if op == "close":
             item = self.streams.pop(data.get("stream_id"), None)
             if item:
@@ -1251,6 +1343,12 @@ def main():
                             AGENT_TELEMETRY["current_table"] = tbl
                             AGENT_TELEMETRY["current_operation"] = f"Streaming {tbl}"
                             detail_msg = tbl
+                        elif op == "stage_and_upload" and ok:
+                            rows_cnt = result.get("row_count", 0)
+                            AGENT_TELEMETRY["total_rows"] += rows_cnt
+                            AGENT_TELEMETRY["current_table"] = p.get("table", "")
+                            AGENT_TELEMETRY["current_operation"] = f"Direct Staged {p.get('table', '')} ({rows_cnt} rows)"
+                            detail_msg = f"{rows_cnt} rows direct staged to Databricks"
                         elif op == "fetch" and ok:
                             rows_cnt = len(result.get("rows", []))
                             AGENT_TELEMETRY["total_rows"] += rows_cnt
