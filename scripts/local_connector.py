@@ -566,14 +566,34 @@ class UniversalLocalAgent:
                 import oracledb
             except ImportError:
                 raise RuntimeError("oracledb module missing. Install with: pip install oracledb")
-            try:
-                dsn = oracledb.makedsn(self.server, int(self.port or 1521), service_name=self.database)
-                return oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
-            except Exception as e:
-                if "ORA-12514" in str(e) or "12514" in str(e):
-                    dsn = oracledb.makedsn(self.server, int(self.port or 1521), sid=self.database)
-                    return oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
-                raise
+            candidates = [self.database] if self.database else []
+            for default_candidate in ["freepdb1", "FREE", "orclpdb", "XEPDB1", "ORCL", "XE"]:
+                if default_candidate.lower() not in [c.lower() for c in candidates]:
+                    candidates.append(default_candidate)
+            last_err = None
+            for cand in candidates:
+                if not cand:
+                    continue
+                try:
+                    dsn = oracledb.makedsn(self.server, int(self.port or 1521), service_name=cand)
+                    conn = oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
+                    if cand != self.database:
+                        print(f"[Oracle] Service '{self.database}' not registered with listener; auto-connected via '{cand}'.")
+                        self.database = cand
+                    return conn
+                except Exception as e:
+                    last_err = e
+                    try:
+                        dsn = oracledb.makedsn(self.server, int(self.port or 1521), sid=cand)
+                        conn = oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
+                        if cand != self.database:
+                            print(f"[Oracle] SID '{self.database}' not registered with listener; auto-connected via SID '{cand}'.")
+                            self.database = cand
+                        return conn
+                    except Exception as e_sid:
+                        last_err = e_sid
+                        continue
+            raise last_err
 
         raise ValueError(f"Unsupported database engine: {eng}")
 
@@ -1210,8 +1230,8 @@ def main():
     # 7. Resolve database
     database = (
         args.database
-        or studio_db
         or (None if source_mismatch else (os.environ.get("CONNECTOR_DATABASE") or file_cfg.get("CONNECTOR_DATABASE")))
+        or studio_db
     )
     if not database:
         if is_interactive:
@@ -1223,8 +1243,8 @@ def main():
     # 8. Resolve schema
     schema = (
         args.schema
-        or studio_schema
         or (None if source_mismatch else (os.environ.get("CONNECTOR_SCHEMA") or file_cfg.get("CONNECTOR_SCHEMA")))
+        or studio_schema
     )
     if not schema and engine == "POSTGRESQL":
         schema = "public"
