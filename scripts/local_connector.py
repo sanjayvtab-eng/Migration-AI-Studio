@@ -1066,6 +1066,23 @@ def find_config_path(cli_path: str | None = None) -> Path | None:
     return None
 
 
+def fetch_studio_profile(url: str, token: str) -> dict:
+    if not (url and token):
+        return {}
+    try:
+        import httpx
+        with httpx.Client(timeout=10, follow_redirects=True) as client:
+            resp = client.get(
+                f"{url.rstrip('/')}/api/connector/info",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return {}
+
+
 def main():
     try:
         sys.stdout.reconfigure(line_buffering=True)
@@ -1075,7 +1092,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", help="Migration AI Studio URL (e.g. https://databricks-migration-factory-9ym2.onrender.com)")
     parser.add_argument("--source", help="Migration source profile ID (e.g. SRC_xxxx)")
-    parser.add_argument("--engine", default="SQLSERVER", help="Source database engine: SQLSERVER, MYSQL, POSTGRESQL, ORACLE")
+    parser.add_argument("--engine", default=None, help="Source database engine: SQLSERVER, MYSQL, POSTGRESQL, ORACLE")
     parser.add_argument("--server", help="Local database host/server (e.g. localhost, 127.0.0.1, or localhost\\SQLEXPRESS)")
     parser.add_argument("--port", type=int, help="Database port (e.g. 3306, 5432, 1433, 1521)")
     parser.add_argument("--database", help="Target source database name")
@@ -1089,28 +1106,117 @@ def main():
     parser.add_argument("--config", help="Path to custom agent.env file")
     args = parser.parse_args()
 
+    is_interactive = sys.stdin.isatty()
+    need_save = False
+
     config_path = find_config_path(args.config)
     file_cfg = load_config_file(config_path)
 
     url = args.url or os.environ.get("CONNECTOR_URL") or file_cfg.get("CONNECTOR_URL")
-    source = args.source or os.environ.get("CONNECTOR_SOURCE") or os.environ.get("CONNECTOR_SOURCE_ID") or file_cfg.get("CONNECTOR_SOURCE") or file_cfg.get("CONNECTOR_SOURCE_ID")
-    engine_val = args.engine or os.environ.get("CONNECTOR_ENGINE") or file_cfg.get("CONNECTOR_ENGINE")
-    if not engine_val and is_interactive and not config_path:
-        engine_prompt = input("Database Engine [SQLSERVER / MYSQL / POSTGRESQL / ORACLE] (default: SQLSERVER): ").strip()
-        engine_val = engine_prompt if engine_prompt else "SQLSERVER"
-        need_save = True
-    engine = normalize_engine(engine_val or "SQLSERVER")
-    server = (args.server or os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER") or "localhost")
+    if not url:
+        if is_interactive:
+            url = input("Migration Studio Application URL (e.g. https://...): ").strip()
+            need_save = True
+        else:
+            raise SystemExit("Error: --url or CONNECTOR_URL is required.")
+
+    source = (
+        args.source
+        or os.environ.get("CONNECTOR_SOURCE")
+        or os.environ.get("CONNECTOR_SOURCE_ID")
+        or file_cfg.get("CONNECTOR_SOURCE")
+        or file_cfg.get("CONNECTOR_SOURCE_ID")
+    )
+    if not source:
+        if is_interactive:
+            source = input("Source Profile ID (from Studio UI, e.g. SRC_xxxx): ").strip()
+            need_save = True
+        else:
+            raise SystemExit("Error: --source or CONNECTOR_SOURCE is required.")
+
+    token = args.token or os.environ.get("CONNECTOR_TOKEN") or file_cfg.get("CONNECTOR_TOKEN")
+    if not token:
+        if is_interactive:
+            token = getpass.getpass("Connector registration token (from Studio UI): ").strip()
+            need_save = True
+        else:
+            raise SystemExit("Error: Registration token is required via --token or CONNECTOR_TOKEN.")
+
+    # 1. Fetch official source profile configuration from Migration AI Studio
+    studio_info = fetch_studio_profile(url, token)
+    studio_engine = studio_info.get("engine")
+    studio_db = studio_info.get("database_name")
+    studio_server = studio_info.get("server_name")
+    studio_port = studio_info.get("port")
+    studio_schema = studio_info.get("schema_name")
+
+    # 2. Check if local configuration file belongs to a different source
+    env_source = file_cfg.get("CONNECTOR_SOURCE") or file_cfg.get("CONNECTOR_SOURCE_ID")
+    source_mismatch = bool(env_source and env_source != source)
+    if source_mismatch:
+        print(f"\n[Notice] Local configuration ({config_path.name if config_path else 'agent.env'}) belongs to source '{env_source}'.")
+        print(f"         Syncing official configuration from Studio for active source '{source}'.\n")
+
+    # 3. Resolve engine accurately
+    engine_val = args.engine or studio_engine
+    if not engine_val and not source_mismatch:
+        engine_val = os.environ.get("CONNECTOR_ENGINE") or file_cfg.get("CONNECTOR_ENGINE")
+
+    if not engine_val:
+        if is_interactive:
+            engine_prompt = input("Database Engine [SQLSERVER / MYSQL / POSTGRESQL / ORACLE] (default: SQLSERVER): ").strip()
+            engine_val = engine_prompt if engine_prompt else "SQLSERVER"
+            need_save = True
+        else:
+            engine_val = "SQLSERVER"
+    engine = normalize_engine(engine_val)
+
+    # 4. Resolve server
+    server = (
+        args.server
+        or studio_server
+        or (None if source_mismatch else (os.environ.get("CONNECTOR_SERVER") or file_cfg.get("CONNECTOR_SERVER")))
+        or "localhost"
+    )
     if engine == "SQLSERVER":
         server = server.replace("/", "\\")
 
-    port_val = args.port or os.environ.get("CONNECTOR_PORT") or file_cfg.get("CONNECTOR_PORT")
-    port = int(port_val) if port_val and str(port_val).isdigit() else None
-    database = args.database or os.environ.get("CONNECTOR_DATABASE") or file_cfg.get("CONNECTOR_DATABASE")
-    schema = args.schema or os.environ.get("CONNECTOR_SCHEMA") or file_cfg.get("CONNECTOR_SCHEMA")
-    token = args.token or os.environ.get("CONNECTOR_TOKEN") or file_cfg.get("CONNECTOR_TOKEN")
-    driver = args.driver or os.environ.get("CONNECTOR_DRIVER") or file_cfg.get("CONNECTOR_DRIVER") or "ODBC Driver 18 for SQL Server"
+    # 5. Default ports by engine
+    default_ports = {"SQLSERVER": 1433, "MYSQL": 3306, "POSTGRESQL": 5432, "ORACLE": 1521}
 
+    # 6. Resolve port
+    port_val = (
+        args.port
+        or studio_port
+        or (None if source_mismatch else (os.environ.get("CONNECTOR_PORT") or file_cfg.get("CONNECTOR_PORT")))
+        or default_ports.get(engine, 1433)
+    )
+    port = int(port_val) if port_val and str(port_val).isdigit() else default_ports.get(engine, 1433)
+
+    # 7. Resolve database
+    database = (
+        args.database
+        or studio_db
+        or (None if source_mismatch else (os.environ.get("CONNECTOR_DATABASE") or file_cfg.get("CONNECTOR_DATABASE")))
+    )
+    if not database:
+        if is_interactive:
+            database = input(f"Target {engine} Database name: ").strip()
+            need_save = True
+        else:
+            raise SystemExit(f"Error: Target database name is required for {engine}.")
+
+    # 8. Resolve schema
+    schema = (
+        args.schema
+        or studio_schema
+        or (None if source_mismatch else (os.environ.get("CONNECTOR_SCHEMA") or file_cfg.get("CONNECTOR_SCHEMA")))
+    )
+    if not schema and engine == "POSTGRESQL":
+        schema = "public"
+
+    # 9. Resolve driver & cert
+    driver = args.driver or os.environ.get("CONNECTOR_DRIVER") or file_cfg.get("CONNECTOR_DRIVER") or "ODBC Driver 18 for SQL Server"
     if args.trust_cert is not None:
         trust_cert = args.trust_cert
     elif "CONNECTOR_TRUST_CERT" in os.environ:
@@ -1120,42 +1226,29 @@ def main():
     else:
         trust_cert = True
 
-    username = args.username or os.environ.get("CONNECTOR_USERNAME") or file_cfg.get("CONNECTOR_USERNAME")
-    password = args.password or os.environ.get("CONNECTOR_PASSWORD") or os.environ.get("CONNECTOR_SQL_PASSWORD") or file_cfg.get("CONNECTOR_PASSWORD")
+    # 10. Resolve username
+    username = args.username
+    if not username and not source_mismatch:
+        username = os.environ.get("CONNECTOR_USERNAME") or file_cfg.get("CONNECTOR_USERNAME")
+    if not username:
+        if engine == "MYSQL":
+            username = "root"
+        elif engine == "POSTGRESQL":
+            username = "postgres"
 
-    is_interactive = sys.stdin.isatty()
-    need_save = False
+    # 11. Resolve password
+    password = args.password
+    if not password and not source_mismatch:
+        password = os.environ.get("CONNECTOR_PASSWORD") or os.environ.get("CONNECTOR_SQL_PASSWORD") or file_cfg.get("CONNECTOR_PASSWORD")
 
-    if not url:
-        if is_interactive:
-            url = input("Migration Studio Application URL (e.g. https://...): ").strip()
-            need_save = True
-        else:
-            raise SystemExit("Error: --url or CONNECTOR_URL is required.")
-
-    if not source:
-        if is_interactive:
-            source = input("Source Profile ID (from Studio UI, e.g. SRC_xxxx): ").strip()
-            need_save = True
-        else:
-            raise SystemExit("Error: --source or CONNECTOR_SOURCE is required.")
-
-    if not database:
-        if is_interactive:
-            database = input(f"Target {engine} Database name: ").strip()
-            need_save = True
-        else:
-            raise SystemExit("Error: --database or CONNECTOR_DATABASE is required.")
-
-    if not token:
-        if is_interactive:
-            token = getpass.getpass("Connector registration token (from Studio UI): ").strip()
-            need_save = True
-        else:
-            raise SystemExit("Error: Registration token is required via --token or CONNECTOR_TOKEN.")
+    # Prompt for password if in interactive mode and none was provided
+    if password is None and is_interactive and engine in ("MYSQL", "POSTGRESQL", "ORACLE"):
+        pwd_input = getpass.getpass(f"Database password for user '{username}' (leave blank if none): ")
+        password = pwd_input if pwd_input else ""
+        need_save = True
 
     if need_save and is_interactive and not config_path:
-        save_choice = input("\nSave these settings to 'agent.env' for automatic connection next time? [Y/n]: ").strip().lower()
+        save_choice = input(f"\nSave these settings to 'agent.env' for source {source} ({engine})? [Y/n]: ").strip().lower()
         if save_choice in ("", "y", "yes"):
             save_target = Path.cwd() / "agent.env"
             try:
@@ -1175,6 +1268,9 @@ def main():
                         f.write(f"CONNECTOR_USERNAME={username}\n")
                     if password:
                         f.write(f"CONNECTOR_PASSWORD={password}\n")
+                    if engine == "SQLSERVER":
+                        f.write(f"CONNECTOR_DRIVER={driver}\n")
+                        f.write(f"CONNECTOR_TRUST_CERT={'true' if trust_cert else 'false'}\n")
                 print(f"[OK] Configuration saved to {save_target.name}")
             except Exception as e:
                 print(f"[Notice] Could not save agent.env: {e}")

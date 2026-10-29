@@ -213,6 +213,22 @@ def claim_instance(db, connector, instance):
         ).values(instance_id=instance, last_seen=now))
 
 
+@router.get("/connector/info")
+def connector_info_endpoint(db: Session = Depends(get_db), connector=Depends(agent)):
+    src = db.get(MigrationSource, connector.source_id)
+    if not src:
+        raise HTTPException(404, "Source not found")
+    return {
+        "source_id": src.id,
+        "profile_name": src.profile_name,
+        "engine": src.engine,
+        "server_name": src.server_name,
+        "port": src.port,
+        "database_name": src.database_name,
+        "schema_name": src.schema_name or "",
+    }
+
+
 @router.post("/connector/heartbeat")
 def heartbeat(x_connector_instance: str = Header(default=""), db: Session = Depends(get_db), connector=Depends(agent)):
     claim_instance(db, connector, x_connector_instance)
