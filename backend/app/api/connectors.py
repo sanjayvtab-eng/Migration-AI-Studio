@@ -64,6 +64,9 @@ def get_config(
     _=Depends(auth)
 ):
     src = source(db, project_id, source_id)
+    options = src.options or {}
+    db_name = (options.get("service_name") or options.get("sid")) if src.engine == "ORACLE" else src.database_name
+    db_name = db_name or src.database_name
     app_url = ""
     if request:
         app_url = str(request.base_url).rstrip("/")
@@ -79,7 +82,7 @@ def get_config(
         f"CONNECTOR_SERVER={src.server_name}\n"
         f"CONNECTOR_PORT={src.port or ''}\n"
         f"CONNECTOR_SCHEMA={src.schema_name or ''}\n"
-        f"CONNECTOR_DATABASE={src.database_name}\n"
+        f"CONNECTOR_DATABASE={db_name}\n"
         f"CONNECTOR_TOKEN={token}\n"
         f"CONNECTOR_DRIVER={driver}\n"
         f"CONNECTOR_TRUST_CERT={'true' if trust_cert else 'false'}\n"
@@ -218,13 +221,16 @@ def connector_info_endpoint(db: Session = Depends(get_db), connector=Depends(age
     src = db.get(MigrationSource, connector.source_id)
     if not src:
         raise HTTPException(404, "Source not found")
+    options = src.options or {}
+    db_name = (options.get("service_name") or options.get("sid")) if src.engine == "ORACLE" else src.database_name
+    db_name = db_name or src.database_name
     return {
         "source_id": src.id,
         "profile_name": src.profile_name,
         "engine": src.engine,
         "server_name": src.server_name,
         "port": src.port,
-        "database_name": src.database_name,
+        "database_name": db_name,
         "schema_name": src.schema_name or "",
     }
 
