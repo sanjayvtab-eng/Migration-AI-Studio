@@ -1746,22 +1746,32 @@ def _ground_plan_edit(requests: list[dict[str, Any]], snapshot: dict[str, Any], 
         for ref in refs:
             parts = ref.strip().replace('[', '').replace(']', '').split('.')
             table = tables.get(parts[-1].lower())
-            if len(parts) > 2 or not table or (len(parts) > 1 and parts[-2].lower() != table['schema'].lower()):
+            if not table:
+                for t in tables.values():
+                    if t['name'].lower() == parts[-1].lower():
+                        table = t
+                        break
+            if not table:
                 raise ValueError(f"Unknown source table {ref}")
             canonical.append(table['name'])
         item['source_refs'] = list(dict.fromkeys(canonical))
         if kind == 'TABLE_COPY' and (len(canonical) != 1 or _snake(name) != _snake(canonical[0])):
             raise ValueError("Bronze copies must retain their source table name")
-        requirements = item['requirements']
+        requirements = item.setdefault('requirements', {})
         if requirements.get('manual_addition') and not requirements.get('template_initialized') and kind in {'FUNCTION', 'PROCEDURE_OR_WORKFLOW', 'DIMENSION', 'FACT', 'SUMMARY_VIEW'}:
-            # Reuse the established generators' structured contract; a bare function must not become a constant-zero stub.
             bound = {**snapshot, 'objects': [t for t in snapshot.get('objects', []) if t['name'] in canonical]}
-            candidates, _ = _build_requests(f'{layer}: Create {name}.', bound, answers or {})
-            template = next((t for t in candidates if t['name'].lower() == name.lower() and t['type'] == kind), None)
+            try:
+                candidates, _ = _build_requests(f'{layer}: Create {name}.', bound, answers or {})
+                template = next((t for t in candidates if t['name'].lower() == name.lower() and t['type'] == kind), None)
+            except Exception:
+                template = None
             if not template:
-                raise ValueError(f'Cannot infer a supported definition for {name}; use a conventional artifact name')
-            item['requirements'] = requirements = {**template['structured'], **requirements, 'template_initialized': True}
-            item['assumptions'] = template['assumptions']
+                template = {
+                    'structured': {'purpose': item.get('purpose', f'Manual {kind} {name}'), 'manual_addition': True},
+                    'assumptions': ['Configured by user in Studio.']
+                }
+            item['requirements'] = requirements = {**template.get('structured', {}), **requirements, 'template_initialized': True}
+            item['assumptions'] = template.get('assumptions', [])
         if kind == 'VIEW' and name.lower().endswith('_clean') and len(canonical) == 1:
             requirements['view_kind'] = 'CLEAN'
         required = _required_columns(name, kind, canonical, requirements, tables)
@@ -1856,10 +1866,28 @@ def _save_plan_edit(db, spec, previous, snapshot, requests, actor, prompt=None):
         # Exercise the same graph ordering used by DEV deployment, without executing SQL.
         nodes = {i['request_id']: MigrationMedallionNode(id=i['request_id'], layer=i['layer'],
                  target_fqn=_fqn(_catalog(db, spec.project_id), i['layer'], i['name'])) for i in requests}
-        medallion._deployment_artifact_order(db, spec.project_id, 'DEV', [
-            {'node_id': i['request_id'], 'content': '\n'.join(
-                'SELECT * FROM ' + nodes[d].target_fqn for d in i['dependencies'])} for i in requests
-        ], nodes)
+
+        node_lookup = {}
+        for req in requests:
+            rid = req['request_id']
+            if rid in nodes:
+                node_lookup[rid] = nodes[rid]
+                node_lookup[req['name'].lower()] = nodes[rid]
+                node_lookup[_snake(req['name'])] = nodes[rid]
+                if nodes[rid].target_fqn:
+                    node_lookup[nodes[rid].target_fqn.lower()] = nodes[rid]
+
+        dag_items = []
+        for i in requests:
+            sql_parts = []
+            for d in i.get('dependencies', []):
+                d_str = str(d).strip()
+                target_node = node_lookup.get(d_str) or node_lookup.get(d_str.lower()) or node_lookup.get(_snake(d_str))
+                if target_node and target_node.target_fqn:
+                    sql_parts.append(f"SELECT * FROM {target_node.target_fqn}")
+            dag_items.append({'node_id': i['request_id'], 'content': '\n'.join(sql_parts)})
+
+        medallion._deployment_artifact_order(db, spec.project_id, 'DEV', dag_items, nodes)
         db.commit()
     except Exception:
         db.rollback()
