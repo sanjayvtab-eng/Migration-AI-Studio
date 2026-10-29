@@ -1914,13 +1914,13 @@ def _remove_plan_artifact(requests, request_id):
     item = next((i for i in requests if i['request_id'] == request_id), None)
     if not item:
         raise LookupError(f'Artifact request {request_id} not found')
-    dependents = [i for i in requests if request_id in i['dependencies']]
-    if dependents and not item['requirements'].get('view_kind') == 'CLEAN':
-        raise ValueError('Remove or update dependent artifacts first: ' + ', '.join(i['name'] for i in dependents))
     requests.remove(item)
     for other in requests:
-        other['dependencies'] = [d for d in other['dependencies'] if d != request_id]
-        other['requirements']['manual_dependencies'] = [d for d in other['requirements'].get('manual_dependencies', []) if d != request_id]
+        other['dependencies'] = [d for d in other.get('dependencies', []) if d != request_id]
+        if 'requirements' in other and isinstance(other.get('requirements'), dict):
+            other['requirements']['manual_dependencies'] = [
+                d for d in other['requirements'].get('manual_dependencies', []) if d != request_id
+            ]
 
 
 def delete_plan_artifact(db: Session, project_id: str, specification_id: str, request_id: str, actor: str = 'admin') -> dict[str, Any]:
@@ -1939,13 +1939,28 @@ def refine_prompt_plan(db: Session, project_id: str, specification_id: str, refi
             continue
         move = re.fullmatch(r'move\s+(.+?)\s+to\s+(bronze|silver|gold)(?:\s+with\s+.+)?', command, re.I)
         rename = re.fullmatch(r'rename\s+(.+?)\s+to\s+([A-Za-z_]\w*)(?:\s+with\s+.+)?', command, re.I)
-        remove = re.fullmatch(r'(?:delete|remove)\s+(.+?)(?:\s+with\s+.+)?', command, re.I)
+        remove = re.fullmatch(r'(?:delete|remove|drop)\s+(.+?)(?:\s+with\s+.+)?', command, re.I)
         add = re.fullmatch(r'add\s+(.+?)\s+(?:to|in)\s+(bronze|silver|gold)(?:\s+with\s+(.+))?', command, re.I)
         if move or rename or remove:
-            name = (move or rename or remove).group(1)
-            matches = [i for i in requests if _snake(i['name']) == _snake(name) or _stem(i['name']) == _snake(name)]
-            if len(matches) != 1:
-                raise ValueError(f'Use an unambiguous artifact name for {name}')
+            raw_name = (move or rename or remove).group(1).strip()
+            name = re.sub(r'^(?:artifact|view|table|function|procedure)\s+', '', raw_name, flags=re.I)
+            name = re.sub(r'\s+(?:from|in)\s+(?:bronze|silver|gold)$', '', name, flags=re.I)
+            name = name.strip("'\"` ")
+            target_slug = _snake(name)
+
+            matches = [i for i in requests if _snake(i['name']) == target_slug or _stem(i['name']) == target_slug]
+            if not matches:
+                matches = [i for i in requests if target_slug in _snake(i['name']) or _snake(i['name']) in target_slug]
+
+            if len(matches) == 0:
+                raise ValueError(f'Artifact "{raw_name}" not found in current plan')
+            if len(matches) > 1:
+                exact = [i for i in matches if _snake(i['name']) == target_slug]
+                if len(exact) == 1:
+                    matches = exact
+                else:
+                    raise ValueError(f'Ambiguous artifact "{raw_name}"; matches multiple: {", ".join(i["name"] for i in matches)}')
+
             if remove:
                 _remove_plan_artifact(requests, matches[0]['request_id'])
             else:

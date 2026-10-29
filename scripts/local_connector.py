@@ -534,7 +534,7 @@ class UniversalLocalAgent:
                 password=self.password or "",
                 database=self.database,
                 charset="utf8mb4",
-                cursorclass=pymysql.cursors.SSCursor,
+                cursorclass=pymysql.cursors.Cursor,
                 connect_timeout=10,
                 autocommit=True,
             )
