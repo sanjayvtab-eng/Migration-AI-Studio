@@ -173,6 +173,11 @@ class PromptSpecificationIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
     prompt: str
     source_id: str | None = None
+    object_ids: list[str] | None = None
+
+class ClassifyIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    object_ids: list[str] | None = None
 
 class PromptClarificationsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -666,7 +671,7 @@ def prompt_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
 @router.post("/projects/{project_id}/prompt-specifications")
 def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Session=Depends(get_db),user=Depends(auth)):
     actor=_admin_actor(user)
-    try: return prompt_specification.submit(db,project_id,data.prompt,actor,data.source_id)
+    try: return prompt_specification.submit(db,project_id,data.prompt,actor,data.source_id,object_ids=data.object_ids)
     except Exception as e: _environment_error(e)
 
 
@@ -679,7 +684,7 @@ def prompt_specification_latest(project_id:str,db:Session=Depends(get_db),_=Depe
 @router.post("/projects/{project_id}/prompt-specifications/analyze")
 def analyze_prompt_api(project_id: str, data: PromptSpecificationIn, db: Session = Depends(get_db), _=Depends(auth)):
     try:
-        return prompt_specification.analyze_prompt(db, project_id, data.prompt, data.source_id)
+        return prompt_specification.analyze_prompt(db, project_id, data.prompt, data.source_id, object_ids=data.object_ids)
     except Exception as exc:
         _environment_error(exc)
 
@@ -1194,7 +1199,9 @@ def inventory(project_id:str,offset:int=0,limit:int=100,object_type:str|None=Non
     } for o in objs]
 
 @router.post("/projects/{project_id}/classification")
-def classify(project_id:str,db:Session=Depends(get_db),_=Depends(auth)): return {"classified":classify_project(db,project_id)}
+def classify(project_id:str,data:ClassifyIn|None=None,db:Session=Depends(get_db),_=Depends(auth)):
+    obj_ids = data.object_ids if data else None
+    return {"classified":classify_project(db,project_id,obj_ids)}
 
 @router.get("/projects/{project_id}/classification")
 def classification_list(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):

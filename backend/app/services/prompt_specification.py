@@ -134,11 +134,14 @@ def _source(db: Session, project_id: str, prompt: str, explicit_source_id: str |
     raise ValueError(f"The prompt matches more than one registered source; select a source explicitly by adding 'Source: <profile_name>' (available: {available}).")
 
 
-def _metadata_payload(db: Session, project_id: str, source_id: str) -> dict[str, Any]:
-    objects = list(db.scalars(select(MigrationObject).where(
+def _metadata_payload(db: Session, project_id: str, source_id: str, object_ids: list[str] | None = None) -> dict[str, Any]:
+    q = select(MigrationObject).where(
         MigrationObject.project_id == project_id,
         MigrationObject.source_id == source_id,
-    ).order_by(MigrationObject.schema_name, MigrationObject.object_name, MigrationObject.object_type)).all())
+    )
+    if object_ids:
+        q = q.where(MigrationObject.id.in_(object_ids))
+    objects = list(db.scalars(q.order_by(MigrationObject.schema_name, MigrationObject.object_name, MigrationObject.object_type)).all())
     # Fetch discovery children once, rather than two queries per discovered object.
     columns_by_object = defaultdict(list)
     for column in db.scalars(select(MigrationColumn).where(
@@ -184,8 +187,8 @@ def _metadata_payload(db: Session, project_id: str, source_id: str) -> dict[str,
     return {"source_id": source_id, "objects": result}
 
 
-def _snapshot(db: Session, project_id: str, source_id: str) -> MigrationMetadataSnapshot:
-    payload = _metadata_payload(db, project_id, source_id)
+def _snapshot(db: Session, project_id: str, source_id: str, object_ids: list[str] | None = None) -> MigrationMetadataSnapshot:
+    payload = _metadata_payload(db, project_id, source_id, object_ids=object_ids)
     digest = _checksum(payload)
     existing = db.scalar(select(MigrationMetadataSnapshot).where(
         MigrationMetadataSnapshot.project_id == project_id,
@@ -1639,7 +1642,7 @@ def _persist_version(
     return version
 
 
-def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str | None = None) -> dict[str, Any]:
+def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str | None = None, object_ids: list[str] | None = None) -> dict[str, Any]:
     if not get_settings().prompt_native_design_enabled:
         raise PermissionError("Prompt-native artifact design is disabled")
     if not prompt or not prompt.strip():
@@ -1658,7 +1661,7 @@ def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str
     plan_row = environment_provisioning.get_dev_plan(db, project_id)
     if not plan_row or plan_row.status != "PROVISIONED":
         raise ValueError("The Databricks DEV environment must be provisioned before prompt design")
-    snapshot = _snapshot(db, project_id, source.id)
+    snapshot = _snapshot(db, project_id, source.id, object_ids=object_ids)
     spec = PromptSpecification(
         id=uid("PSP"), project_id=project_id, source_id=source.id,
         target_environment="DEV", current_status="PARSING", created_by=actor,
@@ -2041,7 +2044,7 @@ def _analysis_result(prompt, snapshot, requests, questions):
             'status': 'OPTIMAL' if score >= 90 and not blockers and not questions else 'REVIEW_RECOMMENDED'}
 
 
-def analyze_prompt(db: Session, project_id: str, prompt: str, source_id: str | None = None) -> dict[str, Any]:
+def analyze_prompt(db: Session, project_id: str, prompt: str, source_id: str | None = None, object_ids: list[str] | None = None) -> dict[str, Any]:
     if not prompt.strip():
         raise ValueError('A business prompt is required')
     if not db.get(MigrationProject, project_id):
@@ -2049,7 +2052,7 @@ def analyze_prompt(db: Session, project_id: str, prompt: str, source_id: str | N
     if source_id and not db.scalar(select(MigrationSource.id).where(MigrationSource.id == source_id, MigrationSource.project_id == project_id)):
         raise LookupError('Source not found in project')
     source = _source(db, project_id, prompt, source_id)
-    snapshot = _metadata_payload(db, project_id, source.id)
+    snapshot = _metadata_payload(db, project_id, source.id, object_ids=object_ids)
     requests, questions = _build_requests(prompt, snapshot, {})
     return _analysis_result(prompt, snapshot, requests, questions)
 

@@ -1786,7 +1786,11 @@ export default function App() {
     try {
       const result: any = await api(`/projects/${pid}/prompt-specifications`, {
         method: "POST",
-        body: JSON.stringify({ prompt: textToSubmit, source_id: promptSourceId || undefined }),
+        body: JSON.stringify({
+          prompt: textToSubmit,
+          source_id: promptSourceId || undefined,
+          object_ids: inventorySelectedIds.length > 0 ? inventorySelectedIds : undefined,
+        }),
       });
       setPromptAnswers({});
       await loadPromptSpecification(result.id);
@@ -1803,7 +1807,12 @@ export default function App() {
     setBusy(true);
     try {
       const analysis = await api(`/projects/${pid}/prompt-specifications/analyze`, {
-        method: "POST", body: JSON.stringify({ prompt: textToAnalyze, source_id: promptSourceId || undefined }),
+        method: "POST",
+        body: JSON.stringify({
+          prompt: textToAnalyze,
+          source_id: promptSourceId || undefined,
+          object_ids: inventorySelectedIds.length > 0 ? inventorySelectedIds : undefined,
+        }),
       });
       setPromptAnalysis(analysis);
     } catch (e: any) { setMsg(e.message); }
@@ -5825,7 +5834,7 @@ export default function App() {
                       className="btn-primary-blue"
                       onClick={() => setPage("Inventory")}
                     >
-                      Proceed to Inventory
+                      Proceed to Inventory {inventorySelectedIds.length > 0 ? `(${inventorySelectedIds.length} Objects)` : `(${inventory.length} Objects)`}
                       <ArrowRight size={14} />
                     </button>
                   </div>
@@ -6041,9 +6050,18 @@ export default function App() {
                   </button>
                   <button
                     className="btn-primary-blue"
-                    onClick={() => setPage("Layer Classification")}
+                    onClick={() => {
+                      action(async () => {
+                        await api(`/projects/${pid}/classification`, {
+                          method: "POST",
+                          body: JSON.stringify({ object_ids: inventorySelectedIds.length > 0 ? inventorySelectedIds : undefined }),
+                        });
+                        await refresh();
+                        setPage("Layer Classification");
+                      });
+                    }}
                   >
-                    Proceed to Classification
+                    Proceed to Classification {inventorySelectedIds.length > 0 ? `(${inventorySelectedIds.length} Objects)` : `(${inventory.length} Objects)`}
                     <ArrowRight size={14} />
                   </button>
                 </div>
@@ -6081,7 +6099,8 @@ export default function App() {
                             const matchesDb = inventoryDbFilter === "ALL" || x.database === inventoryDbFilter;
                             const matchesFk = !inventoryShowFkOnly || deps.some((d: any) => d.object_name === x.name || d.referenced_object === x.name);
                             const matchesSearch = !search || `${x.database} ${x.schema}.${x.name} ${x.type}`.toLowerCase().includes(search.toLowerCase());
-                            return matchesDb && matchesFk && matchesSearch;
+                            const matchesSelected = inventorySelectedIds.length === 0 || inventorySelectedIds.includes(x.id);
+                            return matchesDb && matchesFk && matchesSearch && matchesSelected;
                           })
                           .map((x, idx) => {
                             const isSelected = inventorySelectedIds.includes(x.id);
@@ -6519,7 +6538,8 @@ export default function App() {
                               `${x.name} ${x.type} ${x.recommended_layer} ${x.selected_layer}`
                                 .toLowerCase()
                                 .includes(classificationSearch.toLowerCase());
-                            return matchesLayer && matchesSearch;
+                            const matchesSelected = inventorySelectedIds.length === 0 || inventorySelectedIds.includes(x.object_id);
+                            return matchesLayer && matchesSearch && matchesSelected;
                           })
                           .map((x, idx) => {
                             const conf = Math.round(x.confidence * 100) || 80;
@@ -6693,7 +6713,7 @@ export default function App() {
                   <div className="classification-bottom-info">
                     <CheckCircle2 size={18} color="#10b981" />
                     <b>
-                      {classes.length} of {classes.length} objects have confirmed Medallion layer assignments
+                      {classes.filter((c) => inventorySelectedIds.length === 0 || inventorySelectedIds.includes(c.object_id)).length} of {classes.filter((c) => inventorySelectedIds.length === 0 || inventorySelectedIds.includes(c.object_id)).length} objects have confirmed Medallion layer assignments
                     </b>
                   </div>
                   <button
@@ -10712,21 +10732,21 @@ export default function App() {
             },
             4: {
               title: "Stage 4 of 9: Discovery",
-              context: `${inventory.length || dash.objects_discovered || 11} Objects Identified`,
+              context: `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects Identified`,
               backText: "← Back to Sources",
               backTarget: "Sources",
               backDisabled: false,
-              forwardText: `Proceed to Inventory (${inventory.length || dash.objects_discovered || 11} Objects) →`,
+              forwardText: `Proceed to Inventory (${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects) →`,
               forwardTarget: "Inventory",
               forwardDisabled: false,
             },
             5: {
               title: "Stage 5 of 9: Inventory",
-              context: `${inventory.length || 11} Source Objects Cataloged`,
+              context: `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Source Objects Cataloged`,
               backText: "← Back to Discovery",
               backTarget: "Discovery",
               backDisabled: false,
-              forwardText: "Proceed to Classification →",
+              forwardText: `Proceed to Classification (${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Objects) →`,
               forwardTarget: "Layer Classification",
               forwardDisabled: false,
             },

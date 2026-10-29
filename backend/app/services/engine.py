@@ -340,6 +340,7 @@ def add_source(db: Session, project_id: str, profile_name: str, server: str, dat
 def ingest_snapshot(db: Session, project_id: str, source_id: str, snapshot: dict) -> dict:
     if not db.get(MigrationProject, project_id): raise ValueError("Unknown project_id")
     counts=defaultdict(int)
+    seen_obj_ids = set()
     for o in snapshot.get("objects",[]):
         schema_name = str(o.get("schema") or "").strip()
         if not schema_name:
@@ -381,10 +382,27 @@ def ingest_snapshot(db: Session, project_id: str, source_id: str, snapshot: dict
         if o.get("approx_row_count") is not None:
             db.add(CanonicalRecord(id=uid("REC"),project_id=project_id,record_type="TABLE_STATS",object_id=obj.id,payload_json=json.dumps({"approx_row_count":int(o.get("approx_row_count") or 0)},default=str)))
         counts[o["type"].upper()] += 1
+        seen_obj_ids.add(obj.id)
+    # Prune stale/deleted objects from this source that are no longer in the fresh snapshot
+    if seen_obj_ids:
+        stale_objs = db.scalars(select(MigrationObject).where(
+            MigrationObject.project_id == project_id,
+            MigrationObject.source_id == source_id,
+            MigrationObject.id.not_in(seen_obj_ids)
+        )).all()
+        for obsolete in stale_objs:
+            db.query(MigrationColumn).filter(MigrationColumn.project_id == project_id, MigrationColumn.object_id == obsolete.id).delete()
+            db.query(MigrationDependency).filter(MigrationDependency.project_id == project_id, MigrationDependency.object_id == obsolete.id).delete()
+            db.query(CanonicalRecord).filter(CanonicalRecord.project_id == project_id, CanonicalRecord.object_id == obsolete.id).delete(synchronize_session=False)
+            db.query(MigrationClassification).filter(MigrationClassification.project_id == project_id, MigrationClassification.object_id == obsolete.id).delete()
+            db.delete(obsolete)
     db.commit(); return dict(counts)
 
-def classify_project(db: Session, project_id: str) -> int:
-    objects=db.scalars(select(MigrationObject).where(MigrationObject.project_id==project_id)).all(); n=0
+def classify_project(db: Session, project_id: str, object_ids: list[str] | None = None) -> int:
+    q = select(MigrationObject).where(MigrationObject.project_id==project_id)
+    if object_ids:
+        q = q.where(MigrationObject.id.in_(object_ids))
+    objects=db.scalars(q).all(); n=0
     for o in objects:
         layer,conf,reason=classify_layer(o.object_type,o.definition,o.object_name)
         c=db.scalar(select(MigrationClassification).where(MigrationClassification.project_id==project_id,MigrationClassification.object_id==o.id))
