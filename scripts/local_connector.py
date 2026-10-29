@@ -49,6 +49,14 @@ try:
 except ImportError:
     oracledb = None
 
+try:
+    import cryptography
+    import cryptography.hazmat.primitives.kdf.pbkdf2
+    import cryptography.hazmat.primitives.ciphers
+    import cryptography.hazmat.primitives.hashes
+except ImportError:
+    pass
+
 
 def normalize_engine(value: str | None) -> str:
     aliases = {
@@ -558,8 +566,14 @@ class UniversalLocalAgent:
                 import oracledb
             except ImportError:
                 raise RuntimeError("oracledb module missing. Install with: pip install oracledb")
-            dsn = oracledb.makedsn(self.server, int(self.port or 1521), service_name=self.database)
-            return oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
+            try:
+                dsn = oracledb.makedsn(self.server, int(self.port or 1521), service_name=self.database)
+                return oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
+            except Exception as e:
+                if "ORA-12514" in str(e) or "12514" in str(e):
+                    dsn = oracledb.makedsn(self.server, int(self.port or 1521), sid=self.database)
+                    return oracledb.connect(user=self.username, password=self.password or "", dsn=dsn)
+                raise
 
         raise ValueError(f"Unsupported database engine: {eng}")
 
