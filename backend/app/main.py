@@ -12,12 +12,13 @@ from app.api.connectors import router as connector_router
 from app.models.entities import User
 from app.models import canonical
 from app.services.engine import uid
-from app.core.schema_upgrade import ensure_source_columns
+from app.core.schema_upgrade import ensure_source_columns, ensure_project_columns
 from sqlalchemy import func, select
 
 s=get_settings()
 Base.metadata.create_all(engine)
 ensure_source_columns(engine)
+ensure_project_columns(engine)
 if s.bootstrap_admin_username and s.bootstrap_admin_password:
     if len(s.bootstrap_admin_password) < 12:
         raise RuntimeError("BOOTSTRAP_ADMIN_PASSWORD must contain at least 12 characters")

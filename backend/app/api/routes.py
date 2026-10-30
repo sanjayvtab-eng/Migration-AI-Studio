@@ -553,12 +553,50 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
     return {"access_token": create_access_token(u.username, u.role), "token_type": "bearer", "role": u.role, "username": u.username, "email": u.email}
 
 @router.post("/projects")
-def projects_create(data:ProjectIn,db:Session=Depends(get_db),_=Depends(auth)):
-    p=ensure_project(db,data.name); return {"id":p.id,"name":p.name,"status":p.status,"created_at":p.created_at.isoformat() if p.created_at else None}
+def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)):
+    creator = str(user.get("sub") or "admin")
+    existing = db.scalar(select(MigrationProject).where(MigrationProject.name == data.name))
+    if existing:
+        ex_owner = existing.created_by or "admin"
+        if ex_owner != creator and creator.lower() != "admin":
+            raise HTTPException(400, f"Project '{data.name}' already exists. Please choose a different project name.")
+        p = existing
+    else:
+        p = ensure_project(db, data.name, created_by=creator)
+    return {
+        "id": p.id,
+        "name": p.name,
+        "status": p.status,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "created_by": p.created_by or creator,
+        "owner": p.created_by or creator,
+    }
 
 @router.get("/projects")
-def projects_list(db:Session=Depends(get_db),_=Depends(auth)):
-    return [{"id":p.id,"name":p.name,"status":p.status,"created_at":p.created_at.isoformat() if p.created_at else None} for p in db.scalars(select(MigrationProject).order_by(MigrationProject.created_at.desc())).all()]
+def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
+    current_user = str(user.get("sub") or "admin")
+    # Strict multi-tenant isolation:
+    # Users only see projects that belong to their account.
+    # Existing unassigned legacy projects remain assigned to 'admin'.
+    if current_user.lower() == "admin":
+        stmt = select(MigrationProject).where(
+            (MigrationProject.created_by == "admin") | (MigrationProject.created_by == None)
+        )
+    else:
+        stmt = select(MigrationProject).where(MigrationProject.created_by == current_user)
+    
+    projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "status": p.status,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "created_by": p.created_by or current_user,
+            "owner": p.created_by or current_user,
+        }
+        for p in projects
+    ]
 
 @router.delete("/projects/{project_id}")
 def project_delete(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):

@@ -68,7 +68,7 @@ import LandingPage from "./LandingPage";
 import WorkspacePhaseStepper from "./WorkspacePhaseStepper";
 import { ApiStatusPanel } from "./ApiStatusPanel";
 
-type Project = { id: string; name: string; status: string; created_at?: string };
+type Project = { id: string; name: string; status: string; created_at?: string; owner?: string; created_by?: string };
 type Source = {
   id: string;
   profile_name: string;
@@ -1076,7 +1076,9 @@ export default function App() {
   async function loadProjects() {
     const ps = await api<Project[]>("/projects");
     setProjects(ps);
-    if (!pid && ps[0]) setPid(ps[0].id);
+    if (!pid || !ps.some(x => x.id === pid)) {
+      setPid(ps[0] ? ps[0].id : "");
+    }
     return ps;
   }
   async function handleDeleteProject(p: Project) {
@@ -1109,7 +1111,22 @@ export default function App() {
     setMsg("");
     try {
       const ps = await loadProjects();
-      const id = pid || ps[0]?.id;
+      const activeProj = ps.find(x => x.id === pid) || ps[0];
+      const id = activeProj?.id;
+      if (id !== pid) setPid(id || "");
+      if (!id) {
+        setDash({});
+        setLife([]);
+        setClasses([]);
+        setSources([]);
+        setInventory([]);
+        setMappings([]);
+        setArtifacts([]);
+        setIssues([]);
+        setDeps([]);
+        setReviews([]);
+        return;
+      }
       if (id) {
         const [d, l, c, s, i, m, a, is, dp, rv] = await Promise.all([
           api(`/projects/${id}/dashboard`),
@@ -3428,6 +3445,8 @@ export default function App() {
                       setProfileMenuOpen(false);
                       setMsg("Signed out successfully");
                       localStorage.removeItem("mf_token");
+                      setPid("");
+                      setProjects([]);
                       setReady(false);
                       setShowLogin(false);
                     }}
@@ -4806,8 +4825,12 @@ export default function App() {
                               </td>
                               <td>
                                 <div className="owner-chip">
-                                  <div className="owner-avatar">AD</div>
-                                  <span>Admin</span>
+                                  <div className="owner-avatar">
+                                    {(p.owner || p.created_by || "Admin").slice(0, 2).toUpperCase()}
+                                  </div>
+                                  <span title={p.owner || p.created_by || "Admin"}>
+                                    {p.owner || p.created_by || "Admin"}
+                                  </span>
                                 </div>
                               </td>
                               <td>

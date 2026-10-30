@@ -315,10 +315,14 @@ def _retarget_view_header(content: str, target_fqn: str) -> str:
         return content
     return f"CREATE OR REPLACE VIEW {target_fqn}" + content[match.end():]
 
-def ensure_project(db: Session, name: str) -> MigrationProject:
+def ensure_project(db: Session, name: str, created_by: str | None = None) -> MigrationProject:
     p = db.scalar(select(MigrationProject).where(MigrationProject.name==name))
-    if p: return p
-    p=MigrationProject(id=uid("PRJ"),name=name); db.add(p); db.commit(); return p
+    if p:
+        if created_by and not p.created_by:
+            p.created_by = created_by
+            db.commit()
+        return p
+    p=MigrationProject(id=uid("PRJ"),name=name,created_by=created_by or "admin"); db.add(p); db.commit(); return p
 
 def add_source(db: Session, project_id: str, profile_name: str, server: str, database: str,
                *, engine: str = "SQLSERVER", port: int | None = None,

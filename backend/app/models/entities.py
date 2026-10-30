@@ -12,6 +12,7 @@ class MigrationProject(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True, default="admin")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class MigrationDatabricksConfiguration(Base, ProjectScoped):
