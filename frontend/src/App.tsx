@@ -837,11 +837,24 @@ function getUserFromToken(): { username: string; role: string; initials: string 
 }
 
 
-const RETAIL_MEDALLION_TEMPLATE = `Migrate the OracleRetailTest Oracle database to Databricks DEV. Bronze: ingest CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS and RETURNS, each containing 100,000 source rows. Silver: create cleaned views for Categories, Customers, Products, Orders, OrderItems, Payments, Shipments and Returns; calculate gross and discounted net order-item amounts; create vw_OrderPaymentReconciliation to reconcile order totals against successful payments while excluding failed and pending payments from paid totals; create an idempotent MERGE loader usp_MergeOrderPaymentSummary keyed by ORDER_ID. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, fact_shipments, and monthly executive KPI aggregation marts.`;
+function buildMasterMedallionTemplate(inv?: any[], src?: any[]) {
+  const tableNames = (inv || [])
+    .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
+    .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
+    .filter(Boolean);
 
-const ENTERPRISE_LAKEHOUSE_TEMPLATE = `Migrate transactional database to Databricks DEV. Bronze: ingest all verified source tables with raw type fidelity and schema evolution. Silver: implement deduplication, canonical column naming, UTC timestamp conversions, and referential integrity views across relational entities; generate automated idempotent MERGE upsert workflows. Gold: generate dimension tables (Type-2 SCD where applicable) and fact analytics tables with daily/monthly rollup views.`;
+  const tablesStr = tableNames.length > 0
+    ? tableNames.slice(0, 15).join(", ")
+    : "CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS and RETURNS";
 
-const FINANCE_RECON_TEMPLATE = `Migrate core database to Databricks DEV. Bronze: ingest all transactional and accounting entities. Silver: cleanse null values, cast currency fields to DECIMAL(18,2), filter out canceled records, and build financial reconciliation view matching total debits against credits. Gold: build executive summary mart with profit margins, revenue growth rates, and customer lifetime value metrics.`;
+  const cleanViews = tableNames.length > 0
+    ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
+    : "Categories, Customers, Products, Orders, OrderItems, Payments, Shipments and Returns";
+
+  const srcName = src?.[0]?.profile_name || "database";
+
+  return `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}, each containing 100,000 source rows. Silver: create cleaned views for ${cleanViews}; calculate gross and discounted net order-item amounts; create vw_OrderPaymentReconciliation to reconcile order totals against successful payments while excluding failed and pending payments from paid totals; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, fact_shipments, and monthly executive KPI aggregation marts.`;
+}
 
 export default function App() {
   const [ready, setReady] = useState(!!localStorage.getItem("mf_token"));
@@ -1022,7 +1035,7 @@ export default function App() {
   const [autoAuthText, setAutoAuthText] = useState("");
   const [autoRunning, setAutoRunning] = useState(false);
   const [promptNativeText, setPromptNativeText] = useState(
-    "Migrate MigrationDemo from SQL Server to Databricks DEV. Bronze: ingest Customers, CustomerSales, OrderItems, Orders, OrderSummary and Products. Silver: create cleaned views for Customers, Orders, OrderItems and Products; create vw_CustomerSales for completed orders; create fn_CalculateOrderAmount(p_order_id INT); create idempotent MERGE loaders usp_LoadCustomerSales and usp_LoadOrderSummary. Gold: create dim_customer, dim_product, fact_sales, vw_customer_sales_summary and vw_product_sales_summary. Validate every identifier and wait for plan approval before generation.",
+    buildMasterMedallionTemplate()
   );
   const [promptSourceId, setPromptSourceId] = useState<string>("");
   const [promptSpec, setPromptSpec] = useState<any>(null);
@@ -1158,6 +1171,12 @@ export default function App() {
         setMappings(m as Mapping[]);
         setArtifacts(a as Artifact[]);
         setIssues(is as any[]);
+        if (!promptNativeText || promptNativeText.includes("MigrationDemo")) {
+          const tpl = buildMasterMedallionTemplate(i as Inv[], s as Source[]);
+          setPromptNativeText(tpl);
+          setMasterPrompt(tpl);
+          setPromptText(tpl);
+        }
         setDeps(dp as any[]);
         setReviews(rv as any[]);
       }
@@ -3540,82 +3559,48 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Prompt Box & Template Selector Toolbar */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10, padding: "8px 12px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                      <Sparkles size={14} color="#2563eb" /> Prompt Templates:
+                {/* Master Medallion Prompt Template Header */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 8, padding: "8px 14px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <Sparkles size={15} color="#2563eb" /> Default Master Template
                     </span>
-                    <select
-                      style={{ padding: "5px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1", background: "#ffffff", color: "#0f172a", fontWeight: 500, cursor: "pointer" }}
-                      defaultValue=""
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (!val) return;
-                        let text = "";
-                        if (val === "discovered") {
-                          const tableNames = (inventory || [])
-                            .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
-                            .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
-                            .filter(Boolean);
-                          const tablesStr = tableNames.length > 0
-                            ? tableNames.slice(0, 15).join(", ")
-                            : "CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS, RETURNS";
-                          const cleanViews = tableNames.length > 0
-                            ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
-                            : "Categories, Customers, Products, Orders, OrderItems, Payments";
-                          const srcName = sources?.[0]?.profile_name || "Oracle / SQL Server source";
-                          text = `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}, each containing 100,000 source rows. Silver: create cleaned views for ${cleanViews}; calculate gross and net transaction totals; reconcile order totals against successful payments while excluding failed and pending payments; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, and monthly KPI aggregation marts.`;
-                        } else if (val === "retail") {
-                          text = RETAIL_MEDALLION_TEMPLATE;
-                        } else if (val === "enterprise") {
-                          text = ENTERPRISE_LAKEHOUSE_TEMPLATE;
-                        } else if (val === "finance") {
-                          text = FINANCE_RECON_TEMPLATE;
-                        } else if (val === "clear") {
-                          text = "";
-                        }
-                        setPromptNativeText(text);
-                        setMasterPrompt(text);
-                        setPromptText(text);
-                        setPromptAnalysis(null);
-                        e.target.value = "";
-                      }}
-                    >
-                      <option value="" disabled>Load a Pre-configured Template...</option>
-                      <option value="discovered">✨ Dynamic Discovered Schema Template ({inventory?.length || 0} objects)</option>
-                      <option value="retail">🛒 Retail Medallion (E-Commerce, Payments, MERGE Loader)</option>
-                      <option value="enterprise">🏢 Enterprise Lakehouse (Deduplication, UTC timestamps, Gold Marts)</option>
-                      <option value="finance">💳 Financial Reconciliation & Analytics Mart</option>
-                      <option value="clear">🗑️ Clear / Reset Prompt</option>
-                    </select>
+                    <span style={{ fontSize: 11, color: "#059669", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "2px 8px", borderRadius: 12, fontWeight: 600 }}>
+                      Optimal 4-Section Format
+                    </span>
+                    <span style={{ fontSize: 11, color: "#64748b" }}>
+                      (User template: customize table names & rules below for your data)
+                    </span>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <button
                       type="button"
                       className="btn-secondary"
-                      style={{ padding: "4px 10px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, height: 28 }}
+                      style={{ padding: "4px 12px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 5, height: 28, color: "#2563eb", borderColor: "#93c5fd" }}
                       onClick={() => {
-                        const tableNames = (inventory || [])
-                          .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
-                          .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
-                          .filter(Boolean);
-                        const tablesStr = tableNames.length > 0
-                          ? tableNames.slice(0, 15).join(", ")
-                          : "CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS, RETURNS";
-                        const cleanViews = tableNames.length > 0
-                          ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
-                          : "Categories, Customers, Products, Orders, OrderItems, Payments";
-                        const srcName = sources?.[0]?.profile_name || "OracleRetailTest Oracle";
-                        const text = `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}, each containing 100,000 source rows. Silver: create cleaned views for ${cleanViews}; calculate gross and net transaction totals; reconcile order totals against successful payments while excluding failed and pending payments; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, and monthly KPI aggregation marts.`;
+                        const text = buildMasterMedallionTemplate(inventory, sources);
                         setPromptNativeText(text);
                         setMasterPrompt(text);
                         setPromptText(text);
                         setPromptAnalysis(null);
                       }}
-                      title="Insert prompt template generated from your discovered tables"
+                      title="Reset prompt to the single master template with your discovered tables"
                     >
-                      <Sparkles size={12} color="#2563eb" /> Auto-Fill Discovered Schema
+                      <RotateCcw size={12} /> Reset to Master Template
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ padding: "4px 10px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, height: 28, color: "#64748b" }}
+                      onClick={() => {
+                        setPromptNativeText("");
+                        setMasterPrompt("");
+                        setPromptText("");
+                        setPromptAnalysis(null);
+                      }}
+                      title="Clear prompt text"
+                    >
+                      <Trash2 size={12} /> Clear
                     </button>
                   </div>
                 </div>
@@ -3633,8 +3618,11 @@ export default function App() {
                     }}
                     rows={4}
                     disabled={busy || masterRunning || promptRunning}
-                    placeholder="Describe the exact Bronze, Silver, and Gold artifacts required or migrate MigrationDemo and HotelOperationsDemo from SQL Server through Bronze raw ingest, Silver curated tables with foreign-key constraints, and Gold aggregation marts on Databricks."
+                    placeholder="Describe the exact Bronze, Silver, and Gold artifacts required for your migration."
                   />
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, fontSize: 11, color: "#64748b" }}>
+                    <span>💡 <strong>Optimal Format:</strong> 4 concise sections: <code>Migrate database</code> ➔ <code>Bronze: ingest ...</code> ➔ <code>Silver: cleaned views, calculations & usp_Merge...</code> ➔ <code>Gold: dim_*, fact_* & marts</code>.</span>
+                  </div>
                 </div>
 
                 {promptAnalysis && (
