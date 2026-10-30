@@ -2037,29 +2037,44 @@ def refine_prompt_plan(db: Session, project_id: str, specification_id: str, refi
         remove = re.fullmatch(r'(?:delete|remove|drop)\s+(.+?)(?:\s+with\s+.+)?', command, re.I)
         add = re.fullmatch(r'add\s+(.+?)\s+(?:to|in)\s+(bronze|silver|gold)(?:\s+with\s+(.+))?', command, re.I)
         if move or rename or remove:
-            raw_name = (move or rename or remove).group(1).strip()
-            name = re.sub(r'^(?:artifact|view|table|function|procedure)\s+', '', raw_name, flags=re.I)
-            name = re.sub(r'\s+(?:from|in)\s+(?:bronze|silver|gold)$', '', name, flags=re.I)
-            name = name.strip("'\"` ")
-            target_slug = _snake(name)
+            raw_target = (move or rename or remove).group(1).strip()
+            # Allow comma-separated items for delete (e.g. "Delete Products, Orders")
+            sub_items = [s.strip() for s in raw_target.split(',') if s.strip()] if remove and ',' in raw_target else [raw_target]
+            for raw_name in sub_items:
+                layer_filter = None
+                layer_m = re.search(r'\s+(?:from|in)\s+(bronze|silver|gold)$', raw_name, flags=re.I)
+                if layer_m:
+                    layer_filter = layer_m.group(1).upper()
+                name = re.sub(r'^(?:artifact|view|table|function|procedure)\s+', '', raw_name, flags=re.I)
+                name = re.sub(r'\s+(?:from|in)\s+(?:bronze|silver|gold)$', '', name, flags=re.I)
+                name = name.strip("'\"` ")
+                target_slug = _snake(name)
 
-            matches = [i for i in requests if _snake(i['name']) == target_slug or _stem(i['name']) == target_slug]
-            if not matches:
-                matches = [i for i in requests if target_slug in _snake(i['name']) or _snake(i['name']) in target_slug]
+                matches = [i for i in requests if _snake(i['name']) == target_slug or _stem(i['name']) == target_slug]
+                if not matches:
+                    matches = [i for i in requests if target_slug in _snake(i['name']) or _snake(i['name']) in target_slug]
 
-            if len(matches) == 0:
-                raise ValueError(f'Artifact "{raw_name}" not found in current plan')
-            if len(matches) > 1:
-                exact = [i for i in matches if _snake(i['name']) == target_slug]
-                if len(exact) == 1:
-                    matches = exact
+                if layer_filter:
+                    matches = [i for i in matches if i.get('layer', '').upper() == layer_filter]
+
+                if len(matches) == 0:
+                    layer_info = f" in {layer_filter}" if layer_filter else ""
+                    raise ValueError(f'Artifact "{name}"{layer_info} not found in current plan')
+
+                if remove:
+                    exact = [i for i in matches if _snake(i['name']) == target_slug]
+                    targets_to_delete = exact if exact else matches
+                    for target in targets_to_delete:
+                        _remove_plan_artifact(requests, target['request_id'])
                 else:
-                    raise ValueError(f'Ambiguous artifact "{raw_name}"; matches multiple: {", ".join(i["name"] for i in matches)}')
+                    if len(matches) > 1:
+                        exact = [i for i in matches if _snake(i['name']) == target_slug]
+                        if len(exact) == 1:
+                            matches = exact
+                        else:
+                            raise ValueError(f'Ambiguous artifact "{raw_name}"; matches multiple: {", ".join(i["name"] for i in matches)}')
+                    _patch_plan_artifact(requests, matches[0]['request_id'], {'layer': move.group(2)} if move else {'name': rename.group(2)})
 
-            if remove:
-                _remove_plan_artifact(requests, matches[0]['request_id'])
-            else:
-                _patch_plan_artifact(requests, matches[0]['request_id'], {'layer': move.group(2)} if move else {'name': rename.group(2)})
         elif add:
             name = add.group(1).strip()
             clean = re.fullmatch(r'(.+?)\s+(?:clean\s+)?view', name, re.I)
