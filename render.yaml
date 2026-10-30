@@ -14,7 +14,7 @@ services:
       - key: ENVIRONMENT
         value: PROD
       - key: DATABASE_URL
-        value: sqlite:////app/migration_factory.db
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: BOOTSTRAP_ADMIN_USERNAME
