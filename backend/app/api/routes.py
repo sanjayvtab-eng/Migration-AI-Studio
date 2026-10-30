@@ -125,6 +125,9 @@ class DeployDevIn(BaseModel):
     load_mode: str|None=None
     replace_existing_data: bool=False
 
+class DatabricksTokenIn(BaseModel):
+    token: str
+
 class DatabricksConfigurationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workspace_host: str
@@ -626,6 +629,22 @@ def project_databricks_configuration_save(project_id:str,data:DatabricksConfigur
     actor=_admin_actor(user)
     try:
         row=environment_service.save_configuration(db,project_id,actor=actor,**data.model_dump())
+        return environment_service.configuration_view(row)
+    except Exception as e: _environment_error(e)
+
+@router.post("/projects/{project_id}/databricks/token")
+def project_databricks_token_register(project_id: str, data: DatabricksTokenIn, db: Session = Depends(get_db), user = Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        row = environment_service.register_token(db, project_id, data.token, actor)
+        return environment_service.configuration_view(row)
+    except Exception as e: _environment_error(e)
+
+@router.delete("/projects/{project_id}/databricks/token")
+def project_databricks_token_clear(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        row = environment_service.clear_token(db, project_id, actor)
         return environment_service.configuration_view(row)
     except Exception as e: _environment_error(e)
 

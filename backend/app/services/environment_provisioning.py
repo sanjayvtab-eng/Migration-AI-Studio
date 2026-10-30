@@ -100,6 +100,43 @@ def save_configuration(
     return row
 
 
+def register_token(db: Session, project_id: str, token: str, actor: str) -> MigrationDatabricksConfiguration:
+    _project(db, project_id)
+    t = (token or "").strip()
+    if not t:
+        raise ValueError("Databricks Personal Access Token cannot be empty")
+    row = db.scalar(select(MigrationDatabricksConfiguration).where(
+        MigrationDatabricksConfiguration.project_id == project_id
+    ))
+    if not row:
+        row = MigrationDatabricksConfiguration(id=uid("DBC"), project_id=project_id, workspace_host="", http_path="")
+        db.add(row)
+    from app.services.source_adapters import encrypt_password
+    row.token_ciphertext = encrypt_password(t)
+    row.status = "NOT_TESTED"
+    row.last_tested_at = None
+    _audit(db, project_id, "DATABRICKS_DIRECT_TOKEN_REGISTERED", actor, {"configured": True})
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def clear_token(db: Session, project_id: str, actor: str) -> MigrationDatabricksConfiguration:
+    _project(db, project_id)
+    row = db.scalar(select(MigrationDatabricksConfiguration).where(
+        MigrationDatabricksConfiguration.project_id == project_id
+    ))
+    if not row:
+        raise ValueError("Configuration not found")
+    row.token_ciphertext = None
+    row.status = "NOT_TESTED"
+    row.last_tested_at = None
+    _audit(db, project_id, "DATABRICKS_DIRECT_TOKEN_CLEARED", actor, {"configured": False})
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def get_configuration(db: Session, project_id: str) -> MigrationDatabricksConfiguration | None:
     _project(db,project_id)
     return db.scalar(select(MigrationDatabricksConfiguration).where(
@@ -109,17 +146,27 @@ def get_configuration(db: Session, project_id: str) -> MigrationDatabricksConfig
 
 def configuration_view(row: MigrationDatabricksConfiguration | None) -> dict:
     if not row:
-        return {"configured":False,"feature_enabled":feature_enabled(),"token_configured":False}
+        return {"configured":False,"feature_enabled":feature_enabled(),"token_configured":False,"has_direct_token":False}
+    has_token = bool(_token(row))
     return {
         "configured":True,"feature_enabled":feature_enabled(),"id":row.id,
         "workspace_host":row.workspace_host,"http_path":row.http_path,
-        "token_env_key":row.token_env_key,"token_configured":bool(_token(row)),
+        "token_env_key":row.token_env_key,"token_configured":has_token,
+        "has_direct_token":bool(row.token_ciphertext),
         "catalog_prefix":row.catalog_prefix,"status":row.status,
         "last_tested_at":row.last_tested_at,
     }
 
 
 def _token(row: MigrationDatabricksConfiguration) -> str | None:
+    if row.token_ciphertext:
+        from app.services.source_adapters import decrypt_password
+        try:
+            val = decrypt_password(row.token_ciphertext)
+            if val:
+                return val
+        except Exception:
+            pass
     if row.token_env_key == "DATABRICKS_TOKEN":
         return get_settings().databricks_token or os.getenv("DATABRICKS_TOKEN")
     return os.getenv(row.token_env_key)

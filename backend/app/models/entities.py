@@ -22,6 +22,7 @@ class MigrationDatabricksConfiguration(Base, ProjectScoped):
     workspace_host: Mapped[str] = mapped_column(String(512))
     http_path: Mapped[str] = mapped_column(String(512))
     token_env_key: Mapped[str] = mapped_column(String(255), default="DATABRICKS_TOKEN")
+    token_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     catalog_prefix: Mapped[str] = mapped_column(String(255), default="migration")
     status: Mapped[str] = mapped_column(String(32), default="NOT_TESTED")
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

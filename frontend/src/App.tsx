@@ -836,6 +836,13 @@ function getUserFromToken(): { username: string; role: string; initials: string 
   }
 }
 
+
+const RETAIL_MEDALLION_TEMPLATE = `Migrate the OracleRetailTest Oracle database to Databricks DEV. Bronze: ingest CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS and RETURNS, each containing 100,000 source rows. Silver: create cleaned views for Categories, Customers, Products, Orders, OrderItems, Payments, Shipments and Returns; calculate gross and discounted net order-item amounts; create vw_OrderPaymentReconciliation to reconcile order totals against successful payments while excluding failed and pending payments from paid totals; create an idempotent MERGE loader usp_MergeOrderPaymentSummary keyed by ORDER_ID. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, fact_shipments, and monthly executive KPI aggregation marts.`;
+
+const ENTERPRISE_LAKEHOUSE_TEMPLATE = `Migrate transactional database to Databricks DEV. Bronze: ingest all verified source tables with raw type fidelity and schema evolution. Silver: implement deduplication, canonical column naming, UTC timestamp conversions, and referential integrity views across relational entities; generate automated idempotent MERGE upsert workflows. Gold: generate dimension tables (Type-2 SCD where applicable) and fact analytics tables with daily/monthly rollup views.`;
+
+const FINANCE_RECON_TEMPLATE = `Migrate core database to Databricks DEV. Bronze: ingest all transactional and accounting entities. Silver: cleanse null values, cast currency fields to DECIMAL(18,2), filter out canceled records, and build financial reconciliation view matching total debits against credits. Gold: build executive summary mart with profit margins, revenue growth rates, and customer lifetime value metrics.`;
+
 export default function App() {
   const [ready, setReady] = useState(!!localStorage.getItem("mf_token"));
   const currentUserInfo = useMemo(() => getUserFromToken(), [ready]);
@@ -914,7 +921,10 @@ export default function App() {
       http_path: "",
       token_env_key: "DATABRICKS_TOKEN",
       catalog_prefix: "migration",
-    });
+    }),
+    [directDatabricksToken, setDirectDatabricksToken] = useState(""),
+    [showDirectDatabricksToken, setShowDirectDatabricksToken] = useState(false),
+    [artifactSearchQuery, setArtifactSearchQuery] = useState<Record<string, string>>({});
   const [bronzeLoadMode, setBronzeLoadMode] = useState("FULL_LOAD"),
     [bronzeBatchSize, setBronzeBatchSize] = useState(1000),
     [bronzeMaxRows, setBronzeMaxRows] = useState("");
@@ -3530,6 +3540,86 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Prompt Box & Template Selector Toolbar */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10, padding: "8px 12px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      <Sparkles size={14} color="#2563eb" /> Prompt Templates:
+                    </span>
+                    <select
+                      style={{ padding: "5px 10px", fontSize: 12, borderRadius: 6, border: "1px solid #cbd5e1", background: "#ffffff", color: "#0f172a", fontWeight: 500, cursor: "pointer" }}
+                      defaultValue=""
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (!val) return;
+                        let text = "";
+                        if (val === "discovered") {
+                          const tableNames = (inventory || [])
+                            .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
+                            .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
+                            .filter(Boolean);
+                          const tablesStr = tableNames.length > 0
+                            ? tableNames.slice(0, 15).join(", ")
+                            : "CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS, RETURNS";
+                          const cleanViews = tableNames.length > 0
+                            ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
+                            : "Categories, Customers, Products, Orders, OrderItems, Payments";
+                          const srcName = sources?.[0]?.profile_name || "Oracle / SQL Server source";
+                          text = `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}, each containing 100,000 source rows. Silver: create cleaned views for ${cleanViews}; calculate gross and net transaction totals; reconcile order totals against successful payments while excluding failed and pending payments; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, and monthly KPI aggregation marts.`;
+                        } else if (val === "retail") {
+                          text = RETAIL_MEDALLION_TEMPLATE;
+                        } else if (val === "enterprise") {
+                          text = ENTERPRISE_LAKEHOUSE_TEMPLATE;
+                        } else if (val === "finance") {
+                          text = FINANCE_RECON_TEMPLATE;
+                        } else if (val === "clear") {
+                          text = "";
+                        }
+                        setPromptNativeText(text);
+                        setMasterPrompt(text);
+                        setPromptText(text);
+                        setPromptAnalysis(null);
+                        e.target.value = "";
+                      }}
+                    >
+                      <option value="" disabled>Load a Pre-configured Template...</option>
+                      <option value="discovered">✨ Dynamic Discovered Schema Template ({inventory?.length || 0} objects)</option>
+                      <option value="retail">🛒 Retail Medallion (E-Commerce, Payments, MERGE Loader)</option>
+                      <option value="enterprise">🏢 Enterprise Lakehouse (Deduplication, UTC timestamps, Gold Marts)</option>
+                      <option value="finance">💳 Financial Reconciliation & Analytics Mart</option>
+                      <option value="clear">🗑️ Clear / Reset Prompt</option>
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ padding: "4px 10px", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, height: 28 }}
+                      onClick={() => {
+                        const tableNames = (inventory || [])
+                          .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
+                          .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
+                          .filter(Boolean);
+                        const tablesStr = tableNames.length > 0
+                          ? tableNames.slice(0, 15).join(", ")
+                          : "CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS, RETURNS";
+                        const cleanViews = tableNames.length > 0
+                          ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
+                          : "Categories, Customers, Products, Orders, OrderItems, Payments";
+                        const srcName = sources?.[0]?.profile_name || "OracleRetailTest Oracle";
+                        const text = `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}, each containing 100,000 source rows. Silver: create cleaned views for ${cleanViews}; calculate gross and net transaction totals; reconcile order totals against successful payments while excluding failed and pending payments; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, and monthly KPI aggregation marts.`;
+                        setPromptNativeText(text);
+                        setMasterPrompt(text);
+                        setPromptText(text);
+                        setPromptAnalysis(null);
+                      }}
+                      title="Insert prompt template generated from your discovered tables"
+                    >
+                      <Sparkles size={12} color="#2563eb" /> Auto-Fill Discovered Schema
+                    </button>
+                  </div>
+                </div>
+
                 {/* Prompt Box */}
                 <div>
                   <textarea
@@ -3760,8 +3850,19 @@ export default function App() {
                           assumptions: ["Preserves SQL Server data fidelity"],
                         })))
                       : [];
-                    const items = promptSpecPlan ? specItems : fallbackItems;
-                    const count = items.length;
+                    const allTierItems = promptSpecPlan ? specItems : fallbackItems;
+                    const count = allTierItems.length;
+                    const layerQuery = (artifactSearchQuery[layer] || "").trim().toLowerCase();
+                    const items = layerQuery
+                      ? allTierItems.filter((item: any) => {
+                          const name = (item.name || item.source_fqn || "").toLowerCase();
+                          const target = (item.target_fqn || "").toLowerCase();
+                          const purpose = (item.purpose || "").toLowerCase();
+                          const type = (item.type || "").toLowerCase();
+                          const refs = (item.source_refs || []).join(" ").toLowerCase();
+                          return name.includes(layerQuery) || target.includes(layerQuery) || purpose.includes(layerQuery) || type.includes(layerQuery) || refs.includes(layerQuery);
+                        })
+                      : allTierItems;
                     const tierClass = layer.toLowerCase();
                     const icon = layer === "GOLD" ? "🥇" : layer === "SILVER" ? "🥈" : "🥉";
 
@@ -3769,11 +3870,55 @@ export default function App() {
                       <div className="wf-tier-section" key={layer}>
                         <div className={`wf-tier-head ${tierClass}`}>
                           <span className={`wf-tier-tag ${tierClass}`}>
-                            <span>{icon}</span> {layer} Medallion Layer ({count} artifacts)
+                            <span>{icon}</span> {layer} Medallion Layer ({layerQuery ? `${items.length} of ${count}` : count} artifacts)
                           </span>
                           <span style={{ fontSize: 11, fontWeight: 600, color: "#64748b" }}>
                             {layer === "BRONZE" ? "Raw Delta Lake Tables" : layer === "SILVER" ? "Cleaned & Conformed Entities" : "Business Metric Marts"}
                           </span>
+
+                          {/* Artifact Search Bar */}
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", marginRight: 8 }}>
+                            <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                              <Search size={13} style={{ position: "absolute", left: 8, color: "#94a3b8", pointerEvents: "none" }} />
+                              <input
+                                type="text"
+                                placeholder={`Search ${layer.toLowerCase()} artifacts...`}
+                                value={artifactSearchQuery[layer] || ""}
+                                onChange={(e) => setArtifactSearchQuery({ ...artifactSearchQuery, [layer]: e.target.value })}
+                                style={{
+                                  padding: "5px 22px 5px 26px",
+                                  fontSize: "12px",
+                                  borderRadius: "6px",
+                                  border: "1px solid #cbd5e1",
+                                  background: "#ffffff",
+                                  color: "#0f172a",
+                                  width: 175,
+                                  outline: "none",
+                                }}
+                              />
+                              {artifactSearchQuery[layer] && (
+                                <button
+                                  type="button"
+                                  onClick={() => setArtifactSearchQuery({ ...artifactSearchQuery, [layer]: "" })}
+                                  style={{
+                                    position: "absolute",
+                                    right: 6,
+                                    background: "none",
+                                    border: "none",
+                                    cursor: "pointer",
+                                    padding: 0,
+                                    color: "#94a3b8",
+                                    fontSize: 12,
+                                    lineHeight: 1,
+                                  }}
+                                  title="Clear search"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
                           <button className="btn-secondary" disabled={planEditingBlocked} onClick={() => openArtifactEditor(layer)} title="Answer open clarifications before editing">
                             <Plus size={14} /> Add Artifact
                           </button>
@@ -3792,6 +3937,13 @@ export default function App() {
                                 </tr>
                               </thead>
                               <tbody>
+                                {items.length === 0 && count > 0 && (
+                                  <tr>
+                                    <td colSpan={6} style={{ textAlign: "center", padding: "18px", color: "#64748b", fontStyle: "italic" }}>
+                                      No {layer.toLowerCase()} artifacts match "{artifactSearchQuery[layer]}"
+                                    </td>
+                                  </tr>
+                                )}
                                 {items.map((item: any, idx: number) => (
                                   <tr key={item.request_id || idx}>
                                     <td>
@@ -10374,13 +10526,54 @@ export default function App() {
                   </div>
 
                   <div className="env-field-group">
-                    <label className="env-field-label">Token Secret Reference *</label>
-                    <div className="env-input-wrapper">
+                    <label className="env-field-label">
+                      Databricks Personal Access Token (PAT)
+                      {environmentConfig?.has_direct_token && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: "#059669", fontWeight: 700 }}>
+                          ✓ Direct Token Active (Encrypted)
+                        </span>
+                      )}
+                    </label>
+                    <div className="env-input-wrapper" style={{ position: "relative" }}>
                       <Lock size={15} className="env-input-icon" />
                       <input
+                        type={showDirectDatabricksToken ? "text" : "password"}
                         className="env-text-input has-icon"
+                        value={directDatabricksToken}
+                        placeholder={environmentConfig?.has_direct_token ? "•••••••••••••••• (Leave blank to keep current token)" : "dapi... (Enter your personal Databricks token)"}
+                        onChange={(e) => setDirectDatabricksToken(e.target.value)}
+                        style={{ paddingRight: 36 }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowDirectDatabricksToken(!showDirectDatabricksToken)}
+                        style={{
+                          position: "absolute",
+                          right: 10,
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          color: "#64748b",
+                          display: "flex",
+                          alignItems: "center",
+                          padding: 0,
+                        }}
+                        title={showDirectDatabricksToken ? "Hide token" : "Show token"}
+                      >
+                        {showDirectDatabricksToken ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="env-field-group">
+                    <label className="env-field-label">Token Secret Reference (Env Var Fallback)</label>
+                    <div className="env-input-wrapper">
+                      <input
+                        className="env-text-input"
                         value={environmentForm.token_env_key}
-                        placeholder="CLIENT_DATABRICKS_TOKEN"
+                        placeholder="DATABRICKS_TOKEN"
                         onChange={(e) =>
                           setEnvironmentForm({
                             ...environmentForm,
@@ -10415,16 +10608,44 @@ export default function App() {
                     className="btn-primary-blue"
                     disabled={!pid || busy}
                     onClick={() =>
-                      action(() =>
-                        api(`/projects/${pid}/databricks/configuration`, {
+                      action(async () => {
+                        await api(`/projects/${pid}/databricks/configuration`, {
                           method: "PUT",
                           body: JSON.stringify(environmentForm),
-                        }),
-                      )
+                        });
+                        if (directDatabricksToken.trim()) {
+                          await api(`/projects/${pid}/databricks/token`, {
+                            method: "POST",
+                            body: JSON.stringify({ token: directDatabricksToken.trim() }),
+                          });
+                          setDirectDatabricksToken("");
+                        }
+                        const updated = await api(`/projects/${pid}/databricks/configuration`);
+                        setEnvironmentConfig(updated);
+                        setMsg("Databricks configuration and token saved successfully.");
+                      })
                     }
                   >
                     <ShieldCheck size={16} /> Save Configuration
                   </button>
+                  {environmentConfig?.has_direct_token && (
+                    <button
+                      className="btn-secondary"
+                      style={{ color: "#dc2626", borderColor: "#fca5a5" }}
+                      disabled={!pid || busy}
+                      onClick={() =>
+                        action(async () => {
+                          await api(`/projects/${pid}/databricks/token`, { method: "DELETE" });
+                          const updated = await api(`/projects/${pid}/databricks/configuration`);
+                          setEnvironmentConfig(updated);
+                          setMsg("Direct Databricks token cleared.");
+                        })
+                      }
+                      title="Clear direct token and fallback to environment variable"
+                    >
+                      <Trash2 size={14} /> Clear Direct Token
+                    </button>
+                  )}
                   <button
                     className="btn-secondary"
                     disabled={!pid || busy || !environmentConfig?.configured}
@@ -10445,11 +10666,7 @@ export default function App() {
                   <div className="env-security-strip">
                     <div className="env-security-item">
                       <Lock size={13} color="#2563eb" />
-                      <span>Secret Reference:</span>
-                      <code>{environmentConfig.token_env_key}</code>
-                    </div>
-                    <div className="env-security-item">
-                      <span>Secret Configured:</span>
+                      <span>Token Mode:</span>
                       <span
                         className={`status-pill ${
                           environmentConfig.token_configured ? "active" : "blocked"
@@ -10457,7 +10674,11 @@ export default function App() {
                         style={{ padding: "2px 8px", fontSize: "10px" }}
                       >
                         <span className="status-dot" />
-                        {environmentConfig.token_configured ? "Configured (Yes)" : "Missing (No)"}
+                        {environmentConfig.has_direct_token
+                          ? "Direct Client Token (Active)"
+                          : environmentConfig.token_configured
+                          ? `Env Var (${environmentConfig.token_env_key})`
+                          : "Missing (No Token)"}
                       </span>
                     </div>
                     <div className="env-security-item">

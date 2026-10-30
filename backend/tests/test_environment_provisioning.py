@@ -131,3 +131,21 @@ def test_connector_error_redacts_project_token(client,auth_headers,monkeypatch):
     assert response.status_code==400
     assert secret not in response.text
     assert "[REDACTED]" in response.text
+
+
+def test_direct_databricks_token_registration(client, auth_headers):
+    project_id = _project(client, auth_headers)
+    client.put(f"/api/projects/{project_id}/databricks/configuration",
+               json=_configuration(), headers=auth_headers)
+    resp = client.post(f"/api/projects/{project_id}/databricks/token",
+                       json={"token": "dapi_secret_test_token_12345"}, headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["token_configured"] is True
+    assert data["has_direct_token"] is True
+    assert "dapi_secret_test_token_12345" not in resp.text
+
+    resp_clear = client.delete(f"/api/projects/{project_id}/databricks/token", headers=auth_headers)
+    assert resp_clear.status_code == 200
+    data_clear = resp_clear.json()
+    assert data_clear["has_direct_token"] is False
