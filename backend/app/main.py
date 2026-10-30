@@ -45,6 +45,8 @@ app.add_middleware(CORSMiddleware,allow_origins=s.origins,allow_credentials=True
 
 class SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
         response=await call_next(request)
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["X-Frame-Options"]="DENY"
@@ -58,7 +60,8 @@ app.add_middleware(SecurityHeaders)
 app.include_router(router)
 app.include_router(connector_router)
 @app.get("/health", tags=["System"])
-def root_health(): return {"status":"ok","service":"migration-factory"}
+async def root_health():
+    return {"status": "ok", "service": "migration-factory"}
 
 frontend_dir = Path("/app/frontend_dist")
 if frontend_dir.exists():
