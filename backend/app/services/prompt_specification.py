@@ -218,8 +218,10 @@ def _resolve_clean_view_name(table_map: dict[str, Any], aliases: list[str], fall
     for alias in aliases:
         norm = alias.lower().replace("_", "")
         for key, tbl in table_map.items():
-            if key.replace("_", "") == norm:
-                return f"vw_{_snake(tbl['name'])}_clean"
+            k_base = key.split(".")[-1].replace("_", "")
+            if key.replace("_", "") == norm or k_base == norm:
+                tbl_base = tbl["name"].split(".")[-1]
+                return f"vw_{_snake(tbl_base)}_clean"
     return fallback
 
 
@@ -227,16 +229,78 @@ def _resolve_col_name(table_map: dict[str, Any], table_name: str, aliases: list[
     tbl = None
     t_norm = table_name.lower().replace("_", "")
     for k, v in table_map.items():
-        if k.replace("_", "") == t_norm:
+        k_base = k.split(".")[-1].replace("_", "")
+        if k.replace("_", "") == t_norm or k_base == t_norm:
             tbl = v
             break
     if not tbl:
+        for k, v in table_map.items():
+            k_base = k.split(".")[-1].replace("_", "")
+            if t_norm in k_base or k_base in t_norm:
+                tbl = v
+                break
+    if not tbl:
         return fallback
+
+    cols = tbl.get("columns", [])
+    if not cols:
+        return fallback
+
+    # 1. Exact match on raw column name or target_name against aliases
     for alias in aliases:
         norm = alias.lower().replace("_", "")
-        for col in tbl.get("columns", []):
-            if col["name"].lower().replace("_", "") == norm or col["target_name"].lower().replace("_", "") == norm:
+        for col in cols:
+            c_name_norm = col.get("name", "").lower().replace("_", "")
+            c_tgt_norm = col.get("target_name", "").lower().replace("_", "")
+            if c_name_norm == norm or c_tgt_norm == norm:
                 return col["target_name"]
+
+    # 2. Canonical synonym expansion
+    def _canon(s: str) -> str:
+        s = s.lower().replace("_", "")
+        synonyms = [
+            ("percentage", "pct"),
+            ("percent", "pct"),
+            ("quantity", "qty"),
+            ("amount", "amt"),
+            ("number", "num"),
+            ("identifier", "id"),
+            ("description", "desc"),
+            ("category", "cat"),
+            ("status", "stat"),
+            ("discount", "disc"),
+            ("product", "prod"),
+            ("customer", "cust"),
+            ("order", "ord"),
+            ("unitprice", "price"),
+        ]
+        for full, abbrev in synonyms:
+            s = s.replace(full, abbrev)
+        return s
+
+    for alias in aliases:
+        a_canon = _canon(alias)
+        for col in cols:
+            c_name_canon = _canon(col.get("name", ""))
+            c_tgt_canon = _canon(col.get("target_name", ""))
+            if c_name_canon == a_canon or c_tgt_canon == a_canon:
+                return col["target_name"]
+
+    # 3. Substring / keyword match (e.g. "discount" in "discount_pct")
+    for alias in aliases:
+        a_low = alias.lower().replace("_", "")
+        for col in cols:
+            c_tgt_low = col.get("target_name", "").lower().replace("_", "")
+            c_name_low = col.get("name", "").lower().replace("_", "")
+            if (len(a_low) >= 4 and (a_low in c_tgt_low or a_low in c_name_low)) or (len(c_tgt_low) >= 4 and c_tgt_low in a_low):
+                return col["target_name"]
+
+    # 4. Check if fallback exists in table
+    f_norm = fallback.lower().replace("_", "")
+    for col in cols:
+        if col.get("name", "").lower().replace("_", "") == f_norm or col.get("target_name", "").lower().replace("_", "") == f_norm:
+            return col["target_name"]
+
     return fallback
 
 
@@ -2242,7 +2306,8 @@ def _clean_view_sql(catalog: str, request: dict[str, Any], snapshot: dict[str, A
     base = re.sub(r'_clean$', '', base, flags=re.I).lower().replace('_', '')
     matched_tbl = None
     for k, tbl in table_map.items():
-        if k.replace('_', '') == base:
+        k_base = k.split('.')[-1].replace('_', '')
+        if k.replace('_', '') == base or k_base == base:
             matched_tbl = tbl
             break
     if not matched_tbl and request.get("source_refs"):
@@ -2304,8 +2369,10 @@ def _resolve_relation(
         base_tbl = re.sub(r'_clean$', '', base_tbl, flags=re.I)
         if table_map:
             for k, tbl in table_map.items():
-                if k.replace('_', '') == base_tbl.lower().replace('_', ''):
-                    return _fqn(catalog, 'bronze', _snake(tbl['name']))
+                k_base = k.split('.')[-1].replace('_', '')
+                if k.replace('_', '') == base_tbl.lower().replace('_', '') or k_base == base_tbl.lower().replace('_', ''):
+                    tbl_base = tbl['name'].split('.')[-1]
+                    return _fqn(catalog, 'bronze', _snake(tbl_base))
         return _fqn(catalog, 'bronze', _snake(base_tbl))
 
     cand_view = f'vw_{_snake(name_clean)}_clean'
@@ -2317,10 +2384,12 @@ def _resolve_relation(
 
     if table_map:
         for k, tbl in table_map.items():
-            if k.replace('_', '') == name_clean.lower().replace('_', ''):
-                return _fqn(catalog, 'bronze', _snake(tbl['name']))
+            k_base = k.split('.')[-1].replace('_', '')
+            if k.replace('_', '') == name_clean.lower().replace('_', '') or k_base == name_clean.lower().replace('_', ''):
+                tbl_base = tbl['name'].split('.')[-1]
+                return _fqn(catalog, 'bronze', _snake(tbl_base))
 
-    return _fqn(catalog, 'bronze', _snake(name_clean))
+    return _fqn(catalog, 'bronze', _snake(name_clean.split('.')[-1]))
 
 def _col_name_for_rel(rel_fqn: str, table_info: dict[str, Any], col_identifier: str) -> str:
     """Dynamically determine whether to use raw source column name or target standardized column name.
@@ -2767,7 +2836,7 @@ RETURN COALESCE({calc_expr}, CAST(0 AS {returns}));"""
     if has_qty and has_price and fallback_calc and any(k in req_name_l for k in ("amount", "sales", "net", "total", "discount", "cost", "revenue", "price")):
         qty_target = pri_cols_lower.get("quantity") or pri_cols_lower.get("qty")
         price_target = next(pri_cols_lower[p] for p in ("unit_price", "unitprice", "price", "rate") if p in pri_cols_lower)
-        discount_columns = [c['target_name'] for c in pri_tbl.get('columns', []) if c['target_name'].lower().replace('_', '') in {'discount', 'discountpercent', 'discountpercentage'}]
+        discount_columns = [c['target_name'] for c in pri_tbl.get('columns', []) if c['target_name'].lower().replace('_', '') in {'discount', 'discountpercent', 'discountpercentage', 'discountpct', 'disc'}]
         if len(discount_columns) > 1:
             raise ValueError('Ambiguous discount percentage; specify the calculation explicitly')
         disc_target = discount_columns[0] if discount_columns else None
@@ -3141,9 +3210,135 @@ def _generate_generic_fact_sql(
         else:
             raise ValueError(f"Fact artifact {request['name']} has no grounded source tables")
 
-    # If MigrationDemo domain, generate exact fact view
-    norm_refs = {s.lower().replace("_", "") for s in source_refs}
-    if norm_refs >= {"orders", "orderitems"}:
+    req_name_low = request.get("name", "").lower()
+    norm_refs = {s.lower().replace("_", "") for s in source_refs} | {s.split(".")[-1].lower().replace("_", "") for s in source_refs}
+
+    # Identify domain entity
+    is_payment = "payment" in req_name_low or any("payment" in r for r in norm_refs)
+    is_shipment = "shipment" in req_name_low or any("shipment" in r for r in norm_refs)
+    is_return = "return" in req_name_low or any("return" in r for r in norm_refs)
+    is_sales_explicit = any(k in req_name_low for k in ("sale", "order_item", "orderitem", "order_sale", "ordersale")) or req_name_low in ("fact_orders", "fact_sales", "fact_order_items")
+    is_non_sales = is_payment or is_shipment or is_return or any(k in req_name_low for k in ("inventory", "stock", "customer", "category", "product"))
+
+    # Dedicated fact model for Payments
+    if is_payment and not is_sales_explicit:
+        pay_view = _resolve_clean_view_name(table_map, ["payments", "payment"], "vw_payments_clean")
+        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        has_orders = any("order" in k for k in table_map)
+
+        p_pid = _resolve_col_name(table_map, "payments", ["payment_id", "paymentid", "id"], "payment_id")
+        p_oid = _resolve_col_name(table_map, "payments", ["order_id", "orderid"], "order_id")
+        p_date = _resolve_col_name(table_map, "payments", ["payment_date", "paymentdate", "date"], "payment_date")
+        p_method = _resolve_col_name(table_map, "payments", ["payment_method", "paymentmethod", "method"], "payment_method")
+        p_amount = _resolve_col_name(table_map, "payments", ["payment_amount", "paymentamount", "amount"], "payment_amount")
+        p_status = _resolve_col_name(table_map, "payments", ["payment_status", "paymentstatus", "status"], "payment_status")
+
+        if has_orders:
+            o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+            o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  p.{p_pid} AS payment_id,
+  p.{p_oid} AS order_id,
+  o.{o_cid} AS customer_id,
+  CAST(p.{p_date} AS DATE) AS payment_date,
+  p.{p_method} AS payment_method,
+  CAST(p.{p_amount} AS DECIMAL(18,2)) AS payment_amount,
+  p.{p_status} AS payment_status
+FROM {_resolve_relation(catalog, pay_view, clean_views, table_map)} p
+LEFT JOIN {_resolve_relation(catalog, ord_view, clean_views, table_map)} o ON p.{p_oid} = o.{o_oid};"""
+        else:
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  p.{p_pid} AS payment_id,
+  p.{p_oid} AS order_id,
+  CAST(p.{p_date} AS DATE) AS payment_date,
+  p.{p_method} AS payment_method,
+  CAST(p.{p_amount} AS DECIMAL(18,2)) AS payment_amount,
+  p.{p_status} AS payment_status
+FROM {_resolve_relation(catalog, pay_view, clean_views, table_map)} p;"""
+        return sql, "SEMANTIC_MODEL"
+
+    # Dedicated fact model for Shipments
+    elif is_shipment and not is_sales_explicit:
+        ship_view = _resolve_clean_view_name(table_map, ["shipments", "shipment"], "vw_shipments_clean")
+        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        has_orders = any("order" in k for k in table_map)
+
+        s_sid = _resolve_col_name(table_map, "shipments", ["shipment_id", "shipmentid", "id"], "shipment_id")
+        s_oid = _resolve_col_name(table_map, "shipments", ["order_id", "orderid"], "order_id")
+        s_date = _resolve_col_name(table_map, "shipments", ["shipment_date", "shipmentdate", "date"], "shipment_date")
+        s_carrier = _resolve_col_name(table_map, "shipments", ["carrier"], "carrier")
+        s_track = _resolve_col_name(table_map, "shipments", ["tracking_number", "trackingnumber", "tracking_no"], "tracking_number")
+        s_status = _resolve_col_name(table_map, "shipments", ["status", "shipment_status", "shipmentstatus"], "status")
+
+        if has_orders:
+            o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+            o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  s.{s_sid} AS shipment_id,
+  s.{s_oid} AS order_id,
+  o.{o_cid} AS customer_id,
+  CAST(s.{s_date} AS DATE) AS shipment_date,
+  s.{s_carrier} AS carrier,
+  s.{s_track} AS tracking_number,
+  s.{s_status} AS status
+FROM {_resolve_relation(catalog, ship_view, clean_views, table_map)} s
+LEFT JOIN {_resolve_relation(catalog, ord_view, clean_views, table_map)} o ON s.{s_oid} = o.{o_oid};"""
+        else:
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  s.{s_sid} AS shipment_id,
+  s.{s_oid} AS order_id,
+  CAST(s.{s_date} AS DATE) AS shipment_date,
+  s.{s_carrier} AS carrier,
+  s.{s_track} AS tracking_number,
+  s.{s_status} AS status
+FROM {_resolve_relation(catalog, ship_view, clean_views, table_map)} s;"""
+        return sql, "SEMANTIC_MODEL"
+
+    # Dedicated fact model for Returns
+    elif is_return and not is_sales_explicit:
+        ret_view = _resolve_clean_view_name(table_map, ["returns", "return"], "vw_returns_clean")
+        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        has_orders = any("order" in k for k in table_map)
+
+        r_rid = _resolve_col_name(table_map, "returns", ["return_id", "returnid", "id"], "return_id")
+        r_oid = _resolve_col_name(table_map, "returns", ["order_id", "orderid"], "order_id")
+        r_pid = _resolve_col_name(table_map, "returns", ["product_id", "productid"], "product_id")
+        r_date = _resolve_col_name(table_map, "returns", ["return_date", "returndate", "date"], "return_date")
+        r_reason = _resolve_col_name(table_map, "returns", ["return_reason", "returnreason", "reason"], "return_reason")
+        r_refund = _resolve_col_name(table_map, "returns", ["refund_amount", "refundamount", "amount"], "refund_amount")
+
+        if has_orders:
+            o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+            o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  r.{r_rid} AS return_id,
+  r.{r_oid} AS order_id,
+  r.{r_pid} AS product_id,
+  o.{o_cid} AS customer_id,
+  CAST(r.{r_date} AS DATE) AS return_date,
+  r.{r_reason} AS return_reason,
+  CAST(r.{r_refund} AS DECIMAL(18,2)) AS refund_amount
+FROM {_resolve_relation(catalog, ret_view, clean_views, table_map)} r
+LEFT JOIN {_resolve_relation(catalog, ord_view, clean_views, table_map)} o ON r.{r_oid} = o.{o_oid};"""
+        else:
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  r.{r_rid} AS return_id,
+  r.{r_oid} AS order_id,
+  r.{r_pid} AS product_id,
+  CAST(r.{r_date} AS DATE) AS return_date,
+  r.{r_reason} AS return_reason,
+  CAST(r.{r_refund} AS DECIMAL(18,2)) AS refund_amount
+FROM {_resolve_relation(catalog, ret_view, clean_views, table_map)} r;"""
+        return sql, "SEMANTIC_MODEL"
+
+    # Orders + OrderItems Sales Fact
+    elif (norm_refs >= {"orders", "orderitems"} or any(k in norm_refs for k in ("orderitems", "orders"))) and not is_non_sales:
         ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
         oi_view = _resolve_clean_view_name(table_map, ["order_items", "orderitems"], "vw_order_items_clean")
         o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
@@ -3152,9 +3347,29 @@ def _generate_generic_fact_sql(
         oi_oid = _resolve_col_name(table_map, "orderitems", ["order_id", "orderid"], "order_id")
         oi_itemid = _resolve_col_name(table_map, "orderitems", ["order_item_id", "orderitemid"], "order_item_id")
         oi_pid = _resolve_col_name(table_map, "orderitems", ["product_id", "productid"], "product_id")
-        oi_qty = _resolve_col_name(table_map, "orderitems", ["quantity"], "quantity")
-        oi_price = _resolve_col_name(table_map, "orderitems", ["unit_price", "unitprice"], "unit_price")
-        oi_disc = _resolve_col_name(table_map, "orderitems", ["discount_percent", "discountpercent"], "discount_percent")
+        oi_qty = _resolve_col_name(table_map, "orderitems", ["quantity", "qty"], "quantity")
+        oi_price = _resolve_col_name(table_map, "orderitems", ["unit_price", "unitprice", "price"], "unit_price")
+        oi_disc = _resolve_col_name(table_map, "orderitems", ["discount_pct", "discountpct", "discount_percent", "discountpercent", "discount", "disc"], "discount_pct")
+
+        oi_tbl = None
+        for k, v in table_map.items():
+            if "order" in k and "item" in k:
+                oi_tbl = v
+                break
+        oi_has_disc = False
+        if oi_tbl:
+            oi_has_disc = any(
+                c["target_name"] == oi_disc or c["name"].lower() == oi_disc.lower()
+                for c in oi_tbl.get("columns", [])
+            )
+
+        if oi_has_disc:
+            disc_col_line = f"  oi.{oi_disc} AS discount_percent,\n"
+            amt_col_line = f"  CAST(oi.{oi_qty} * oi.{oi_price} * (1 - COALESCE(oi.{oi_disc}, 0) / 100) AS DECIMAL(18,2)) AS sales_amount"
+        else:
+            disc_col_line = "  CAST(0 AS DECIMAL(5,2)) AS discount_percent,\n"
+            amt_col_line = f"  CAST(oi.{oi_qty} * oi.{oi_price} AS DECIMAL(18,2)) AS sales_amount"
+
         sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
   oi.{oi_itemid} AS order_item_id,
@@ -3164,8 +3379,7 @@ SELECT
   CAST(o.{o_date} AS DATE) AS order_date,
   oi.{oi_qty} AS quantity,
   oi.{oi_price} AS unit_price,
-  oi.{oi_disc} AS discount_percent,
-  CAST(oi.{oi_qty} * oi.{oi_price} * (1 - oi.{oi_disc} / 100) AS DECIMAL(18,2)) AS sales_amount
+{disc_col_line}{amt_col_line}
 FROM {_resolve_relation(catalog, ord_view, clean_views, table_map)} o
 JOIN {_resolve_relation(catalog, oi_view, clean_views, table_map)} oi ON oi.{oi_oid} = o.{o_oid};"""
         return sql, "SEMANTIC_MODEL"
