@@ -240,7 +240,7 @@ def test_failed_reload_keeps_data_and_exposes_failure_in_status_and_logs(db, cli
     assert status["run_id"] == result["run_id"] and status["failed_target"]
     assert logs["failed"] == 1
     assert any("approve replacement" in (row["message"] or "") for row in logs["logs"])
-    assert all(sql.startswith(("SELECT", "DESCRIBE")) for sql in statements)
+    assert all(sql.startswith(("SELECT", "DESCRIBE", "CREATE CATALOG", "CREATE SCHEMA")) for sql in statements)
     with pytest.raises(ValueError, match="Latest DEV Medallion deployment is FAILED"):
         deployment.run_reconciliation(db, project.id)
     assert deployment.evaluate_dev_gate(db, project.id)["status"] == "BLOCKED"
@@ -328,6 +328,7 @@ def test_provider_secret_is_redacted_before_failure_logs_are_saved(db, client, a
     secret = "synthetic-test-token-must-never-appear-in-logs"
     monkeypatch.setenv(config.token_env_key, secret)
     monkeypatch.setattr(bronze_ingestion, "connector_info", lambda *a: {"mode": "DIRECT"})
+    monkeypatch.setattr(medallion, "execute_sql", Mock(return_value=None))
     monkeypatch.setattr(environment_provisioning, "execute_sql_with_credentials",
                         Mock(side_effect=RuntimeError(f"Provider rejected {secret}")))
 

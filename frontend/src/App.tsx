@@ -2596,17 +2596,30 @@ export default function App() {
       return r;
     });
   }
-  async function deployMedallion() {
+  async function deployMedallion(resume = true) {
     if (!pid) return;
-    if (
-      !confirm(
-        "Deploy APPROVED and validated Medallion artifacts to DEV in Bronze → Silver → Gold order?",
+    const isRetry = overallStatus === "FAILED" || failedCount > 0 || !!medDeployment?.error;
+    if (isRetry && resume) {
+      if (
+        !confirm(
+          `Resume DEV deployment from the failed/pending objects? (${deployedCount} already passed objects will be preserved and skipped)`
+        )
+      ) {
+        return;
+      }
+    } else {
+      if (
+        !confirm(
+          "Deploy APPROVED and validated Medallion artifacts to DEV in Bronze → Silver → Gold order?",
+        )
       )
-    )
-      return;
-    const allowDestructive = confirm(
-      "Existing DEV Bronze data may need replacement. Approve destructive DEV replacement for this run only? Select Cancel to keep replacement blocked.",
-    );
+        return;
+    }
+    const allowDestructive = resume
+      ? false
+      : confirm(
+          "Existing DEV Bronze data may need replacement. Approve destructive DEV replacement for this run only? Select Cancel to keep replacement blocked.",
+        );
     await action(async () => {
       const result: any = await api(`/projects/${pid}/medallion/deploy-dev`, {
         method: "POST",
@@ -2614,6 +2627,7 @@ export default function App() {
           allow_destructive: allowDestructive,
           batch_size: deployBatch,
           max_rows: deployMaxRows ? Number(deployMaxRows) : null,
+          resume_from_failed: resume,
         }),
       });
       setMedDeployment(result);
@@ -6943,14 +6957,27 @@ export default function App() {
                       <FileCode2 size={15} />
                       Generate stage artifacts
                     </button>
-                    <button
-                      className="primary-action"
-                      disabled={!pid || busy}
-                      onClick={deployMedallion}
-                    >
-                      <Play size={15} />
-                      Deploy Medallion DEV
-                    </button>
+                    {(failedCount > 0 || overallStatus === "FAILED") ? (
+                      <button
+                        className="primary-action"
+                        disabled={!pid || busy}
+                        onClick={() => deployMedallion(true)}
+                        style={{ background: "#0284c7" }}
+                        title={`Resume from failed object. ${deployedCount} objects already passed will be skipped.`}
+                      >
+                        <RefreshCw size={15} className={busy ? "spinning" : ""} />
+                        Resume Failed Run ({deployedCount} passed)
+                      </button>
+                    ) : (
+                      <button
+                        className="primary-action"
+                        disabled={!pid || busy}
+                        onClick={() => deployMedallion(false)}
+                      >
+                        <Play size={15} />
+                        Deploy Medallion DEV
+                      </button>
+                    )}
                   </div>
                 }
               >
@@ -10075,6 +10102,18 @@ export default function App() {
                       </select>
                     </div>
 
+                    {(overallStatus === "FAILED" || failedCount > 0) && (
+                      <button
+                        type="button"
+                        className="deploy-action-btn"
+                        style={{ color: "#0284c7", borderColor: "#bae6fd", background: "#f0f9ff", fontWeight: 700 }}
+                        title="Resume DEV deployment from failed object and skip already verified objects"
+                        disabled={!pid || busy}
+                        onClick={() => deployMedallion(true)}
+                      >
+                        <RefreshCw size={13} className={busy ? "spinning" : ""} /> Resume Failed Run
+                      </button>
+                    )}
                     {(overallStatus === "RUNNING" || medDeployment?.status === "RUNNING") && (
                       <button
                         type="button"
@@ -10203,6 +10242,48 @@ export default function App() {
                         <summary>View full trace</summary>
                         <pre>{rawTraceContent}</pre>
                       </details>
+                      <div style={{ marginTop: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="primary-action"
+                          disabled={!pid || busy}
+                          onClick={() => deployMedallion(true)}
+                          style={{
+                            background: "#0284c7",
+                            color: "#ffffff",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "8px 16px",
+                            borderRadius: 6,
+                            fontWeight: 700,
+                            fontSize: 13,
+                            border: "none",
+                            cursor: "pointer",
+                            boxShadow: "0 2px 4px rgba(2, 132, 199, 0.3)",
+                          }}
+                        >
+                          <RefreshCw size={14} className={busy ? "spinning" : ""} />
+                          Resume from Failed Object ({deployedCount} already verified objects will be skipped)
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!pid || busy}
+                          onClick={() => deployMedallion(false)}
+                          style={{
+                            background: "#ffffff",
+                            color: "#475569",
+                            border: "1px solid #cbd5e1",
+                            padding: "8px 14px",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Redeploy All from Scratch
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : (

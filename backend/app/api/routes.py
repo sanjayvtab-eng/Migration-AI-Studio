@@ -116,7 +116,7 @@ class SemanticIn(BaseModel):
 class SemanticApproveIn(BaseModel): actor:str="admin"; role:str|None=None
 class MedallionPlanIn(BaseModel): environment:str="DEV"; catalog:str|None=None
 class MedallionReviewIn(BaseModel): status:str="APPROVED"; reviewer:str="admin"
-class MedallionDeployIn(BaseModel): allow_destructive:bool=False; batch_size:int=10000; max_rows:int|None=None
+class MedallionDeployIn(BaseModel): allow_destructive:bool=False; batch_size:int=10000; max_rows:int|None=None; resume_from_failed:bool=True
 
 class DeployDevIn(BaseModel):
     allow_destructive: bool=False
@@ -1540,7 +1540,13 @@ def medallion_artifact_remediate_api(project_id:str,version_id:str,data:Remediat
 
 @router.post("/projects/{project_id}/medallion/deploy-dev")
 def medallion_deploy_api(project_id:str,data:MedallionDeployIn,db:Session=Depends(get_db),_=Depends(auth)):
-    try: return deploy_medallion_dev(db,project_id,allow_destructive=data.allow_destructive,batch_size=data.batch_size,max_rows=data.max_rows)
+    try: return deploy_medallion_dev(db,project_id,allow_destructive=data.allow_destructive,batch_size=data.batch_size,max_rows=data.max_rows,resume_from_failed=data.resume_from_failed)
+    except (ValueError,RuntimeError) as e: raise HTTPException(400,str(e))
+
+@router.post("/projects/{project_id}/medallion/deployments/dev/resume")
+def medallion_deploy_resume_api(project_id:str,data:MedallionDeployIn=None,db:Session=Depends(get_db),_=Depends(auth)):
+    req = data or MedallionDeployIn(resume_from_failed=True)
+    try: return deploy_medallion_dev(db,project_id,allow_destructive=req.allow_destructive,batch_size=req.batch_size,max_rows=req.max_rows,resume_from_failed=True)
     except (ValueError,RuntimeError) as e: raise HTTPException(400,str(e))
 
 @router.post("/projects/{project_id}/quality-gates")

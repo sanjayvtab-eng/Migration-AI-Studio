@@ -2040,7 +2040,8 @@ def _deploy_legacy_bronze(db, project_id, obj, node, item, run_id,
 def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: bool = False,
                          batch_size: int = 10000, max_rows: int | None = None,
                          replace_existing_data: bool = False, reuse_bronze: bool = True,
-                         parent_run_id: str | None = None) -> dict[str, Any]:
+                         parent_run_id: str | None = None,
+                         resume_from_failed: bool = True) -> dict[str, Any]:
     """Persist every deployment attempt, including failures before artifact execution."""
     from app.models.canonical import MigrationDeployment
     from app.services.deployment import databricks_workspace_identity
@@ -2063,7 +2064,7 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
             db, project_id, run_id=run_id, allow_destructive=allow_destructive,
             batch_size=batch_size, max_rows=max_rows,
             replace_existing_data=replace_existing_data, reuse_bronze=reuse_bronze,
-            parent_run_id=parent_run_id,
+            parent_run_id=parent_run_id, resume_from_failed=resume_from_failed,
         )
     except Exception as exc:
         record("FAILED", medallion_run_finished=True, error=str(exc))
@@ -2077,7 +2078,8 @@ def deploy_medallion_dev(db: Session, project_id: str, *, allow_destructive: boo
 def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                          allow_destructive: bool, batch_size: int, max_rows: int | None,
                          replace_existing_data: bool, reuse_bronze: bool,
-                         parent_run_id: str | None) -> dict[str, Any]:
+                         parent_run_id: str | None,
+                         resume_from_failed: bool = True) -> dict[str, Any]:
     """Deploy reviewed Medallion artifacts in Bronze -> Silver -> Gold order.
 
     Bronze data loading reuses the existing metadata-driven loader. Schema drift remains
@@ -2151,6 +2153,26 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
     checkpoint_rejections = {
         item["object_id"]: item for item in (checkpoint or {}).get("rejections", [])
     }
+    prior_passed_deployments = list(db.scalars(select(MigrationDeployment).where(
+        MigrationDeployment.project_id == project_id,
+        MigrationDeployment.environment == env,
+        MigrationDeployment.status == "PASSED",
+    ).order_by(MigrationDeployment.created_at.desc())).all())
+
+    # Smart resume: if any bronze tables already passed in prior DEV runs, reuse them directly
+    if resume_from_failed and not allow_destructive and not replace_existing_data:
+        for dpl in prior_passed_deployments:
+            p = _loads(dpl.payload_json, {})
+            if p.get("layer") == "BRONZE" and dpl.object_id:
+                if dpl.object_id not in reusable:
+                    reusable[dpl.object_id] = {
+                        "object_id": dpl.object_id,
+                        "target_fqn": p.get("target_fqn") or approved_bronze_targets.get(dpl.object_id),
+                        "action": "REUSE_VERIFIED_BRONZE",
+                        "checkpoint_reused": True,
+                        "checkpoint_decision": "TARGET_MATCHED",
+                        "status": "PASSED",
+                    }
     bronze_targets_to_load = []
     if config is not None:
         for item in artifacts:
@@ -2222,10 +2244,60 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 except Exception:
                     pass
 
+    prior_passed_nodes: dict[str, dict[str, Any]] = {}
+    if resume_from_failed and not allow_destructive:
+        for dpl in prior_passed_deployments:
+            p = _loads(dpl.payload_json, {})
+            nid = p.get("medallion_node_id")
+            tfqn = p.get("target_fqn")
+            vid = p.get("artifact_version_id")
+            chash = p.get("artifact_content_hash")
+            if nid and nid not in prior_passed_nodes:
+                prior_passed_nodes[nid] = {"version_id": vid, "hash": chash, "target_fqn": tfqn, "dpl_id": dpl.id}
+            if tfqn and tfqn not in prior_passed_nodes:
+                prior_passed_nodes[tfqn] = {"version_id": vid, "hash": chash, "target_fqn": tfqn, "dpl_id": dpl.id}
+
     deployed = []
     for item in artifacts:
         node = node_by_id[item["node_id"]]
         obj = object_by_id.get(node.source_object_id)
+
+        # Smart resume: if this node already passed in DEV and its artifact has not changed, skip re-execution
+        passed_info = prior_passed_nodes.get(node.id) or prior_passed_nodes.get(node.target_fqn)
+        is_already_passed = False
+        if resume_from_failed and not allow_destructive and passed_info:
+            p_hash = passed_info.get("hash")
+            p_vid = passed_info.get("version_id")
+            if (p_hash and p_hash == item.get("content_hash")) or (p_vid and p_vid == item.get("artifact_version_id")):
+                is_already_passed = True
+
+        if is_already_passed:
+            detail = {
+                "action": "SKIPPED_ALREADY_PASSED",
+                "checkpoint_reused": True,
+                "reused_from_deployment_id": passed_info.get("dpl_id"),
+            }
+            db.add(MigrationDeployment(
+                id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
+                environment=env, status="PASSED",
+                payload_json=_json({
+                    "run_id": run_id,
+                    "parent_run_id": parent_run_id,
+                    "databricks_workspace": databricks_workspace_identity(),
+                    "medallion_node_id": node.id,
+                    "layer": node.layer, "target_fqn": node.target_fqn,
+                    "artifact_version_id": item["artifact_version_id"],
+                    "artifact_version": item["version"],
+                    "artifact_content_hash": item["content_hash"],
+                    "skipped": True,
+                    **detail
+                })
+            ))
+            node.status = "DEPLOYED"
+            deployed.append({"target_fqn": node.target_fqn, "layer": node.layer, "status": "PASSED", "skipped": True})
+            db.commit()
+            continue
+
         try:
             if node.node_type == "ARCHITECTURE_REVIEW":
                 detail = {"action": "ARCHITECTURE_REVIEW_ACKNOWLEDGED"}

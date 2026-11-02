@@ -586,7 +586,7 @@ def deploy_dev(db: Session, project_id: str, *, allow_destructive: bool = False,
         )).all()
         for row in prior:
             p = _payload(row)
-            if p.get("run_id") == run_id and row.object_id:
+            if (p.get("run_id") == run_id or p.get("run_id") == resume_run_id) and row.object_id:
                 completed_ids.add(row.object_id)
 
     results = []
