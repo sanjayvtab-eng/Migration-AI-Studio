@@ -2984,22 +2984,33 @@ export default function App() {
   }, [deployActiveEnv, testGate, testPromotion, uatGate, uatPromotion, prodGate, prodPromotion, medDeployment, reconResult, deployment, attemptItems]);
 
   const deployedCount = useMemo(() => {
-    if (deployActiveEnv === "TEST") return testPromotion?.passed ?? (testPromotion?.total ?? 0);
-    if (deployActiveEnv === "UAT") return uatPromotion?.passed ?? (uatPromotion?.total ?? 0);
-    if (deployActiveEnv === "PROD") return prodPromotion?.passed ?? (prodPromotion?.total ?? 0);
-    return medDeployment?.deployed ?? (reconResult?.passed ?? attemptItems.filter((i: any) => i.env === "DEV" && i.status === "PASSED").length);
+    if (deployActiveEnv === "TEST") return Number(testPromotion?.passed ?? (testPromotion?.total ?? 0)) || 0;
+    if (deployActiveEnv === "UAT") return Number(uatPromotion?.passed ?? (uatPromotion?.total ?? 0)) || 0;
+    if (deployActiveEnv === "PROD") return Number(prodPromotion?.passed ?? (prodPromotion?.total ?? 0)) || 0;
+    const rawDev = medDeployment?.deployed ?? (reconResult?.passed ?? attemptItems.filter((i: any) => i.env === "DEV" && i.status === "PASSED").length);
+    const n = Number(rawDev);
+    return Number.isFinite(n) ? n : 0;
   }, [deployActiveEnv, testPromotion, uatPromotion, prodPromotion, medDeployment, reconResult, attemptItems]);
 
   const verifiedToSkip = useMemo(() => {
-    return Math.max(medDeployment?.total_verified_in_dev ?? 0, deployedCount);
+    const rawDev = Number(medDeployment?.total_verified_in_dev);
+    const devTotal = Number.isFinite(rawDev) ? rawDev : 0;
+    const dep = Number.isFinite(deployedCount) ? deployedCount : 0;
+    return Math.max(devTotal, dep);
   }, [medDeployment?.total_verified_in_dev, deployedCount]);
 
   const failedCount = useMemo(() => {
-    if (deployActiveEnv === "TEST") return testPromotion?.failed ?? 0;
-    if (deployActiveEnv === "UAT") return uatPromotion?.failed ?? 0;
-    if (deployActiveEnv === "PROD") return prodPromotion?.failed ?? 0;
-    return medDeployment?.failed ?? (reconResult?.failed ?? attemptItems.filter((i: any) => i.env === "DEV" && i.status === "FAILED").length);
-  }, [deployActiveEnv, testPromotion, uatPromotion, prodPromotion, medDeployment, reconResult, attemptItems]);
+    if (deployActiveEnv === "TEST") return Number(testPromotion?.failed) || 0;
+    if (deployActiveEnv === "UAT") return Number(uatPromotion?.failed) || 0;
+    if (deployActiveEnv === "PROD") return Number(prodPromotion?.failed) || 0;
+    const rawFailed = medDeployment?.failed ?? (reconResult?.failed ?? attemptItems.filter((i: any) => i.env === "DEV" && i.status === "FAILED").length);
+    const n = Number(rawFailed);
+    const computed = Number.isFinite(n) ? n : 0;
+    if (computed === 0 && (medDeployment?.status === "FAILED" || medDeployment?.error || overallStatus === "FAILED")) {
+      return 1;
+    }
+    return computed;
+  }, [deployActiveEnv, testPromotion, uatPromotion, prodPromotion, medDeployment, reconResult, attemptItems, overallStatus]);
 
   const failedTargetIdent = medDeployment?.failed_target || deployment?.failed_object || attemptItems.find((i: any) => i.status === "FAILED")?.target || "migration_dev.bronze.customer_sales";
 

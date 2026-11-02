@@ -283,6 +283,11 @@ SYNONYM_PAIRS = {
     ("orderid", "saleid"), ("saleid", "orderid"),
     ("order_item_id", "sale_detail_id"), ("sale_detail_id", "order_item_id"),
     ("order_detail_id", "sale_detail_id"), ("sale_detail_id", "order_detail_id"),
+    ("sale_detail_id", "sales_detail_id"), ("sales_detail_id", "sale_detail_id"),
+    ("saledetailid", "salesdetailid"), ("salesdetailid", "saledetailid"),
+    ("sale_details_id", "sale_detail_id"), ("sale_detail_id", "sale_details_id"),
+    ("sale_id", "sales_id"), ("sales_id", "sale_id"),
+    ("order_id", "orders_id"), ("orders_id", "order_id"),
     ("cust_id", "customer_id"), ("customer_id", "cust_id"),
     ("prod_id", "product_id"), ("product_id", "prod_id"),
 }
@@ -309,9 +314,13 @@ def compiler_identifier_repair(sql: str, error: str) -> tuple[str, dict] | None:
             continue
         if tuple(p.casefold() for p in candidate[:-1]) != tuple(p.casefold() for p in wrong[:-1]):
             continue
-        if normalized_identifier(candidate[-1]) == normalized_identifier(wrong[-1]):
+        norm_c = normalized_identifier(candidate[-1])
+        norm_w = normalized_identifier(wrong[-1])
+        stem_c = norm_c.replace("sales", "sale").replace("orders", "order").replace("details", "detail").replace("items", "item")
+        stem_w = norm_w.replace("sales", "sale").replace("orders", "order").replace("details", "detail").replace("items", "item")
+        if norm_c == norm_w or stem_c == stem_w:
             candidates.add(candidate)
-        elif (wrong[-1].casefold(), candidate[-1].casefold()) in SYNONYM_PAIRS or (normalized_identifier(wrong[-1]), normalized_identifier(candidate[-1])) in {("orderid", "saleid"), ("saleid", "orderid")}:
+        elif (wrong[-1].casefold(), candidate[-1].casefold()) in SYNONYM_PAIRS or (norm_w, norm_c) in {("orderid", "saleid"), ("saleid", "orderid")}:
             synonym_candidates.add(candidate)
     
     if len(candidates) == 1:

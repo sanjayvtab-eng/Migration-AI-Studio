@@ -2355,9 +2355,18 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 detail = {"action": "EXECUTE_WORKFLOW_SQL", "statement_count": len(statements)}
             else:
                 from app.services.deployment import _safe_execute_with_auto_healing
-                _safe_execute_with_auto_healing(db, item['content'], allow_destructive=allow_destructive,
-                                               project_id=project_id, run_id=run_id, executor=execute_sql)
-                detail = {"action": "EXECUTE_ARTIFACT"}
+                repairs = _safe_execute_with_auto_healing(db, item['content'], allow_destructive=allow_destructive,
+                                                         project_id=project_id, run_id=run_id, executor=execute_sql)
+                if repairs:
+                    try:
+                        from app.models.canonical import MigrationArtifactVersion
+                        av_row = db.get(MigrationArtifactVersion, item.get("artifact_version_id"))
+                        if av_row and repairs[-1].get("patched_sql"):
+                            av_row.content = repairs[-1]["patched_sql"]
+                            db.commit()
+                    except Exception:
+                        pass
+                detail = {"action": "EXECUTE_ARTIFACT", "repairs": len(repairs) if repairs else 0}
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
                                        environment="DEV", status="PASSED",
                                        payload_json=_json({"run_id": run_id,

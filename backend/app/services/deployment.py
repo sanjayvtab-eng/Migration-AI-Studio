@@ -405,6 +405,7 @@ def _safe_execute_with_auto_healing(
             metadata.update({
                 'original_sql_hash': hashlib.sha256(statement.encode()).hexdigest(),
                 'patched_sql_hash': hashlib.sha256(patched.encode()).hexdigest(),
+                'patched_sql': patched,
                 'compiler_code': 'UNRESOLVED_COLUMN.WITH_SUGGESTION', 'attempt': 1,
             })
             _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'RUNNING', environment=environment, **metadata)

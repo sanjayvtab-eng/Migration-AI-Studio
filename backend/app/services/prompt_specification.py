@@ -3406,7 +3406,7 @@ JOIN {_resolve_relation(catalog, oi_view, clean_views, table_map)} oi ON oi.{oi_
         s_cid = _resolve_col_name(table_map, "sales", ["customer_id", "customerid"], "customer_id")
         s_date = _resolve_col_name(table_map, "sales", ["sale_date", "saledate"], "sale_date")
         sd_sid = _resolve_col_name(table_map, "salesdetails", ["sale_id", "saleid"], "sale_id")
-        sd_sdid = _resolve_col_name(table_map, "salesdetails", ["sale_detail_id", "saledetailid"], "sale_detail_id")
+        sd_sdid = _resolve_col_name(table_map, "salesdetails", ["sales_detail_id", "salesdetailid", "sale_detail_id", "saledetailid", "detail_id", "id"], "sales_detail_id")
         sd_pid = _resolve_col_name(table_map, "salesdetails", ["product_id", "productid"], "product_id")
         sd_qty = _resolve_col_name(table_map, "salesdetails", ["quantity"], "quantity")
         sd_price = _resolve_col_name(table_map, "salesdetails", ["unit_price", "unitprice"], "unit_price")
