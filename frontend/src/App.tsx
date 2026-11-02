@@ -3058,25 +3058,31 @@ export default function App() {
     return lines;
   }, [logView, attemptItems, deployTerminalFilter, current, inspectedTarget]);
 
+  const isDevEnvRunning = useMemo(() => {
+    return medDeployment?.status === "RUNNING" || autoPromotionStatus?.run?.status === "RUNNING" || (isOperating && syncContext.toLowerCase().includes("deploy"));
+  }, [medDeployment, autoPromotionStatus, isOperating, syncContext]);
+
   const activeDeploymentFailure = useMemo(() => {
+    if (isDevEnvRunning) return null;
     if (medDeployment?.error) return String(medDeployment.error);
-    if (medDeployment?.status === "FAILED") return "DEV deployment stopped with status FAILED.";
+    if (medDeployment?.status === "FAILED") return medDeployment?.error ? String(medDeployment.error) : "DEV deployment stopped with status FAILED.";
     if (promptExecution?.status === "FAILED" && promptExecution?.error) return String(promptExecution.error);
     if (autoPromotionStatus?.run?.status === "FAILED" && autoPromotionStatus?.run?.error) return String(autoPromotionStatus.run.error);
     const errLog = terminalLines?.find((l: any) => l.level === "ERROR" || /quota_exceeded|exception|error/i.test(l.msg));
     if (errLog) return errLog.msg;
-    if (msg && /failed|quota|error/i.test(msg)) return msg;
     return null;
-  }, [medDeployment, promptExecution, autoPromotionStatus, terminalLines, msg]);
+  }, [isDevEnvRunning, medDeployment, promptExecution, autoPromotionStatus, terminalLines]);
 
   const isMetastoreQuotaExceeded = useMemo(() => {
+    if (isDevEnvRunning) return false;
     const s = (activeDeploymentFailure || "").toLowerCase();
     return s.includes("quota_exceeded") || (s.includes("quota") && s.includes("exceeded")) || (s.includes("limit") && s.includes("500"));
-  }, [activeDeploymentFailure]);
+  }, [isDevEnvRunning, activeDeploymentFailure]);
 
   const isDevEnvFailed = useMemo(() => {
-    return Boolean(activeDeploymentFailure) || medDeployment?.status === "FAILED" || Boolean(msg && msg.toLowerCase().includes("failed"));
-  }, [activeDeploymentFailure, medDeployment, msg]);
+    if (isDevEnvRunning) return false;
+    return Boolean(activeDeploymentFailure) || medDeployment?.status === "FAILED";
+  }, [isDevEnvRunning, activeDeploymentFailure, medDeployment]);
 
   const genericModule = moduleMap[page];
   const environmentPassed = (environment: string) =>
@@ -3338,14 +3344,18 @@ export default function App() {
             {/* Dynamic Environment Health Status Badge */}
             <div
               className={`top-env-badge ${
-                isMetastoreQuotaExceeded
+                isDevEnvRunning
+                  ? "running"
+                  : isMetastoreQuotaExceeded
                   ? "quota-exceeded"
                   : isDevEnvFailed
                   ? "failed"
                   : "connected"
               }`}
               title={
-                isMetastoreQuotaExceeded
+                isDevEnvRunning
+                  ? "Databricks DEV: Ingestion & Deployment in progress..."
+                  : isMetastoreQuotaExceeded
                   ? "Databricks DEV: Metastore Quota Exceeded (Limit: 500 tables reached)"
                   : isDevEnvFailed
                   ? `Databricks DEV: Execution Failed - ${activeDeploymentFailure || "Check logs"}`
@@ -3354,11 +3364,19 @@ export default function App() {
             >
               <span
                 className={`live-dot ${
-                  isMetastoreQuotaExceeded ? "dot-amber" : isDevEnvFailed ? "dot-red" : "dot-green"
+                  isDevEnvRunning
+                    ? "dot-cyan"
+                    : isMetastoreQuotaExceeded
+                    ? "dot-amber"
+                    : isDevEnvFailed
+                    ? "dot-red"
+                    : "dot-green"
                 }`}
               />
               <span>
-                {isMetastoreQuotaExceeded
+                {isDevEnvRunning
+                  ? "DEV: Running"
+                  : isMetastoreQuotaExceeded
                   ? "DEV: Quota Exceeded"
                   : isDevEnvFailed
                   ? "DEV: Failed"

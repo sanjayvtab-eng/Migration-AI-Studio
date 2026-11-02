@@ -51,17 +51,25 @@ def _request(source_id, operation, payload=None):
                             expires_at=datetime.utcnow() + timedelta(seconds=effective_timeout)))
         db.commit()
     deadline = time.monotonic() + effective_timeout
+    poll_interval = 2.0 if operation == "stage_and_upload" else 0.5
     try:
         while time.monotonic() < deadline:
-            with SessionLocal() as db:
-                task = db.get(ConnectorTask, task_id)
-                if task is None or task.status == "CANCELLED":
-                    raise RuntimeError("CONNECTOR_CANCELLED: The connector was revoked or the task expired.")
-                if task.status == "FAILED":
-                    raise RuntimeError(json.loads(task.result)["error"])
-                if task.status == "COMPLETED":
-                    return json.loads(task.result)
-            time.sleep(0.5)
+            try:
+                with SessionLocal() as db:
+                    task = db.get(ConnectorTask, task_id)
+                    if task is None:
+                        pass
+                    elif task.status == "CANCELLED":
+                        raise RuntimeError("CONNECTOR_CANCELLED: The connector was revoked or the task expired.")
+                    elif task.status == "FAILED":
+                        raise RuntimeError(json.loads(task.result)["error"])
+                    elif task.status == "COMPLETED":
+                        return json.loads(task.result)
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            time.sleep(poll_interval)
         raise RuntimeError("CONNECTOR_TIMEOUT: No result received. Check the local connector and retry the operation.")
     finally:
         # Source rows are transient transport data, not permanent application logs.

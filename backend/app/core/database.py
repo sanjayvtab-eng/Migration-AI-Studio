@@ -35,6 +35,11 @@ def sanitize_database_url(url: str) -> str:
         creds = creds_and_host[:last_at]
         host_port = creds_and_host[last_at + 1:]
         
+        # If Supabase pooler is used on port 5432 (Session mode with pool_size: 15 limit causing EMAXCONNSESSION),
+        # automatically redirect to port 6543 (Transaction mode pooler designed for high concurrency).
+        if "pooler.supabase.com" in host_port and ":5432" in host_port:
+            host_port = host_port.replace(":5432", ":6543")
+
         if ":" in creds:
             user, pwd = creds.split(":", 1)
             # Remove accidental surrounding brackets left from [YOUR-PASSWORD] template
@@ -51,6 +56,8 @@ def sanitize_database_url(url: str) -> str:
             creds = f"{user_enc}:{pwd_enc}"
         return f"postgresql://{creds}@{host_port}{path}"
     
+    if "pooler.supabase.com:5432" in rest:
+        rest = rest.replace("pooler.supabase.com:5432", "pooler.supabase.com:6543")
     return f"postgresql://{rest}"
 
 settings = get_settings()
@@ -65,6 +72,13 @@ if db_url in {"sqlite://", "sqlite:///:memory:"}:
 elif db_url.startswith("postgresql") or db_url.startswith("postgres"):
     engine_options["pool_pre_ping"] = True
     engine_options["pool_recycle"] = 300
+    connect_args.update({
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
+        "connect_timeout": 15,
+    })
     is_pooler = "pooler.supabase.com" in db_url or ":6543" in db_url
     if is_pooler or os.getenv("DATABASE_USE_NULLPOOL", "false").lower() in ("true", "1", "yes"):
         # Supabase Pooler / PgBouncer manages connection reuse at proxy layer.

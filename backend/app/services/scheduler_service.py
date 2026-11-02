@@ -47,9 +47,38 @@ def compute_next_run_at(frequency: str, scheduled_time: str, timezone_offset: in
         return target_utc
 
 
+def _check_and_claim_due_schedules() -> list[str]:
+    now = datetime.utcnow()
+    claimed = []
+    try:
+        with SessionLocal() as db:
+            due_schedules = (
+                db.query(MigrationSchedule)
+                .filter(
+                    MigrationSchedule.is_enabled == True,
+                    MigrationSchedule.next_run_at != None,
+                    MigrationSchedule.next_run_at <= now,
+                )
+                .all()
+            )
+
+            for schedule in due_schedules:
+                logger.info(
+                    f"Triggering scheduled incremental sync for project {schedule.project_id} (scheduled for {schedule.next_run_at})"
+                )
+                schedule.last_run_status = "RUNNING"
+                claimed.append(schedule.project_id)
+            if claimed:
+                db.commit()
+    except Exception as exc:
+        logger.error(f"Error querying due migration schedules: {exc}")
+    return claimed
+
+
 async def scheduler_worker_loop():
     """
     Background worker loop: polls every 30 seconds for due migration schedules.
+    All synchronous database queries run off the main event loop in a worker thread.
     """
     global _is_running
     _is_running = True
@@ -58,28 +87,9 @@ async def scheduler_worker_loop():
 
     while _is_running:
         try:
-            now = datetime.utcnow()
-            with SessionLocal() as db:
-                due_schedules = (
-                    db.query(MigrationSchedule)
-                    .filter(
-                        MigrationSchedule.is_enabled == True,
-                        MigrationSchedule.next_run_at != None,
-                        MigrationSchedule.next_run_at <= now,
-                    )
-                    .all()
-                )
-
-                for schedule in due_schedules:
-                    logger.info(
-                        f"Triggering scheduled incremental sync for project {schedule.project_id} (scheduled for {schedule.next_run_at})"
-                    )
-                    schedule.last_run_status = "RUNNING"
-                    db.commit()
-
-                    # Execute in background task so one job does not block the polling loop
-                    asyncio.create_task(_run_schedule_job(schedule.project_id))
-
+            claimed_projects = await asyncio.to_thread(_check_and_claim_due_schedules)
+            for project_id in claimed_projects:
+                asyncio.create_task(_run_schedule_job(project_id))
         except Exception as exc:
             logger.error(f"Error in scheduler worker loop: {exc}", exc_info=True)
 
