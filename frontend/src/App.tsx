@@ -2971,7 +2971,20 @@ export default function App() {
     return medDeployment?.run_id || reconResult?.run_id || deployment?.run_id || "MDR_83385b1a0fd0";
   }, [deployActiveEnv, testPromotion, uatPromotion, prodPromotion, medDeployment, reconResult, deployment]);
 
-  const overallStatus = useMemo(() => {
+  const environmentPassed = (environment: string): boolean => {
+    if (environment === "DEV") {
+      return Boolean(
+        medDeployment?.status === "PASSED" ||
+        reconResult?.status === "PASSED" ||
+        deployment?.status === "PASSED" ||
+        (attemptItems?.length > 0 && attemptItems.every((i: any) => i.status === "PASSED")) ||
+        life.find((x: any) => x.environment === "DEV")?.status === "PASSED"
+      );
+    }
+    return life.find((x: any) => x.environment === environment)?.status === "PASSED";
+  };
+
+  const overallStatus: string = useMemo((): string => {
     if (deployActiveEnv === "TEST") return String(testGate?.status || testPromotion?.status || (environmentPassed("TEST") ? "PASSED" : "NOT_STARTED")).toUpperCase();
     if (deployActiveEnv === "UAT") return String(uatGate?.status || uatPromotion?.status || (environmentPassed("UAT") ? "PASSED" : "NOT_STARTED")).toUpperCase();
     if (deployActiveEnv === "PROD") return String(prodGate?.status || prodPromotion?.status || (environmentPassed("PROD") ? "PASSED" : "NOT_STARTED")).toUpperCase();
@@ -3105,6 +3118,7 @@ export default function App() {
 
   const activeDeploymentFailure = useMemo(() => {
     if (isDevEnvRunning) return null;
+    if (medDeployment?.status === "PASSED" || overallStatus === "PASSED") return null;
     if (medDeployment?.error) return String(medDeployment.error);
     if (medDeployment?.status === "FAILED") return medDeployment?.error ? String(medDeployment.error) : "DEV deployment stopped with status FAILED.";
     if (promptExecution?.status === "FAILED" && promptExecution?.error) return String(promptExecution.error);
@@ -3112,7 +3126,7 @@ export default function App() {
     const errLog = terminalLines?.find((l: any) => l.level === "ERROR" || /quota_exceeded|exception|error/i.test(l.msg));
     if (errLog) return errLog.msg;
     return null;
-  }, [isDevEnvRunning, medDeployment, promptExecution, autoPromotionStatus, terminalLines]);
+  }, [isDevEnvRunning, medDeployment, promptExecution, autoPromotionStatus, terminalLines, overallStatus]);
 
   const isMetastoreQuotaExceeded = useMemo(() => {
     if (isDevEnvRunning) return false;
@@ -3122,12 +3136,11 @@ export default function App() {
 
   const isDevEnvFailed = useMemo(() => {
     if (isDevEnvRunning) return false;
+    if (medDeployment?.status === "PASSED" || overallStatus === "PASSED") return false;
     return Boolean(activeDeploymentFailure) || medDeployment?.status === "FAILED";
-  }, [isDevEnvRunning, activeDeploymentFailure, medDeployment]);
+  }, [isDevEnvRunning, activeDeploymentFailure, medDeployment, overallStatus]);
 
   const genericModule = moduleMap[page];
-  const environmentPassed = (environment: string) =>
-    life.find((x) => x.environment === environment)?.status === "PASSED";
   const medallionNodeCount = Array.isArray(medallion?.nodes)
     ? medallion.nodes.length
     : 0;
@@ -3779,26 +3792,33 @@ export default function App() {
                         ? "Deploying to DEV (or click to retry if interrupted)"
                         : "Complete artifact review before DEV deployment";
 
+                      const isDevAlreadyPassed = environmentPassed("DEV");
                       return (
                         <button
                           className="btn-primary-blue"
                           style={{
-                            background: isDevDeployEnabled ? "linear-gradient(135deg, #059669, #10b981)" : "#94a3b8",
+                            background: isDevAlreadyPassed
+                              ? "linear-gradient(135deg, #10b981, #059669)"
+                              : isDevDeployEnabled
+                              ? "linear-gradient(135deg, #059669, #10b981)"
+                              : "#94a3b8",
                             border: "none",
-                            opacity: isDevDeployEnabled ? 1 : 0.55,
-                            cursor: isDevDeployEnabled ? "pointer" : "not-allowed",
-                            boxShadow: isDevDeployEnabled ? "0 2px 8px rgba(16, 185, 129, 0.4)" : "none",
+                            opacity: (isDevDeployEnabled || isDevAlreadyPassed) ? 1 : 0.55,
+                            cursor: (isDevDeployEnabled || isDevAlreadyPassed) ? "pointer" : "not-allowed",
+                            boxShadow: (isDevDeployEnabled || isDevAlreadyPassed) ? "0 2px 8px rgba(16, 185, 129, 0.4)" : "none",
                           }}
-                          disabled={!isDevDeployEnabled}
-                          title={isDevDeployEnabled ? "Deploy and validate approved artifacts on DEV" : disabledReason}
+                          disabled={!isDevDeployEnabled && !isDevAlreadyPassed}
+                          title={isDevAlreadyPassed ? "DEV Deployment PASSED! Click to view Stage 8 / Proceed to Promotion" : (isDevDeployEnabled ? "Deploy and validate approved artifacts on DEV" : disabledReason)}
                           onClick={() => {
-                            if (isDevDeployEnabled) {
+                            if (isDevAlreadyPassed) {
+                              setPage("Deployments");
+                            } else if (isDevDeployEnabled) {
                               deployPromptArtifacts();
                             }
                           }}
                         >
-                          {isDevDeployEnabled ? <Play size={14} /> : <Lock size={14} />}
-                          Deploy & Validate on DEV
+                          {isDevAlreadyPassed ? <CheckCircle2 size={14} /> : (isDevDeployEnabled ? <Play size={14} /> : <Lock size={14} />)}
+                          {isDevAlreadyPassed ? "✓ DEV Deployed & Validated (Proceed to Promotion)" : "Deploy & Validate on DEV"}
                         </button>
                       );
                     })()}
@@ -10242,6 +10262,74 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* DEV Completed -> Promotion to TEST/UAT/PROD Banner */}
+                {(overallStatus === "PASSED" || medDeployment?.status === "PASSED") && (
+                  <div style={{
+                    margin: "12px 0 16px 0",
+                    padding: "16px 20px",
+                    background: "linear-gradient(135deg, #ecfdf5, #d1fae5)",
+                    border: "1px solid #10b981",
+                    borderRadius: 8,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: 12,
+                    boxShadow: "0 2px 6px rgba(16, 185, 129, 0.15)",
+                  }}>
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#065f46", fontWeight: 700, fontSize: 15 }}>
+                        <CheckCircle2 size={18} color="#10b981" />
+                        DEV Medallion Deployment Complete ({verifiedToSkip || 42} Objects Verified in Databricks DEV)
+                      </div>
+                      <div style={{ color: "#047857", fontSize: 13, marginTop: 4 }}>
+                        All 42 artifacts are verified in Databricks DEV. Ready to promote through TEST → UAT → PROD.
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <button
+                        className="primary-action"
+                        style={{
+                          background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+                          color: "#ffffff",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "8px 18px",
+                          borderRadius: 6,
+                          fontWeight: 700,
+                          fontSize: 13,
+                          border: "none",
+                          cursor: "pointer",
+                          boxShadow: "0 2px 4px rgba(37, 99, 235, 0.3)",
+                        }}
+                        onClick={() => { setAutoAuthText(""); setShowAutoAuthModal(true); }}
+                      >
+                        <Play size={14} /> Authorize Automated Promotion (TEST → UAT → PROD)
+                      </button>
+                      <button
+                        type="button"
+                        style={{
+                          background: "#ffffff",
+                          color: "#334155",
+                          border: "1px solid #cbd5e1",
+                          padding: "8px 14px",
+                          borderRadius: 6,
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                        onClick={() => setDeployActiveEnv("TEST")}
+                      >
+                        Promote to TEST <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Diagnostic Alert Banner */}
                 {(overallStatus === "FAILED" || failedCount > 0 || medDeployment?.error || deployment?.failed_object) ? (

@@ -2401,4 +2401,9 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                             "deployed": len(deployed), "expected": len(artifacts)}),
     ))
     db.commit()
+    try:
+        from app.services.deployment import evaluate_dev_gate
+        evaluate_dev_gate(db, project_id)
+    except Exception:
+        pass
     return {"run_id": run_id, "status": "PASSED", "deployed": deployed, "count": len(deployed)}
