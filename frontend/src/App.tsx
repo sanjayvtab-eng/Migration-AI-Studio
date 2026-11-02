@@ -4317,7 +4317,15 @@ export default function App() {
                           className="primary-action"
                           style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", border: "none" }}
                           disabled={busy || autoRunning}
-                          onClick={() => { setAutoAuthText(""); setShowAutoAuthModal(true); }}
+                          onClick={() => {
+                          setAutoAuthText("");
+                          setShowAutoAuthModal(true);
+                          if (pid) {
+                            api(`/projects/${pid}/master-orchestration/current`)
+                              .then((s: any) => setAutoPromotionStatus(s))
+                              .catch(() => {});
+                          }
+                        }}
                         >
                           <Play size={15} /> Authorize Automated Promotion to PROD
                         </button>
@@ -4514,80 +4522,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* One-Time Authorization Modal */}
-              {showAutoAuthModal && (
-                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }}>
-                  <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 24, maxWidth: 640, width: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.7)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                      <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 18, color: "#f8fafc" }}>
-                        <ShieldCheck size={22} color="#3b82f6" /> Authorize Automated Promotion to PROD
-                      </h3>
-                      <button onClick={() => setShowAutoAuthModal(false)} style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 18 }}>✕</button>
-                    </div>
-
-                    <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.5, margin: "0 0 16px 0" }}>
-                      This single explicit authorization governs the complete end-to-end promotion chain from DEV through <b>TEST</b>, <b>UAT</b>, and <b>PROD</b>.
-                      Bronze tables are cloned natively via Databricks <code>DEEP CLONE</code>. Silver and Gold views and routines will be catalog-retargeted, deployed, reconciled, and gate-verified automatically in each environment.
-                    </p>
-
-                    <div style={{ background: "#1e293b", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
-                      <div><span style={{ color: "#64748b" }}>Source Project:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.source_project?.name || "HotelOperationsDemo"}</b></div>
-                      <div><span style={{ color: "#64748b" }}>Release Manifest:</span> <b style={{ color: "#38bdf8", fontFamily: "monospace" }}>{autoPromotionStatus?.preflight?.release_id || "MDR_42d8ab1e"}</b></div>
-                      <div><span style={{ color: "#64748b" }}>Artifact Count:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.artifact_count || 14} artifacts</b></div>
-                      <div><span style={{ color: "#64748b" }}>Governance Risk:</span> <b style={{ color: "#fbbf24" }}>HIGH (Production promotion included)</b></div>
-                      <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog || "hotelmigrate_dev"} → {autoPromotionStatus?.preflight?.test_catalog || "hotelmigrate_test"} → {autoPromotionStatus?.preflight?.uat_catalog || "hotelmigrate_uat"} → {autoPromotionStatus?.preflight?.prod_catalog || "hotelmigrate_prod"}</b></div>
-                    </div>
-
-                    <div style={{ marginBottom: 16 }}>
-                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 }}>
-                        Confirmation Required: Type <code>PROMOTE TO PROD</code>
-                      </label>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <input
-                          type="text"
-                          value={autoAuthText}
-                          onChange={(e) => setAutoAuthText(e.target.value)}
-                          placeholder="Type PROMOTE TO PROD"
-                          style={{ flex: 1, padding: "8px 12px", background: "#020617", border: "1px solid #475569", borderRadius: 6, color: "#fff", fontSize: 13 }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setAutoAuthText("PROMOTE TO PROD")}
-                          style={{ padding: "8px 12px", background: "#334155", border: "none", borderRadius: 6, color: "#93c5fd", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
-                        >
-                          Fill "PROMOTE TO PROD"
-                        </button>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-                      <button
-                        type="button"
-                        onClick={() => setShowAutoAuthModal(false)}
-                        style={{ padding: "8px 16px", background: "#1e293b", border: "1px solid #475569", borderRadius: 6, color: "#cbd5e1", cursor: "pointer" }}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        disabled={autoAuthText.trim() !== "PROMOTE TO PROD" || autoRunning}
-                        onClick={() => { setShowAutoAuthModal(false); authorizeAutomatedPromotion(); }}
-                        style={{
-                          padding: "8px 18px",
-                          background: autoAuthText.trim() === "PROMOTE TO PROD" ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "#334155",
-                          border: "none",
-                          borderRadius: 6,
-                          color: autoAuthText.trim() === "PROMOTE TO PROD" ? "#fff" : "#64748b",
-                          fontWeight: 600,
-                          cursor: autoAuthText.trim() === "PROMOTE TO PROD" ? "pointer" : "not-allowed",
-                        }}
-                      >
-                        {autoRunning ? "Starting Automated Promotion..." : "Authorize & Execute Full Chain"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
             </>
           )}
           {page === "Dashboard" && (
@@ -9521,20 +9455,7 @@ export default function App() {
                 )}
               </Panel>
               </details>
-            {environmentPassed("DEV") && (
-              <div className="dev-next-action" style={{ marginBottom: 14 }}>
-                <button
-                  className="primary-action"
-                  onClick={() => {
-                    setPage("Waves");
-                    setDeployActiveEnv("TEST");
-                    setDeployLogEnvFilter("TEST");
-                  }}
-                >
-                  Promote validated DEV release to TEST <ChevronRight size={15} />
-                </button>
-              </div>
-            )}
+
 
             {gateResult && (
               <div className="subsection" style={{ marginBottom: 16 }}>
@@ -10304,7 +10225,15 @@ export default function App() {
                           cursor: "pointer",
                           boxShadow: "0 2px 4px rgba(37, 99, 235, 0.3)",
                         }}
-                        onClick={() => { setAutoAuthText(""); setShowAutoAuthModal(true); }}
+                        onClick={() => {
+                          setAutoAuthText("");
+                          setShowAutoAuthModal(true);
+                          if (pid) {
+                            api(`/projects/${pid}/master-orchestration/current`)
+                              .then((s: any) => setAutoPromotionStatus(s))
+                              .catch(() => {});
+                          }
+                        }}
                       >
                         <Play size={14} /> Authorize Automated Promotion (TEST → UAT → PROD)
                       </button>
@@ -11465,6 +11394,82 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Global One-Time Automated Promotion Modal */}
+              {/* One-Time Authorization Modal */}
+              {showAutoAuthModal && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }}>
+                  <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 24, maxWidth: 640, width: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.7)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                      <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 18, color: "#f8fafc" }}>
+                        <ShieldCheck size={22} color="#3b82f6" /> Authorize Automated Promotion to PROD
+                      </h3>
+                      <button onClick={() => setShowAutoAuthModal(false)} style={{ background: "transparent", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 18 }}>✕</button>
+                    </div>
+
+                    <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.5, margin: "0 0 16px 0" }}>
+                      This single explicit authorization governs the complete end-to-end promotion chain from DEV through <b>TEST</b>, <b>UAT</b>, and <b>PROD</b>.
+                      Bronze tables are cloned natively via Databricks <code>DEEP CLONE</code>. Silver and Gold views and routines will be catalog-retargeted, deployed, reconciled, and gate-verified automatically in each environment.
+                    </p>
+
+                    <div style={{ background: "#1e293b", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
+                      <div><span style={{ color: "#64748b" }}>Source Project:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.source_project?.name || current?.name || "Current Project"}</b></div>
+                      <div><span style={{ color: "#64748b" }}>Release Manifest:</span> <b style={{ color: "#38bdf8", fontFamily: "monospace" }}>{autoPromotionStatus?.preflight?.release_id || activeRunId || "DEV Approved Release"}</b></div>
+                      <div><span style={{ color: "#64748b" }}>Artifact Count:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.artifact_count || verifiedToSkip || 42} artifacts</b></div>
+                      <div><span style={{ color: "#64748b" }}>Governance Risk:</span> <b style={{ color: "#fbbf24" }}>HIGH (Production promotion included)</b></div>
+                      <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog || "hotelmigrate_dev"} → {autoPromotionStatus?.preflight?.test_catalog || "hotelmigrate_test"} → {autoPromotionStatus?.preflight?.uat_catalog || "hotelmigrate_uat"} → {autoPromotionStatus?.preflight?.prod_catalog || "hotelmigrate_prod"}</b></div>
+                    </div>
+
+                    <div style={{ marginBottom: 16 }}>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 }}>
+                        Confirmation Required: Type <code>PROMOTE TO PROD</code>
+                      </label>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input
+                          type="text"
+                          value={autoAuthText}
+                          onChange={(e) => setAutoAuthText(e.target.value)}
+                          placeholder="Type PROMOTE TO PROD"
+                          style={{ flex: 1, padding: "8px 12px", background: "#020617", border: "1px solid #475569", borderRadius: 6, color: "#fff", fontSize: 13 }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setAutoAuthText("PROMOTE TO PROD")}
+                          style={{ padding: "8px 12px", background: "#334155", border: "none", borderRadius: 6, color: "#93c5fd", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                        >
+                          Fill "PROMOTE TO PROD"
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => setShowAutoAuthModal(false)}
+                        style={{ padding: "8px 16px", background: "#1e293b", border: "1px solid #475569", borderRadius: 6, color: "#cbd5e1", cursor: "pointer" }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={autoAuthText.trim() !== "PROMOTE TO PROD" || autoRunning}
+                        onClick={() => { setShowAutoAuthModal(false); authorizeAutomatedPromotion(); }}
+                        style={{
+                          padding: "8px 18px",
+                          background: autoAuthText.trim() === "PROMOTE TO PROD" ? "linear-gradient(135deg, #2563eb, #1d4ed8)" : "#334155",
+                          border: "none",
+                          borderRadius: 6,
+                          color: autoAuthText.trim() === "PROMOTE TO PROD" ? "#fff" : "#64748b",
+                          fontWeight: 600,
+                          cursor: autoAuthText.trim() === "PROMOTE TO PROD" ? "pointer" : "not-allowed",
+                        }}
+                      >
+                        {autoRunning ? "Starting Automated Promotion..." : "Authorize & Execute Full Chain"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
     </div>
   );
 }
