@@ -64,7 +64,10 @@ def get_config(
     _=Depends(auth)
 ):
     src = source(db, project_id, source_id)
-    options = src.options or {}
+    try:
+        options = json.loads(src.options_json) if getattr(src, "options_json", None) else {}
+    except Exception:
+        options = {}
     db_name = (options.get("service_name") or options.get("sid")) if src.engine == "ORACLE" else src.database_name
     db_name = db_name or src.database_name
     app_url = ""
@@ -209,11 +212,7 @@ def claim_instance(db, connector, instance):
         (SourceConnector.last_seen == None) | (SourceConnector.last_seen < now - timedelta(seconds=15)),
     ).values(instance_id=instance, last_seen=now))
     if not changed.rowcount:
-        db.execute(update(SourceConnector).where(
-            SourceConnector.source_id == connector.source_id,
-            SourceConnector.enabled == "ENABLED",
-            SourceConnector.token_hash == connector.token_hash,
-        ).values(instance_id=instance, last_seen=now))
+        raise HTTPException(409, "Another connector instance is online for this source")
 
 
 @router.get("/connector/info")
@@ -221,7 +220,10 @@ def connector_info_endpoint(db: Session = Depends(get_db), connector=Depends(age
     src = db.get(MigrationSource, connector.source_id)
     if not src:
         raise HTTPException(404, "Source not found")
-    options = src.options or {}
+    try:
+        options = json.loads(src.options_json) if getattr(src, "options_json", None) else {}
+    except Exception:
+        options = {}
     db_name = (options.get("service_name") or options.get("sid")) if src.engine == "ORACLE" else src.database_name
     db_name = db_name or src.database_name
     return {

@@ -290,6 +290,25 @@ export default function SourceConnectorControl({
                 >
                   📄 Download Configuration (agent.env)
                 </button>
+                <button
+                  type="button"
+                  onClick={() => downloadAgent("zip")}
+                  style={{
+                    background: "#091e420f",
+                    color: "#0052cc",
+                    border: "1px solid #0052cc",
+                    borderRadius: 4,
+                    padding: "9px 18px",
+                    fontSize: "0.95rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  📦 Download Agent Bundle (.zip)
+                </button>
               </div>
               <p
                 style={{
@@ -298,7 +317,7 @@ export default function SourceConnectorControl({
                   color: "#5e6c84",
                 }}
               >
-                💡 <strong>Instructions:</strong> Save <code>agent.env</code> into the same folder as <code>migration-agent.exe</code>, enter your local database username and password in <code>agent.env</code>, and double-click the exe!
+                💡 <strong>Instructions:</strong> Save <code>agent.env</code> into the same folder as <code>migration-agent.exe</code> (or unzip the bundle), enter your local database username and password in <code>agent.env</code>, and run! When started, the Agent will automatically launch the local dashboard at <code>http://localhost:8585</code> to track real-time telemetry.
               </p>
             </div>
 

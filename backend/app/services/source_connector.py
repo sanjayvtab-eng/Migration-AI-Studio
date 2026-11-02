@@ -23,7 +23,7 @@ def connector_info(source_id):
     with SessionLocal() as db:
         row = db.get(SourceConnector, source_id)
         if row is None or row.enabled != "ENABLED":
-            return {"mode": "DIRECT", "status": "DIRECT"}
+            return {"mode": "DIRECT", "status": "REVOKED" if row and row.enabled == "REVOKED" else "DIRECT"}
         online = row.last_seen and datetime.utcnow() - row.last_seen < timedelta(seconds=45)
         return {"mode": "CONNECTOR", "status": "ONLINE" if online else "OFFLINE", "last_seen": row.last_seen}
 

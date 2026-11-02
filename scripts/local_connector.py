@@ -363,9 +363,12 @@ HTML_DASHBOARD = """<!DOCTYPE html>
         <div class="brand-subtitle">Universal High-Speed Local Agent Hub</div>
       </div>
     </div>
-    <div class="status-pill">
-      <div class="pulse-dot"></div>
-      <span id="agent-status">ONLINE & STREAMING</span>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <a id="studio-link" href="#" target="_blank" style="background: #2563eb; color: #fff; text-decoration: none; padding: 7px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 4px rgba(37,99,235,0.2);">Open Studio Deployment ↗</a>
+      <div class="status-pill" id="status-pill">
+        <div class="pulse-dot" id="pulse-dot"></div>
+        <span id="agent-status">ONLINE & STREAMING</span>
+      </div>
     </div>
   </header>
 
@@ -435,6 +438,26 @@ async function updateHUD() {
     if (!res.ok) return;
     const data = await res.json();
     
+    const statusText = data.status || 'ONLINE & STREAMING';
+    document.getElementById('agent-status').textContent = statusText;
+    const pulseDot = document.getElementById('pulse-dot');
+    if (pulseDot) {
+      if (statusText.includes('ONLINE')) {
+        pulseDot.style.background = '#10b981';
+        pulseDot.style.boxShadow = '0 0 10px #10b981';
+      } else if (statusText.includes('RECONNECT')) {
+        pulseDot.style.background = '#f59e0b';
+        pulseDot.style.boxShadow = '0 0 10px #f59e0b';
+      } else {
+        pulseDot.style.background = '#ef4444';
+        pulseDot.style.boxShadow = '0 0 10px #ef4444';
+      }
+    }
+    const studioLink = document.getElementById('studio-link');
+    if (studioLink && data.studio_url) {
+      studioLink.href = data.studio_url;
+    }
+
     document.getElementById('current-table').textContent = data.current_table || 'Idle';
     document.getElementById('current-op').textContent = data.current_operation || 'Ready for tasks';
     document.getElementById('total-rows').textContent = Number(data.total_rows || 0).toLocaleString();
@@ -481,15 +504,28 @@ class AgentDashboardHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
 def start_dashboard_server(start_port=8585):
-    for p in range(start_port, start_port + 20):
+    ports_to_try = [start_port] + list(range(start_port + 1, start_port + 15)) + [38585, 48585, 58585, 0]
+    for p in ports_to_try:
         try:
-            server = socketserver.TCPServer(("127.0.0.1", p), AgentDashboardHandler)
+            server = ReusableTCPServer(("127.0.0.1", p), AgentDashboardHandler)
+            assigned_port = server.server_address[1]
             t = threading.Thread(target=server.serve_forever, daemon=True)
             t.start()
-            return p
-        except OSError:
-            continue
+            return assigned_port
+        except Exception:
+            try:
+                server = ReusableTCPServer(("localhost", p), AgentDashboardHandler)
+                assigned_port = server.server_address[1]
+                t = threading.Thread(target=server.serve_forever, daemon=True)
+                t.start()
+                return assigned_port
+            except Exception:
+                continue
     return None
 
 class UniversalLocalAgent:
@@ -1382,6 +1418,7 @@ def main():
         print("-" * 68)
         print("Universal Connector started. Keep this process running.")
         print(f"Opening Local Dashboard at: {dashboard_url}")
+        print(f"[Tip] If browser does not open automatically, visit: {dashboard_url}")
         print("Press Ctrl+C to stop.")
         print("=" * 68 + "\n")
         try:
@@ -1389,6 +1426,7 @@ def main():
         except Exception:
             pass
     else:
+        print("-" * 68)
         print("Universal Connector started. Keep this process running.")
         print("Press Ctrl+C to stop.")
         print("=" * 68 + "\n")
@@ -1495,8 +1533,23 @@ def main():
                         log_telemetry(op, status_str, detail_msg)
                     else:
                         time.sleep(2)
-                except httpx.HTTPError:
-                    print("Hosted application unreachable. Retrying in 5 seconds...")
+                except httpx.HTTPStatusError as e:
+                    code = e.response.status_code if e.response else 0
+                    AGENT_TELEMETRY["status"] = f"RECONNECTING (HTTP {code})"
+                    if code in {502, 503, 504}:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio is waking up or deploying (HTTP {code}). Reconnecting in 5s...")
+                    elif code == 500:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio temporary error (HTTP 500). Retrying in 5s...")
+                    else:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio returned HTTP {code}. Retrying in 5s...")
+                    time.sleep(5)
+                except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+                    AGENT_TELEMETRY["status"] = "RECONNECTING (Studio unreachable)"
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio unreachable ({type(e).__name__}). Retrying in 5s...")
+                    time.sleep(5)
+                except httpx.HTTPError as e:
+                    AGENT_TELEMETRY["status"] = "RECONNECTING"
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio connection issue ({e}). Retrying in 5s...")
                     time.sleep(5)
     except KeyboardInterrupt:
         print("\nConnector stopped by user.")
