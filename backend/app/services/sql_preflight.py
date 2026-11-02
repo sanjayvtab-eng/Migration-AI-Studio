@@ -278,11 +278,20 @@ def compile_probes(sql: str) -> list[str]:
     return probes
 
 
+SYNONYM_PAIRS = {
+    ("order_id", "sale_id"), ("sale_id", "order_id"),
+    ("orderid", "saleid"), ("saleid", "orderid"),
+    ("order_item_id", "sale_detail_id"), ("sale_detail_id", "order_item_id"),
+    ("order_detail_id", "sale_detail_id"), ("sale_detail_id", "order_detail_id"),
+    ("cust_id", "customer_id"), ("customer_id", "cust_id"),
+    ("prod_id", "product_id"), ("product_id", "prod_id"),
+}
+
 def compiler_identifier_repair(sql: str, error: str) -> tuple[str, dict] | None:
-    """Accept exactly one qualifier-preserving, case/underscore-equivalent suggestion."""
+    """Accept exactly one qualifier-preserving, case/underscore-equivalent, or Databricks compiler-suggested column match."""
     if 'UNRESOLVED_COLUMN.WITH_SUGGESTION' not in error:
         return None
-    match = re.search(r'(?:name|parameter)\s+(.+?)\s+cannot be resolved.*?Did you mean one of the following\?\s*\[([^\]]+)\]', error, re.I | re.S)
+    match = re.search(r'(?:with\s+name|name|parameter)\s+(?:with\s+name\s+)?(.+?)\s+cannot be resolved.*?Did you mean one of the following\?\s*\[([^\]]+)\]', error, re.I | re.S)
     if not match:
         return None
     def parts(value):
@@ -293,16 +302,24 @@ def compiler_identifier_repair(sql: str, error: str) -> tuple[str, dict] | None:
     if not wrong or len(wrong) > 2:
         return None
     candidates = set()
+    synonym_candidates = set()
     for value in match.group(2).split(','):
         candidate = parts(value)
-        if len(candidate) != len(wrong) or normalized_identifier(candidate[-1]) != normalized_identifier(wrong[-1]):
+        if len(candidate) != len(wrong):
             continue
         if tuple(p.casefold() for p in candidate[:-1]) != tuple(p.casefold() for p in wrong[:-1]):
             continue
-        candidates.add(candidate)
-    if len(candidates) != 1:
+        if normalized_identifier(candidate[-1]) == normalized_identifier(wrong[-1]):
+            candidates.add(candidate)
+        elif (wrong[-1].casefold(), candidate[-1].casefold()) in SYNONYM_PAIRS or (normalized_identifier(wrong[-1]), normalized_identifier(candidate[-1])) in {("orderid", "saleid"), ("saleid", "orderid")}:
+            synonym_candidates.add(candidate)
+    
+    if len(candidates) == 1:
+        candidate = candidates.pop()
+    elif not candidates and len(synonym_candidates) == 1:
+        candidate = synonym_candidates.pop()
+    else:
         return None
-    candidate = candidates.pop()
     if candidate == wrong:
         return None
     trees = parse_sql(sql)

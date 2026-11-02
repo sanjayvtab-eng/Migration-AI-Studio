@@ -61,6 +61,7 @@ import {
   AlertCircle,
   Filter,
   Shield,
+  Info,
 } from "lucide-react";
 
 import SourceConnectorControl from "./SourceConnectorControl";
@@ -1361,6 +1362,15 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, [ready, pid, page]);
+
+  useEffect(() => {
+    if (msg) {
+      const timer = setTimeout(() => {
+        setMsg("");
+      }, 7000);
+      return () => clearTimeout(timer);
+    }
+  }, [msg]);
 
   // Live auto-polling: ONLY poll when an active background process / job is running
   useEffect(() => {
@@ -11225,6 +11235,48 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Floating In-View Toast Notification System */}
+      {msg && (
+        <div className="floating-toast-container">
+          <div className={`floating-toast ${
+            /fail|error|blocker|cannot|exception|refused|invalid|stale/i.test(msg)
+              ? "toast-error"
+              : /warn|pause|prerequisite|review/i.test(msg)
+              ? "toast-warning"
+              : /success|approved|completed|saved|cleared|passed|copied/i.test(msg)
+              ? "toast-success"
+              : "toast-info"
+          }`}>
+            <div className="toast-icon-wrap">
+              {/fail|error|blocker|cannot|exception|refused|invalid|stale/i.test(msg) ? (
+                <AlertTriangle size={17} />
+              ) : /warn|pause|prerequisite|review/i.test(msg) ? (
+                <AlertCircle size={17} />
+              ) : /success|approved|completed|saved|cleared|passed|copied/i.test(msg) ? (
+                <Check size={17} strokeWidth={2.5} />
+              ) : (
+                <Info size={17} />
+              )}
+            </div>
+            <div className="toast-content">
+              <div className="toast-title">
+                {/fail|error|blocker|cannot|exception|refused|invalid|stale/i.test(msg)
+                  ? "Execution / Deployment Alert"
+                  : /warn|pause|prerequisite|review/i.test(msg)
+                  ? "Action Attention Required"
+                  : /success|approved|completed|saved|cleared|passed|copied/i.test(msg)
+                  ? "Operation Succeeded"
+                  : "Studio Update"}
+              </div>
+              <div className="toast-msg">{msg}</div>
+            </div>
+            <button className="toast-close-btn" onClick={() => setMsg("")} title="Dismiss notification">
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

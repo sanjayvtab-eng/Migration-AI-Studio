@@ -208,64 +208,156 @@ HTML_DASHBOARD = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Databricks Migration AI Studio - Agent Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg-main: #0c1017;
-    --bg-card: #151b26;
-    --bg-hover: #1e2638;
-    --accent-blue: #3b82f6;
-    --accent-indigo: #6366f1;
-    --accent-emerald: #10b981;
-    --accent-amber: #f59e0b;
-    --accent-rose: #f43f5e;
+    --bg-main: #070a11;
+    --bg-card: rgba(13, 19, 33, 0.85);
+    --border-color: rgba(30, 41, 59, 0.7);
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
-    --border-color: #273142;
+    --text-muted: #64748b;
+    --accent-blue: #38bdf8;
+    --accent-purple: #c084fc;
+    --accent-emerald: #10b981;
+    --accent-amber: #f59e0b;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background-color: var(--bg-main);
+    background-image: 
+      radial-gradient(ellipse 60% 40% at 50% -10%, rgba(56, 189, 248, 0.08), transparent 70%),
+      radial-gradient(ellipse 40% 30% at 80% 50%, rgba(192, 132, 252, 0.04), transparent 60%);
     color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     line-height: 1.5;
-    padding: 24px;
+    padding: 20px 28px;
+    min-height: 100vh;
   }
-  .container { max-width: 1200px; margin: 0 auto; }
+  .container { max-width: 1280px; margin: 0 auto; }
+  
+  /* Top Nav Header */
   header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-bottom: 20px;
+    padding-bottom: 18px;
     border-bottom: 1px solid var(--border-color);
-    margin-bottom: 24px;
+    margin-bottom: 20px;
   }
   .brand { display: flex; align-items: center; gap: 14px; }
   .logo-icon {
-    width: 44px;
-    height: 44px;
-    background: linear-gradient(135deg, #ff3621 0%, #ff5a36 100%);
-    border-radius: 12px;
+    width: 38px;
+    height: 38px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-weight: 900;
-    font-size: 20px;
-    color: #fff;
-    box-shadow: 0 4px 14px rgba(255, 54, 33, 0.4);
   }
-  .brand-title { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
-  .brand-subtitle { font-size: 13px; color: var(--text-secondary); }
-  .status-pill {
+  .brand-title { font-size: 17px; font-weight: 800; letter-spacing: -0.3px; color: #fff; }
+  .brand-subtitle { font-size: 11.5px; color: var(--text-secondary); margin-top: 1px; }
+
+  /* Navigation Tabs */
+  .nav-tabs {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 16px;
-    background: rgba(16, 185, 129, 0.15);
-    border: 1px solid rgba(16, 185, 129, 0.4);
-    color: #34d399;
-    border-radius: 9999px;
+  }
+  .nav-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 15px;
+    border-radius: 8px;
+    font-size: 12.5px;
     font-weight: 600;
+    color: var(--text-secondary);
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.2s ease;
+  }
+  .nav-tab:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .nav-tab.active {
+    color: var(--accent-blue);
+    background: rgba(56, 189, 248, 0.08);
+    border-color: rgba(56, 189, 248, 0.35);
+  }
+
+  /* Hero Section */
+  .hero-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, rgba(15, 23, 42, 0.85) 0%, rgba(20, 31, 54, 0.75) 100%);
+    border: 1px solid rgba(56, 189, 248, 0.16);
+    border-radius: 16px;
+    padding: 22px 30px;
+    margin-bottom: 22px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.5);
+  }
+  .hero-left h1 {
+    font-size: 23px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: #fff;
+  }
+  .hero-left p {
     font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  .hero-graphic {
+    position: absolute;
+    left: 48%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  .hero-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    z-index: 2;
+  }
+  .btn-studio {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    color: #fff;
+    text-decoration: none;
+    padding: 9px 18px;
+    border-radius: 9px;
+    font-size: 13px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+    transition: all 0.2s ease;
+  }
+  .btn-studio:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45);
+  }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    color: #10b981;
+    border-radius: 9999px;
+    font-weight: 700;
+    font-size: 12.5px;
+    letter-spacing: 0.2px;
   }
   .pulse-dot {
     width: 8px;
@@ -280,159 +372,525 @@ HTML_DASHBOARD = """<!DOCTYPE html>
     50% { transform: scale(1.3); opacity: 1; }
     100% { transform: scale(0.9); opacity: 0.8; }
   }
+
+  /* 4 Metric Cards */
   .grid-stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: repeat(4, 1fr);
     gap: 16px;
-    margin-bottom: 24px;
+    margin-bottom: 22px;
   }
-  .card {
+  @media(max-width: 1024px) {
+    .grid-stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media(max-width: 600px) {
+    .grid-stats { grid-template-columns: 1fr; }
+  }
+  .metric-card {
     background: var(--bg-card);
-    border: 1px solid var(--border-color);
     border-radius: 14px;
-    padding: 20px;
+    padding: 18px 20px;
     position: relative;
     overflow: hidden;
+    transition: all 0.2s ease;
   }
-  .stat-label { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; margin-bottom: 6px; }
-  .stat-value { font-size: 26px; font-weight: 800; color: #fff; letter-spacing: -0.5px; }
-  .stat-sub { font-size: 12px; color: #34d399; margin-top: 4px; display: flex; align-items: center; gap: 4px; }
-  .active-card {
-    border-color: #3b82f6;
-    background: linear-gradient(180deg, rgba(59, 130, 246, 0.08) 0%, var(--bg-card) 100%);
+  .metric-card:hover {
+    transform: translateY(-2px);
   }
+  .card-cyan {
+    border: 1px solid rgba(14, 165, 233, 0.35);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.08) 0%, rgba(13, 19, 33, 0.95) 100%);
+  }
+  .card-purple {
+    border: 1px solid rgba(168, 85, 247, 0.35);
+    background: linear-gradient(180deg, rgba(168, 85, 247, 0.08) 0%, rgba(13, 19, 33, 0.95) 100%);
+  }
+  .card-emerald {
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    background: linear-gradient(180deg, rgba(34, 197, 94, 0.08) 0%, rgba(13, 19, 33, 0.95) 100%);
+  }
+  .card-amber {
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, rgba(13, 19, 33, 0.95) 100%);
+  }
+  .metric-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .metric-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .metric-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .metric-value {
+    font-size: 26px;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -0.5px;
+    line-height: 1.2;
+  }
+  .metric-sub {
+    font-size: 12px;
+    margin-top: 5px;
+    font-weight: 500;
+  }
+  .sub-cyan { color: var(--accent-blue); }
+  .sub-purple { color: var(--accent-purple); }
+  .sub-emerald { color: #4ade80; }
+  .sub-amber { color: #fbbf24; }
+
+  /* Main Two-Panel Layout */
   .main-layout {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 20px;
-    margin-bottom: 24px;
   }
-  @media(max-width: 900px) { .main-layout { grid-template-columns: 1fr; } }
-  .panel-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
-  .info-list { list-style: none; }
+  @media(max-width: 900px) {
+    .main-layout { grid-template-columns: 1fr; }
+  }
+  .panel-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 16px;
+  }
+  .panel-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .badge-tls {
+    background: rgba(59, 130, 246, 0.12);
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    color: #60a5fa;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 34px;
+    height: 18px;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #334155;
+    transition: .3s;
+    border-radius: 18px;
+  }
+  .slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+  }
+  input:checked + .slider { background-color: #3b82f6; }
+  input:checked + .slider:before { transform: translateX(16px); }
+
+  /* Info list in Profile */
+  .info-list { list-style: none; display: flex; flex-direction: column; gap: 12px; }
   .info-item {
     display: flex;
     justify-content: space-between;
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border-color);
-    font-size: 13px;
+    align-items: center;
+    font-size: 12.5px;
   }
-  .info-item:last-child { border-bottom: none; }
-  .info-key { color: var(--text-secondary); }
-  .info-val { font-weight: 600; font-family: monospace; color: #e2e8f0; }
-  .console-box {
-    background: #06090e;
-    border: 1px solid #1e293b;
-    border-radius: 10px;
-    padding: 14px;
-    font-family: Consolas, monospace;
+  .info-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-secondary);
+  }
+  .info-val {
+    font-weight: 600;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .info-val.highlight {
+    color: var(--accent-blue);
+    font-weight: 700;
+  }
+
+  /* Progress Bar in Profile */
+  .throughput-wrap {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-color);
+  }
+  .throughput-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
     font-size: 12px;
-    height: 280px;
-    overflow-y: auto;
-    color: #cbd5e1;
   }
-  .log-line { margin-bottom: 6px; display: flex; gap: 8px; }
-  .log-time { color: #64748b; }
-  .log-op { color: #38bdf8; font-weight: 600; }
-  .log-ok { color: #4ade80; font-weight: 600; }
-  .progress-wrap {
-    margin-top: 14px;
+  .badge-optimal {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #34d399;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 10.5px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   .progress-bar-bg {
     width: 100%;
-    height: 8px;
+    height: 6px;
     background: #1e293b;
     border-radius: 999px;
     overflow: hidden;
   }
   .progress-bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, #3b82f6, #10b981);
-    width: 0%;
-    transition: width 0.3s ease;
+    background: linear-gradient(90deg, #38bdf8 0%, #10b981 100%);
+    width: 100%;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+  }
+
+  /* Real-Time Feed Console */
+  .feed-box {
+    background: #05080e;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 12px;
+    font-family: 'JetBrains Mono', Consolas, monospace;
+    font-size: 11.5px;
+    height: 250px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .feed-item {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.03);
+  }
+  .feed-time {
+    color: var(--text-muted);
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+  .feed-badge {
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .feed-badge.completed {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .feed-badge.running {
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+  .feed-badge.failed {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+  }
+  .feed-text {
+    color: #cbd5e1;
+    word-break: break-word;
   }
 </style>
 </head>
 <body>
 <div class="container">
+  <!-- Header Bar -->
   <header>
     <div class="brand">
-      <div class="logo-icon">DB</div>
+      <div class="logo-icon">
+        <svg width="34" height="34" viewBox="0 0 40 40" fill="none">
+          <path d="M20 4L34 12V28L20 36L6 28V12L20 4Z" fill="#ff3621" fill-opacity="0.12"/>
+          <path d="M20 4L34 12L20 20L6 12L20 4Z" fill="#ff4a36"/>
+          <path d="M6 16L20 24L34 16L20 22L6 16Z" fill="#ff3621"/>
+          <path d="M6 24L20 32L34 24L20 30L6 24Z" fill="#d92411"/>
+        </svg>
+      </div>
       <div>
         <div class="brand-title">Databricks Migration AI Studio</div>
         <div class="brand-subtitle">Universal High-Speed Local Agent Hub</div>
       </div>
     </div>
-    <div style="display: flex; align-items: center; gap: 12px;">
-      <a id="studio-link" href="#" target="_blank" style="background: #2563eb; color: #fff; text-decoration: none; padding: 7px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 2px 4px rgba(37,99,235,0.2);">Open Studio Deployment ↗</a>
+    
+    <div class="nav-tabs">
+      <div class="nav-tab active">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        Overview
+      </div>
+      <div class="nav-tab">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        Migration
+      </div>
+      <div class="nav-tab">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        Connections
+      </div>
+      <div class="nav-tab">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Logs
+      </div>
+      <div class="nav-tab">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <div class="hero-banner">
+    <div class="hero-left">
+      <h1>Migration Overview</h1>
+      <p>Monitor and manage your database migration to Databricks</p>
+    </div>
+    
+    <div class="hero-graphic">
+      <svg width="120" height="70" viewBox="0 0 120 70" fill="none">
+        <path d="M60 4L105 24L60 44L15 24L60 4Z" fill="url(#hero-grad1)" stroke="#ff4a36" stroke-width="1.5"/>
+        <path d="M15 32L60 52L105 32L60 40L15 32Z" fill="url(#hero-grad2)" stroke="#ff3621" stroke-width="1.2"/>
+        <path d="M15 42L60 62L105 42L60 50L15 42Z" fill="url(#hero-grad3)" stroke="#38bdf8" stroke-width="1.2"/>
+        <defs>
+          <linearGradient id="hero-grad1" x1="15" y1="4" x2="105" y2="44" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#ff735c"/>
+            <stop offset="1" stop-color="#ff3621" stop-opacity="0.8"/>
+          </linearGradient>
+          <linearGradient id="hero-grad2" x1="15" y1="32" x2="105" y2="52" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#ff3621" stop-opacity="0.9"/>
+            <stop offset="1" stop-color="#c084fc" stop-opacity="0.8"/>
+          </linearGradient>
+          <linearGradient id="hero-grad3" x1="15" y1="42" x2="105" y2="62" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#38bdf8" stop-opacity="0.9"/>
+            <stop offset="1" stop-color="#1e40af" stop-opacity="0.8"/>
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="hero-right">
+      <a id="studio-link" href="#" target="_blank" class="btn-studio">Open Studio Deployment ↗</a>
       <div class="status-pill" id="status-pill">
         <div class="pulse-dot" id="pulse-dot"></div>
         <span id="agent-status">ONLINE & STREAMING</span>
       </div>
     </div>
-  </header>
+  </div>
 
+  <!-- 4 Metric Cards -->
   <div class="grid-stats">
-    <div class="card active-card">
-      <div class="stat-label">Active Migration Target</div>
-      <div class="stat-value" id="current-table" style="font-size: 20px;">Idle</div>
-      <div class="stat-sub" id="current-op">Awaiting batch requests...</div>
+    <!-- Card 1 -->
+    <div class="metric-card card-cyan">
+      <div class="metric-header">
+        <div class="metric-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+        </div>
+        <div class="metric-label">Active Migration Target</div>
+      </div>
+      <div class="metric-value" id="current-table">Idle</div>
+      <div class="metric-sub sub-cyan" id="current-op">Awaiting batch requests...</div>
     </div>
-    <div class="card">
-      <div class="stat-label">Total Rows Migrated</div>
-      <div class="stat-value" id="total-rows">0</div>
-      <div class="stat-sub">Streaming in real-time</div>
+
+    <!-- Card 2 -->
+    <div class="metric-card card-purple">
+      <div class="metric-header">
+        <div class="metric-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#c084fc" stroke-width="2.2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        </div>
+        <div class="metric-label">Total Rows Migrated</div>
+      </div>
+      <div class="metric-value" id="total-rows">0</div>
+      <div class="metric-sub sub-purple">Streaming in real-time</div>
     </div>
-    <div class="card">
-      <div class="stat-label">Instantaneous Speed</div>
-      <div class="stat-value" id="transfer-speed">0 rows/s</div>
-      <div class="stat-sub" id="compression-savings">Gzip Acceleration: Active</div>
+
+    <!-- Card 3 -->
+    <div class="metric-card card-emerald">
+      <div class="metric-header">
+        <div class="metric-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+        <div class="metric-label">Instantaneous Speed</div>
+      </div>
+      <div class="metric-value" id="transfer-speed">0 rows/s</div>
+      <div class="metric-sub sub-emerald" id="compression-savings">Gzip Acceleration: Active</div>
     </div>
-    <div class="card">
-      <div class="stat-label">Bandwidth Efficiency</div>
-      <div class="stat-value" id="bandwidth-saved">85%</div>
-      <div class="stat-sub">In-Flight Compression</div>
+
+    <!-- Card 4 -->
+    <div class="metric-card card-amber">
+      <div class="metric-header">
+        <div class="metric-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+        </div>
+        <div class="metric-label">Bandwidth Efficiency</div>
+      </div>
+      <div class="metric-value" id="bandwidth-saved">0% saved</div>
+      <div class="metric-sub sub-amber">In-Flight Compression</div>
     </div>
   </div>
 
+  <!-- Bottom Two Panels -->
   <div class="main-layout">
-    <div class="card">
-      <div class="panel-title">
-        <span>Connection Profile</span>
-        <span style="font-size: 11px; color: #38bdf8; font-weight: normal;">TLS 1.3 Outbound</span>
+    <!-- Left: Connection Profile -->
+    <div class="panel-card">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          Connection Profile
+        </div>
+        <div class="badge-tls">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          TLS 1.3 Outbound
+        </div>
       </div>
       <ul class="info-list">
-        <li class="info-item"><span class="info-key">Source Profile:</span><span class="info-val" id="source-id">-</span></li>
-        <li class="info-item"><span class="info-key">Database Engine:</span><span class="info-val" id="db-engine">-</span></li>
-        <li class="info-item"><span class="info-key">Local Database:</span><span class="info-val" id="db-name">-</span></li>
-        <li class="info-item"><span class="info-key">Server Host:</span><span class="info-val" id="db-server">-</span></li>
-        <li class="info-item"><span class="info-key">Target Studio URL:</span><span class="info-val" id="studio-url" style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span></li>
+        <li class="info-item">
+          <span class="info-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+            Source Profile:
+          </span>
+          <span class="info-val" id="source-id">-</span>
+        </li>
+        <li class="info-item">
+          <span class="info-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+            Database Engine:
+          </span>
+          <span class="info-val highlight" id="db-engine">SQLSERVER</span>
+        </li>
+        <li class="info-item">
+          <span class="info-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+            Local Database:
+          </span>
+          <span class="info-val" id="db-name">-</span>
+        </li>
+        <li class="info-item">
+          <span class="info-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Server Host:
+          </span>
+          <span class="info-val" id="db-server">-</span>
+        </li>
+        <li class="info-item">
+          <span class="info-label">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            Target Studio URL:
+          </span>
+          <span class="info-val" id="studio-url" style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</span>
+        </li>
       </ul>
-      <div class="progress-wrap">
-        <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px;">
-          <span style="color: var(--text-secondary);">Batch Throughput</span>
-          <span id="batch-progress" style="font-weight: 600; color: #38bdf8;">Optimal</span>
+
+      <div class="throughput-wrap">
+        <div class="throughput-header">
+          <span style="color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/></svg>
+            Batch Throughput
+          </span>
+          <span class="badge-optimal">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            Optimal
+          </span>
         </div>
         <div class="progress-bar-bg">
-          <div class="progress-bar-fill" id="progress-fill" style="width: 100%;"></div>
+          <div class="progress-bar-fill" id="progress-fill"></div>
         </div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="panel-title">
-        <span>Real-Time Operation Feed</span>
-        <span style="font-size: 11px; color: #94a3b8; font-weight: normal;">Auto-refreshing</span>
+    <!-- Right: Real-Time Operation Feed -->
+    <div class="panel-card">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span style="color: #38bdf8; font-family: monospace;">&gt;_</span>
+          Real-Time Operation Feed
+        </div>
+        <div class="toggle-wrap">
+          <span>Auto-refreshing</span>
+          <label class="switch">
+            <input type="checkbox" id="auto-refresh-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
-      <div class="console-box" id="log-box">
-        <div class="log-line"><span class="log-time">[Init]</span> <span class="log-op">Universal Agent initialized successfully</span></div>
+      
+      <div class="feed-box" id="log-box">
+        <div class="feed-item">
+          <span class="feed-time">[Init]</span>
+          <span class="feed-badge completed">✔ COMPLETED</span>
+          <span class="feed-text">Universal Agent initialized successfully</span>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
 <script>
+let autoRefresh = true;
+document.getElementById('auto-refresh-toggle').addEventListener('change', function(e) {
+  autoRefresh = e.target.checked;
+});
+
 async function updateHUD() {
+  if (!autoRefresh) return;
   try {
     const res = await fetch('/api/status');
     if (!res.ok) return;
@@ -441,16 +899,27 @@ async function updateHUD() {
     const statusText = data.status || 'ONLINE & STREAMING';
     document.getElementById('agent-status').textContent = statusText;
     const pulseDot = document.getElementById('pulse-dot');
-    if (pulseDot) {
+    const statusPill = document.getElementById('status-pill');
+    
+    if (pulseDot && statusPill) {
       if (statusText.includes('ONLINE')) {
         pulseDot.style.background = '#10b981';
         pulseDot.style.boxShadow = '0 0 10px #10b981';
+        statusPill.style.color = '#10b981';
+        statusPill.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+        statusPill.style.background = 'rgba(16, 185, 129, 0.12)';
       } else if (statusText.includes('RECONNECT')) {
         pulseDot.style.background = '#f59e0b';
         pulseDot.style.boxShadow = '0 0 10px #f59e0b';
+        statusPill.style.color = '#f59e0b';
+        statusPill.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+        statusPill.style.background = 'rgba(245, 158, 11, 0.12)';
       } else {
         pulseDot.style.background = '#ef4444';
         pulseDot.style.boxShadow = '0 0 10px #ef4444';
+        statusPill.style.color = '#ef4444';
+        statusPill.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+        statusPill.style.background = 'rgba(239, 68, 68, 0.12)';
       }
     }
     const studioLink = document.getElementById('studio-link');
@@ -463,17 +932,25 @@ async function updateHUD() {
     document.getElementById('total-rows').textContent = Number(data.total_rows || 0).toLocaleString();
     document.getElementById('transfer-speed').textContent = `${Number(data.speed || 0).toLocaleString()} rows/s`;
     document.getElementById('source-id').textContent = data.source_id || '-';
-    document.getElementById('db-engine').textContent = data.engine || '-';
+    document.getElementById('db-engine').textContent = data.engine || 'SQLSERVER';
     document.getElementById('db-name').textContent = data.database || '-';
     document.getElementById('db-server').textContent = data.server || '-';
     document.getElementById('studio-url').textContent = data.studio_url || '-';
-    document.getElementById('bandwidth-saved').textContent = data.compression_ratio || '85%';
+    document.getElementById('bandwidth-saved').textContent = data.compression_ratio || '0% saved';
 
     if (data.logs && data.logs.length) {
       const box = document.getElementById('log-box');
-      box.innerHTML = data.logs.map(l => 
-        `<div class="log-line"><span class="log-time">[${l.time}]</span> <span class="log-op">${l.op}:</span> <span class="${l.status === 'completed' ? 'log-ok' : 'log-time'}">${l.status}</span> ${l.details || ''}</div>`
-      ).join('');
+      box.innerHTML = data.logs.map(l => {
+        const isOk = l.status === 'completed';
+        const isFail = l.status === 'failed';
+        const badgeClass = isOk ? 'completed' : isFail ? 'failed' : 'running';
+        const badgeText = isOk ? '✔ COMPLETED' : isFail ? '❌ FAILED' : '⏳ RUNNING';
+        return `<div class="feed-item">
+          <span class="feed-time">[${l.time}]</span>
+          <span class="feed-badge ${badgeClass}">${badgeText}</span>
+          <span class="feed-text"><strong>${l.op}:</strong> ${l.details || l.status}</span>
+        </div>`;
+      }).join('');
       box.scrollTop = box.scrollHeight;
     }
   } catch(e) {}

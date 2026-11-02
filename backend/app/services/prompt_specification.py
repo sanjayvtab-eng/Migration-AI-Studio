@@ -3242,7 +3242,7 @@ def _generate_generic_fact_sql(
         has_orders = any("order" in k for k in table_map)
 
         p_pid = _resolve_col_name(table_map, "payments", ["payment_id", "paymentid", "id"], "payment_id")
-        p_oid = _resolve_col_name(table_map, "payments", ["order_id", "orderid"], "order_id")
+        p_oid = _resolve_col_name(table_map, "payments", ["sale_id", "saleid", "sales_id", "salesid", "order_id", "orderid", "payment_id", "id"], "sale_id" if any("sale" in k for k in table_map) else "order_id")
         p_date = _resolve_col_name(table_map, "payments", ["payment_date", "paymentdate", "date"], "payment_date")
         p_method = _resolve_col_name(table_map, "payments", ["payment_method", "paymentmethod", "method"], "payment_method")
         p_amount = _resolve_col_name(table_map, "payments", ["payment_amount", "paymentamount", "amount"], "payment_amount")
