@@ -34,6 +34,10 @@ def workspace_host():
 
 TRANSIENT = (
     "warehouse is starting",
+    "cannot create the resource",
+    "try again later",
+    "resource_exhausted",
+    "resource exhausted",
     "connection reset",
     "temporary service unavailable",
     "gateway timeout",

@@ -10536,7 +10536,7 @@ export default function App() {
                       Databricks Personal Access Token (PAT)
                       {environmentConfig?.has_direct_token && (
                         <span style={{ marginLeft: 8, fontSize: 11, color: "#059669", fontWeight: 700 }}>
-                          ✓ Direct Token Active (Encrypted)
+                          ✓ User Credential Active (AES Encrypted)
                         </span>
                       )}
                     </label>
@@ -10546,7 +10546,7 @@ export default function App() {
                         type={showDirectDatabricksToken ? "text" : "password"}
                         className="env-text-input has-icon"
                         value={directDatabricksToken}
-                        placeholder={environmentConfig?.has_direct_token ? "•••••••••••••••• (Leave blank to keep current token)" : "dapi... (Enter your personal Databricks token)"}
+                        placeholder={environmentConfig?.has_direct_token ? "•••••••••••••••• (Leave blank to keep your current token)" : "dapi... (Enter your personal Databricks token)"}
                         onChange={(e) => setDirectDatabricksToken(e.target.value)}
                         style={{ paddingRight: 36 }}
                       />
@@ -10571,22 +10571,8 @@ export default function App() {
                         {showDirectDatabricksToken ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
                       </button>
                     </div>
-                  </div>
-
-                  <div className="env-field-group">
-                    <label className="env-field-label">Token Secret Reference (Env Var Fallback)</label>
-                    <div className="env-input-wrapper">
-                      <input
-                        className="env-text-input"
-                        value={environmentForm.token_env_key}
-                        placeholder="DATABRICKS_TOKEN"
-                        onChange={(e) =>
-                          setEnvironmentForm({
-                            ...environmentForm,
-                            token_env_key: e.target.value,
-                          })
-                        }
-                      />
+                    <div style={{ fontSize: 11, color: "#64748b", marginTop: 4 }}>
+                      Each project uses its own dedicated credentials. Your token is encrypted and used exclusively for this workspace.
                     </div>
                   </div>
 
@@ -10607,6 +10593,30 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* Optional Fallback Env Var (Collapsible) */}
+                <details style={{ marginTop: 12, padding: "8px 12px", background: "rgba(241, 245, 249, 0.4)", borderRadius: 6, border: "1px dashed #cbd5e1" }}>
+                  <summary style={{ fontSize: 11.5, color: "#64748b", cursor: "pointer", userSelect: "none", fontWeight: 600 }}>
+                    ⚙️ Advanced: Server Environment Variable Fallback (Optional)
+                  </summary>
+                  <div style={{ marginTop: 8, fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
+                    If you prefer hosting credentials on the backend server environment rather than saving a direct token, specify the environment variable name below. (When a Direct Token is entered above, it always takes precedence).
+                  </div>
+                  <div style={{ marginTop: 8, maxWidth: 360 }}>
+                    <input
+                      className="env-text-input"
+                      value={environmentForm.token_env_key}
+                      placeholder="DATABRICKS_TOKEN"
+                      onChange={(e) =>
+                        setEnvironmentForm({
+                          ...environmentForm,
+                          token_env_key: e.target.value,
+                        })
+                      }
+                      style={{ height: 32, fontSize: 12 }}
+                    />
+                  </div>
+                </details>
 
                 {/* Action Buttons with Clear Hierarchy */}
                 <div style={{ display: "flex", gap: 10, marginTop: 20, alignItems: "center", flexWrap: "wrap" }}>

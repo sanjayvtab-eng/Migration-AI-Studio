@@ -183,6 +183,14 @@ def _execute(row: MigrationDatabricksConfiguration, statement: str, *, safe_retr
         # Connector/provider messages are useful, but a provider must never be able
         # to reflect the configured credential into an API response or audit row.
         message=str(exc).replace(token,"[REDACTED]")
+        lower = message.lower()
+        if "cannot create the resource" in lower or "try again later" in lower or "resource_exhausted" in lower:
+            wh_id = row.http_path.split("/")[-1] if row.http_path else "warehouse"
+            raise RuntimeError(
+                f"Databricks SQL Warehouse '{wh_id}' compute resource is starting or temporarily unavailable: {message}. "
+                f"Your Personal Access Token is valid, but the warehouse compute is still provisioning in Databricks. "
+                f"Please ensure SQL Warehouse '{wh_id}' is STARTED in your Databricks workspace and retry."
+            ) from None
         raise RuntimeError(message or "Databricks request failed") from None
 
 
