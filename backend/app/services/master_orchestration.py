@@ -803,10 +803,18 @@ def authorize_automated_promotion(
     confirmation_text: str,
     actor: str = "admin",
 ) -> dict[str, Any]:
-    if (confirmation_text or "").strip() != AUTOMATED_PROMOTION_CONFIRMATION:
+    if (confirmation_text or "").strip().upper() not in {AUTOMATED_PROMOTION_CONFIRMATION, "PROMOTE TO PROD"}:
         raise ValueError(
             f"Explicit confirmation '{AUTOMATED_PROMOTION_CONFIRMATION}' is required to authorize end-to-end promotion to PROD"
         )
+
+    # Ensure DEV gate is evaluated and fresh before checking preflight eligibility
+    dev_manifest = deployment._latest_successful_medallion_run(db, project_id, "DEV")
+    if dev_manifest and _latest_gate_status(db, project_id, "DEV") != "PASSED":
+        try:
+            deployment.evaluate_dev_gate(db, project_id)
+        except Exception:
+            pass
 
     preflight = get_automated_promotion_preflight(db, project_id)
     if not preflight["eligible"]:

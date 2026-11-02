@@ -11357,7 +11357,7 @@ export default function App() {
       {msg && (
         <div className="floating-toast-container">
           <div className={`floating-toast ${
-            /fail|error|blocker|cannot|exception|refused|invalid|stale/i.test(msg)
+            /fail|error|blocker|blocked|cannot|exception|refused|invalid|stale/i.test(msg)
               ? "toast-error"
               : /warn|pause|prerequisite|review/i.test(msg)
               ? "toast-warning"
@@ -11366,7 +11366,7 @@ export default function App() {
               : "toast-info"
           }`}>
             <div className="toast-icon-wrap">
-              {/fail|error|blocker|cannot|exception|refused|invalid|stale/i.test(msg) ? (
+              {/fail|error|blocker|blocked|cannot|exception|refused|invalid|stale/i.test(msg) ? (
                 <AlertTriangle size={17} />
               ) : /warn|pause|prerequisite|review/i.test(msg) ? (
                 <AlertCircle size={17} />
@@ -11378,7 +11378,7 @@ export default function App() {
             </div>
             <div className="toast-content">
               <div className="toast-title">
-                {/fail|error|blocker|cannot|exception|refused|invalid|stale/i.test(msg)
+                {/fail|error|blocker|blocked|cannot|exception|refused|invalid|stale/i.test(msg)
                   ? "Execution / Deployment Alert"
                   : /warn|pause|prerequisite|review/i.test(msg)
                   ? "Action Attention Required"
