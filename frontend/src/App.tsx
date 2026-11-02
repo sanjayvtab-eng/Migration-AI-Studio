@@ -2602,7 +2602,9 @@ export default function App() {
     if (isRetry && resume) {
       if (
         !confirm(
-          `Resume DEV deployment from the failed/pending objects? (${deployedCount} already passed objects will be preserved and skipped)`
+          verifiedToSkip > 0
+            ? `Resume DEV deployment from the failed/pending objects? (${verifiedToSkip} already verified objects will be preserved and skipped)`
+            : "Resume DEV deployment to deploy remaining uncompleted objects?"
         )
       ) {
         return;
@@ -2987,6 +2989,10 @@ export default function App() {
     if (deployActiveEnv === "PROD") return prodPromotion?.passed ?? (prodPromotion?.total ?? 0);
     return medDeployment?.deployed ?? (reconResult?.passed ?? attemptItems.filter((i: any) => i.env === "DEV" && i.status === "PASSED").length);
   }, [deployActiveEnv, testPromotion, uatPromotion, prodPromotion, medDeployment, reconResult, attemptItems]);
+
+  const verifiedToSkip = useMemo(() => {
+    return Math.max(medDeployment?.total_verified_in_dev ?? 0, deployedCount);
+  }, [medDeployment?.total_verified_in_dev, deployedCount]);
 
   const failedCount = useMemo(() => {
     if (deployActiveEnv === "TEST") return testPromotion?.failed ?? 0;
@@ -6966,7 +6972,7 @@ export default function App() {
                         title={`Resume from failed object. ${deployedCount} objects already passed will be skipped.`}
                       >
                         <RefreshCw size={15} className={busy ? "spinning" : ""} />
-                        Resume Failed Run ({deployedCount} passed)
+                        Resume Failed Run ({verifiedToSkip} passed)
                       </button>
                     ) : (
                       <button
@@ -10212,8 +10218,8 @@ export default function App() {
                   <div className="deploy-kpi-card">
                     <div className="deploy-kpi-label">DEPLOYED / VERIFIED</div>
                     <div className="deploy-kpi-val">
-                      <span className="deploy-kpi-count">{deployedCount}</span>
-                      <span className="deploy-kpi-count-unit">{deployedCount === 1 ? "object" : "objects"}</span>
+                      <span className="deploy-kpi-count">{verifiedToSkip}</span>
+                      <span className="deploy-kpi-count-unit">{verifiedToSkip === 1 ? "object" : "objects"}</span>
                     </div>
                   </div>
 
@@ -10264,7 +10270,9 @@ export default function App() {
                           }}
                         >
                           <RefreshCw size={14} className={busy ? "spinning" : ""} />
-                          Resume from Failed Object ({deployedCount} already verified objects will be skipped)
+                          {verifiedToSkip > 0
+                            ? `Resume from Failed Object (${verifiedToSkip} already verified objects will be skipped)`
+                            : "Resume DEV Deployment (Deploy Remaining Artifacts)"}
                         </button>
                         <button
                           type="button"

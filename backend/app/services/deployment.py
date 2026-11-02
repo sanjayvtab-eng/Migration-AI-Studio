@@ -813,9 +813,18 @@ def medallion_deployment_status(
         failed_count = len(artifact_failures) if (complete and not artifact_failures) else (
             sum(row.status == "FAILED" for row in objects) or int(failure is not None)
         )
+        distinct_passed_targets = set()
+        for r in rows:
+            if r.status == "PASSED":
+                p = _payload(r)
+                ident = p.get("medallion_node_id") or p.get("target_fqn") or r.object_id
+                if ident and (p.get("layer") in {"BRONZE", "SILVER", "GOLD"} or p.get("medallion_node_id")):
+                    distinct_passed_targets.add(ident)
+
         return {
             "environment": env, "status": status, "run_id": run_id,
             "deployed": sum(row.status == "PASSED" for row in objects),
+            "total_verified_in_dev": len(distinct_passed_targets),
             "failed": failed_count,
             "failed_target": failed_payload.get("failed_target") or failed_payload.get("target_fqn"),
             "error": failed_payload.get("error"),
