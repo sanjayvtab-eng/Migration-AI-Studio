@@ -201,6 +201,10 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     otp: Mapped[str | None] = mapped_column(String(16), nullable=True)
     otp_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    otp_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    password_proof_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    password_proof_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    session_version: Mapped[int] = mapped_column(Integer, default=0)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
 # Generic project-scoped control tables required by the canonical model but represented compactly.

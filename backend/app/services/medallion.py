@@ -2016,6 +2016,33 @@ def _deployment_artifact_order(db: Session, project_id: str, environment: str,
     return [by_id[node.id] for node in ordered]
 
 
+def matching_resume_evidence(artifacts, nodes, objects, history, workspace, max_rows):
+    """Reuse only the latest attempt with the exact approved execution identity."""
+    from app.services import bronze_ingestion
+    current = {item['node_id']: item for item in artifacts}
+    seen, reusable = set(), {}
+    for row in history:  # newest first, including failed attempts
+        payload = _loads(row.payload_json, {})
+        node_id = payload.get('medallion_node_id')
+        if not node_id or node_id in seen:
+            continue
+        seen.add(node_id)
+        item, node = current.get(node_id), nodes.get(node_id)
+        if row.status != 'PASSED' or not item or not node:
+            continue
+        obj = objects.get(node.source_object_id)
+        if ('source_hash' in payload and 'max_rows' in payload
+                and payload.get('artifact_version_id') == item.get('artifact_version_id')
+                and payload.get('artifact_content_hash') == item.get('content_hash')
+                and item.get('content_hash')
+                and bronze_ingestion._same_fqn(payload.get('target_fqn'), node.target_fqn)
+                and payload.get('databricks_workspace') == workspace
+                and payload.get('source_hash') == (obj.source_hash if obj else None)
+                and payload.get('max_rows') == max_rows):
+            reusable[node_id] = {'dpl_id': row.id}
+    return reusable
+
+
 def _deploy_legacy_bronze(db, project_id, obj, node, item, run_id,
                           batch_size, max_rows, allow_destructive, replace_existing_data):
     from app.services.databricks_client import execute_sql
@@ -2156,29 +2183,19 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
     prior_passed_deployments = list(db.scalars(select(MigrationDeployment).where(
         MigrationDeployment.project_id == project_id,
         MigrationDeployment.environment == env,
-        MigrationDeployment.status == "PASSED",
+        MigrationDeployment.status.in_(["PASSED", "FAILED"]),
     ).order_by(MigrationDeployment.created_at.desc())).all())
 
-    # Smart resume: if any bronze tables already passed in prior DEV runs, reuse them directly
-    if resume_from_failed and not allow_destructive and not replace_existing_data:
-        for dpl in prior_passed_deployments:
-            p = _loads(dpl.payload_json, {})
-            if p.get("layer") == "BRONZE" and dpl.object_id:
-                if dpl.object_id not in reusable:
-                    reusable[dpl.object_id] = {
-                        "object_id": dpl.object_id,
-                        "target_fqn": p.get("target_fqn") or approved_bronze_targets.get(dpl.object_id),
-                        "action": "REUSE_VERIFIED_BRONZE",
-                        "checkpoint_reused": True,
-                        "checkpoint_decision": "TARGET_MATCHED",
-                        "status": "PASSED",
-                    }
+    prior_passed_nodes = matching_resume_evidence(
+        artifacts, node_by_id, object_by_id, prior_passed_deployments,
+        databricks_workspace_identity(), max_rows,
+    ) if resume_from_failed and not allow_destructive and not replace_existing_data else {}
     bronze_targets_to_load = []
     if config is not None:
         for item in artifacts:
             node = node_by_id[item["node_id"]]
             obj = object_by_id.get(node.source_object_id)
-            if node.layer == "BRONZE" and obj and obj.object_type == "TABLE" and obj.id not in reusable:
+            if node.layer == "BRONZE" and obj and obj.object_type == "TABLE" and obj.id not in reusable and node.id not in prior_passed_nodes:
                 plan, _ = bronze_ingestion._requirements(db, project_id)
                 approved_target = bronze_ingestion.validate_approved_bronze_target(
                     node.target_fqn, expected_catalog=plan.catalog_name
@@ -2196,7 +2213,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 break
 
         # Connector sources must be loaded sequentially (max_workers=1) to prevent queue contention and cursor interleaving on the local agent
-        max_workers = 1 if is_connector else min(len(bronze_targets_to_load), 4)
+        max_workers = 1 if is_connector else min(len(bronze_targets_to_load), 2)
 
         import concurrent.futures
         from app.core.database import SessionLocal
@@ -2218,6 +2235,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
             finally:
                 worker_db.close()
 
+        db.commit()  # Release the parent control DB connection before fan-out.
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(_worker_bronze_load, obj_id, target_fqn): obj_id
@@ -2244,32 +2262,12 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 except Exception:
                     pass
 
-    prior_passed_nodes: dict[str, dict[str, Any]] = {}
-    if resume_from_failed and not allow_destructive:
-        for dpl in prior_passed_deployments:
-            p = _loads(dpl.payload_json, {})
-            nid = p.get("medallion_node_id")
-            tfqn = p.get("target_fqn")
-            vid = p.get("artifact_version_id")
-            chash = p.get("artifact_content_hash")
-            if nid and nid not in prior_passed_nodes:
-                prior_passed_nodes[nid] = {"version_id": vid, "hash": chash, "target_fqn": tfqn, "dpl_id": dpl.id}
-            if tfqn and tfqn not in prior_passed_nodes:
-                prior_passed_nodes[tfqn] = {"version_id": vid, "hash": chash, "target_fqn": tfqn, "dpl_id": dpl.id}
-
     deployed = []
     for item in artifacts:
         node = node_by_id[item["node_id"]]
         obj = object_by_id.get(node.source_object_id)
-
-        # Smart resume: if this node already passed in DEV and its artifact has not changed, skip re-execution
-        passed_info = prior_passed_nodes.get(node.id) or prior_passed_nodes.get(node.target_fqn)
-        is_already_passed = False
-        if resume_from_failed and not allow_destructive and passed_info:
-            p_hash = passed_info.get("hash")
-            p_vid = passed_info.get("version_id")
-            if (p_hash and p_hash == item.get("content_hash")) or (p_vid and p_vid == item.get("artifact_version_id")):
-                is_already_passed = True
+        passed_info = prior_passed_nodes.get(node.id)
+        is_already_passed = passed_info is not None
 
         if is_already_passed:
             detail = {
@@ -2288,6 +2286,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                     "layer": node.layer, "target_fqn": node.target_fqn,
                     "artifact_version_id": item["artifact_version_id"],
                     "artifact_version": item["version"],
+                    "source_hash": obj.source_hash if obj else None, "max_rows": max_rows,
                     "artifact_content_hash": item["content_hash"],
                     "skipped": True,
                     **detail
@@ -2309,7 +2308,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                     detail = {"action": "REUSE_VERIFIED_BRONZE", "checkpoint_reused": True,
                               "checkpoint_decision": "TARGET_MATCHED",
                               "approved_target_fqn": node.target_fqn,
-                              "bronze_run_id": checkpoint["run_id"], "load": evidence}
+                              "bronze_run_id": (checkpoint or {}).get("run_id"), "load": evidence}
                 elif config is not None:
                     # Reuse the project-scoped atomic loader, including its approval gate.
                     plan, _ = bronze_ingestion._requirements(db, project_id)
@@ -2357,15 +2356,6 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 from app.services.deployment import _safe_execute_with_auto_healing
                 repairs = _safe_execute_with_auto_healing(db, item['content'], allow_destructive=allow_destructive,
                                                          project_id=project_id, run_id=run_id, executor=execute_sql)
-                if repairs:
-                    try:
-                        from app.models.canonical import MigrationArtifactVersion
-                        av_row = db.get(MigrationArtifactVersion, item.get("artifact_version_id"))
-                        if av_row and repairs[-1].get("patched_sql"):
-                            av_row.content = repairs[-1]["patched_sql"]
-                            db.commit()
-                    except Exception:
-                        pass
                 detail = {"action": "EXECUTE_ARTIFACT", "repairs": len(repairs) if repairs else 0}
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
                                        environment="DEV", status="PASSED",
@@ -2376,7 +2366,8 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                                                            "layer": node.layer, "target_fqn": node.target_fqn,
                                                            "artifact_version_id": item["artifact_version_id"],
                                                            "artifact_version": item["version"],
-                                                           "artifact_content_hash": item["content_hash"], **detail})))
+                                                           "source_hash": obj.source_hash if obj else None, "max_rows": max_rows,
+                    "artifact_content_hash": item["content_hash"], **detail})))
             node.status = "DEPLOYED"; deployed.append({"target_fqn": node.target_fqn, "layer": node.layer, "status": "PASSED"})
             db.commit()
         except Exception as exc:
@@ -2389,7 +2380,8 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                                                            "layer": node.layer, "target_fqn": node.target_fqn,
                                                            "artifact_version_id": item["artifact_version_id"],
                                                            "artifact_version": item["version"],
-                                                           "artifact_content_hash": item["content_hash"], "error": str(exc)})))
+                                                           "source_hash": obj.source_hash if obj else None, "max_rows": max_rows,
+                    "artifact_content_hash": item["content_hash"], "error": str(exc)})))
             node.status = "FAILED"; db.commit()
             return {"run_id": run_id, "status": "FAILED", "failed_target": node.target_fqn, "error": str(exc), "deployed": deployed}
     db.add(MigrationDeployment(
@@ -2401,9 +2393,16 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                             "deployed": len(deployed), "expected": len(artifacts)}),
     ))
     db.commit()
+    # Deployment completion is distinct from measured verification. Never invent a PASS.
+    from app.services.deployment import run_reconciliation, evaluate_dev_gate
+    verification = {"status": "BLOCKED"}
     try:
-        from app.services.deployment import evaluate_dev_gate
-        evaluate_dev_gate(db, project_id)
-    except Exception:
-        pass
-    return {"run_id": run_id, "status": "PASSED", "deployed": deployed, "count": len(deployed)}
+        reconciliation = run_reconciliation(db, project_id, "DEV")
+        verification = evaluate_dev_gate(db, project_id)
+        verification["reconciliation_status"] = reconciliation.get("status")
+    except Exception as exc:
+        db.rollback()
+        verification = {"status": "BLOCKED", "error": str(exc)}
+    return {"run_id": run_id, "status": "PASSED", "deployed": deployed,
+            "count": len(deployed), "skipped": sum(bool(item.get("skipped")) for item in deployed),
+            "verification": verification}

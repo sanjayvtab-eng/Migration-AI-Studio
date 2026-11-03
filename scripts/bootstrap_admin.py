@@ -9,6 +9,7 @@ from app.models.entities import User
 from app.models import canonical  # noqa: F401 - ensure canonical models are registered
 from app.core.security import hash_password
 from app.services.engine import uid
+from app.core.schema_upgrade import ensure_auth_columns
 
 
 def read_password_windows(prompt: str) -> str:
@@ -46,6 +47,7 @@ def read_password_windows(prompt: str) -> str:
 
 def main() -> None:
     Base.metadata.create_all(engine)
+    ensure_auth_columns(engine)
 
     username = input('Admin username [admin]: ').strip() or 'admin'
     password = read_password_windows('Admin password: ')

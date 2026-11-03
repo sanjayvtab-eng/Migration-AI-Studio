@@ -110,6 +110,7 @@ def test_bronze_loader_builds_binary_safe_source_and_target_sql(db, monkeypatch)
     captured = {"source_sql": None, "insert_sql": None, "payload": None}
 
     class SourceCursor:
+        def close(self): pass
         def __init__(self):
             self.calls = 0
 

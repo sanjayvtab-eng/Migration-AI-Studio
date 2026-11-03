@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://localhost:5173,http://localhost:5174"
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
+    registration_enabled: bool = False
+    incremental_sync_enabled: bool = False
 
     sqlserver_host: str | None = None
     sqlserver_database: str | None = None

@@ -36,6 +36,7 @@ from app.services.type_compatibility import (
     source_select_expression,
     target_parameter_expression,
     transport_summary,
+    transport_contract,
 )
 from app.services.rules import map_sqlserver_type
 from app.services.databricks_client import TRANSIENT
@@ -453,6 +454,7 @@ def _load_table_via_parquet_copy_into(db, project_id, source, table, columns, wr
                 "source_schema": table.schema_name,
                 "table": table.object_name,
                 "columns": [c.column_name for c in columns],
+                "transport_contract": transport_contract(columns),
                 "max_rows": max_rows,
                 "target_volume_file": volume_path,
                 "databricks_host": config.workspace_host,
@@ -563,24 +565,6 @@ def _load_table(
             pass
 
     existing_count = _target_count(db, project_id, target)
-    if existing_count == expected_rows and not replace_existing_data:
-        logger.info(f"Target table {target} already contains verified {existing_count} rows. Reusing.")
-        _progress_cb(existing_count, "Reused verified existing")
-        return {
-            "object_id": table.id,
-            "source": f"{table.schema_name}.{table.object_name}",
-            "target_fqn": target,
-            "status": "PASSED",
-            "rows_loaded": existing_count,
-            "source_rows": source_total,
-            "expected_rows": expected_rows,
-            "target_rows": existing_count,
-            "load_mode": load_mode,
-            "source_hash": table.source_hash,
-            "workspace_host": environment_provisioning.get_configuration(db, project_id).workspace_host,
-            "transport": transport_summary(columns),
-            "reused": True,
-        }
     if load_mode == "FULL_LOAD" and existing_count is not None and not replace_existing_data:
         raise RuntimeError(
             f"Target already contains {existing_count} rows; explicitly approve replacement"
@@ -841,8 +825,9 @@ def run(
                     break
             except Exception:
                 pass
-        max_workers = 1 if is_connector else min(len(tables), 4)
+        max_workers = 1 if is_connector else min(len(tables), 2)
 
+        db.commit()  # Release the parent control DB connection before fan-out.
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_id = {executor.submit(_worker_ingest, table.id): table.id for table in tables}
             table_outcomes = {}

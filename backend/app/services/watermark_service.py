@@ -380,6 +380,8 @@ async def run_incremental_sync_for_project(
     Executes incremental sync across all tables configured in the project,
     updates schedule metadata, and sends email summary if enabled.
     """
+    if not get_settings().incremental_sync_enabled:
+        raise ValueError("Incremental sync is disabled pending watermark and scheduler correctness validation")
     start_time = time.time()
     plan, tables = _requirements(db, project_id)
     project = db.get(MigrationProject, project_id)

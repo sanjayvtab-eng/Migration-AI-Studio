@@ -10,8 +10,8 @@ def test_api_end_to_end_simulated(client,auth_headers):
     assert client.post(f'/api/projects/{pid}/mappings',headers=auth_headers,json={'environment':'DEV','catalog':'dev_dynamic'}).json()['mapped']==2
     inv=client.get(f'/api/projects/{pid}/inventory',headers=auth_headers).json(); table=next(x for x in inv if x['name']=='EntityA')
     art=client.post(f'/api/projects/{pid}/artifacts',headers=auth_headers,json={'object_id':table['id'],'environment':'DEV'}); assert 'BINARY' in art.json()['content']
-    gate=client.post(f'/api/projects/{pid}/quality-gates',headers=auth_headers,json={'environment':'DEV','status':'PASSED','pass_count':5,'fail_count':0,'blocker_count':0,'deployment_version':'1'}); assert gate.status_code==200
-    lc=client.get(f'/api/projects/{pid}/lifecycle',headers=auth_headers).json(); assert lc[0]['status']=='PASSED'
+    gate=client.post(f'/api/projects/{pid}/quality-gates',headers=auth_headers,json={'environment':'DEV','status':'PASSED','pass_count':5,'fail_count':0,'blocker_count':0,'deployment_version':'1'}); assert gate.status_code==403
+    lc=client.get(f'/api/projects/{pid}/lifecycle',headers=auth_headers).json(); assert lc[0]['status']=='NOT_STARTED'
 
 def test_account_lockout(client):
     client.post('/api/bootstrap-admin',json={'username':'admin','password':'correct-password-1234567890'})

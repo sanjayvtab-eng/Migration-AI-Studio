@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const required = [
-  "2.4.1 BRONZE_TARGET_CONSISTENCY",
+  "2.5.0 REMEDIATION_1",
   "Parse and Ground Prompt",
   "Approve Exact Plan",
   "Validate in Databricks",

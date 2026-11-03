@@ -25,10 +25,31 @@ import tempfile
 import threading
 import webbrowser
 import time
+import random
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID
+
+AGENT_BUILD_VERSION = "2.5.0-remediation.1"
+
+
+class ReconnectBackoff:
+    """Capped jittered delays; reset after a successful gateway exchange."""
+    def __init__(self):
+        self.attempt = 0
+
+    def reset(self):
+        self.attempt = 0
+
+    def next_delay(self, retry_after=None):
+        self.attempt = min(self.attempt + 1, 6)
+        delay = min(60.0, 2 ** self.attempt + random.uniform(0.5, 2.0))
+        try:
+            delay = max(delay, min(60.0, max(0.0, float(retry_after))))
+        except (TypeError, ValueError):
+            pass
+        return delay
 
 # Explicit imports so PyInstaller bundles all drivers into migration-agent.exe
 try:
@@ -986,7 +1007,9 @@ class ReusableTCPServer(socketserver.TCPServer):
     daemon_threads = True
 
 def start_dashboard_server(start_port=8585):
-    ports_to_try = [start_port] + list(range(start_port + 1, start_port + 15)) + [38585, 48585, 58585, 0]
+    if not 0 <= int(start_port) <= 65535:
+        raise ValueError("Dashboard port must be between 0 and 65535")
+    ports_to_try = [start_port] + list(range(start_port + 1, min(start_port + 15, 65536))) + [38585, 48585, 58585, 0]
     for p in ports_to_try:
         try:
             server = ReusableTCPServer(("127.0.0.1", p), AgentDashboardHandler)
@@ -1004,6 +1027,22 @@ def start_dashboard_server(start_port=8585):
             except Exception:
                 continue
     return None
+
+def encode_staging_value(value, contract):
+    if value is None:
+        return None
+    if hasattr(value, 'read') and callable(value.read):
+        value = value.read()
+    if contract.get('strategy') == 'HEX_STRING_TO_BINARY':
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return bytes(value).hex()
+        if isinstance(value, str) and re.fullmatch(r'(?:[0-9a-fA-F]{2})*', value):
+            return value
+        raise ValueError('Binary staging value does not match the canonical hex contract')
+    if isinstance(value, (date, datetime, time_type)):
+        return value.isoformat()
+    return str(value)
+
 
 class UniversalLocalAgent:
     def __init__(
@@ -1167,6 +1206,13 @@ class UniversalLocalAgent:
     def handle(self, task: dict[str, Any]) -> dict[str, Any]:
         op = task["operation"]
         data = task.get("payload", {})
+        if op not in {"test", "discover", "count", "open", "fetch", "close", "stage_and_upload"}:
+            raise ValueError("Unsupported operation")
+        if (task.get("source_id") != self.source_id
+                or (task.get("server") and task["server"].casefold() != self.server.casefold())
+                or (task.get("database") and task["database"].casefold() != self.database.casefold())
+                or (task.get("engine") and normalize_engine(task["engine"]) != self.engine)):
+            raise ValueError("Connector source identity mismatch; reconfigure the agent explicitly")
         self.cleanup()
 
         # Dynamically adapt to target engine and port if specified in task from Studio
@@ -1245,6 +1291,15 @@ class UniversalLocalAgent:
             try:
                 cur = conn.cursor()
                 requested = data.get("columns") or ["*"]
+                if self.engine == "SQLSERVER":
+                    cur.execute("""SELECT c.name, t.name, c.precision, c.scale
+                        FROM sys.columns c JOIN sys.objects o ON o.object_id=c.object_id
+                        JOIN sys.schemas s ON s.schema_id=o.schema_id
+                        JOIN sys.types t ON t.user_type_id=c.user_type_id
+                        WHERE s.name=? AND o.name=? ORDER BY c.column_id""", schema, table)
+                    available = {str(row[0]).casefold() for row in cur.fetchall()}
+                    if requested != ["*"] and any(str(name).casefold() not in available for name in requested):
+                        raise ValueError("Source columns changed; rediscover before extracting")
                 proj = ",".join(quote_identifier(c, self.engine) for c in requested) if requested != ["*"] else "*"
                 limit = data.get("max_rows")
                 table_sql = qualified_table(schema, table, self.engine)
@@ -1305,6 +1360,9 @@ class UniversalLocalAgent:
             table = data.get("table")
             columns = data.get("columns") or ["*"]
             max_rows = data.get("max_rows")
+            contracts = {item["column"]: item for item in data.get("transport_contract", [])}
+            if set(contracts) != set(columns) or columns == ["*"]:
+                raise ValueError("Bulk staging requires an exact versioned transport contract; update Studio and agent together")
             target_volume_file = data.get("target_volume_file")
             databricks_host = data.get("databricks_host")
             databricks_token = data.get("databricks_token")
@@ -1346,13 +1404,15 @@ class UniversalLocalAgent:
                         if not rows:
                             break
                         data_dict = {
-                            col_names[idx]: [None if r[idx] is None else str(r[idx]) for r in rows]
+                            col_names[idx]: [encode_staging_value(r[idx], contracts[col_names[idx]]) for r in rows]
                             for idx in range(len(col_names))
                         }
                         writer.write_table(pa.Table.from_pydict(data_dict, schema=arrow_schema))
                         count += len(rows)
 
                 file_size = os.path.getsize(local_parquet_path)
+                if file_size > 5 * 1024 ** 3:
+                    raise ValueError("Staging file exceeds 5 GiB; partition the source load")
                 upload_url = f"https://{databricks_host}/api/2.0/fs/files{quote(target_volume_file, safe='/')}"
                 headers = {
                     "Authorization": f"Bearer {databricks_token}",
@@ -1641,6 +1701,8 @@ def main():
     parser.add_argument("--source", help="Migration source profile ID (e.g. SRC_xxxx)")
     parser.add_argument("--engine", default=None, help="Source database engine: SQLSERVER, MYSQL, POSTGRESQL, ORACLE")
     parser.add_argument("--server", help="Local database host/server (e.g. localhost, 127.0.0.1, or localhost\\SQLEXPRESS)")
+    parser.add_argument("--version", action="version", version=f"Migration agent {AGENT_BUILD_VERSION}")
+    parser.add_argument("--dashboard-port", type=int, default=int(os.environ.get("CONNECTOR_DASHBOARD_PORT", "8585")))
     parser.add_argument("--port", type=int, help="Database port (e.g. 3306, 5432, 1433, 1521)")
     parser.add_argument("--database", help="Target source database name")
     parser.add_argument("--schema", help="Source schema name (e.g. public)")
@@ -1888,7 +1950,8 @@ def main():
     AGENT_TELEMETRY["status"] = "ONLINE & STREAMING"
 
     # Launch Local Embedded Visual Web Dashboard
-    dashboard_port = start_dashboard_server(8585)
+    print(f"  Agent Build: {AGENT_BUILD_VERSION}")
+    dashboard_port = start_dashboard_server(args.dashboard_port)
     if dashboard_port:
         dashboard_url = f"http://localhost:{dashboard_port}"
         print(f"  Visual Web GUI:  {dashboard_url}")
@@ -1908,14 +1971,18 @@ def main():
         print("Press Ctrl+C to stop.")
         print("=" * 68 + "\n")
 
+    backoff = ReconnectBackoff()
+    cloud_ready = threading.Event()
     try:
         with httpx.Client(
             headers={"Authorization": "Bearer " + token, "X-Connector-Instance": instance_id},
-            timeout=30,
+            timeout=httpx.Timeout(90, connect=10),
             follow_redirects=False,
         ) as client:
             def keep_alive():
                 while not stopped.wait(15):
+                    if not cloud_ready.is_set():
+                        continue
                     try:
                         heartbeat = client.post(base + "/connector/heartbeat")
                         if heartbeat.status_code in {401, 403, 409}:
@@ -1935,6 +2002,8 @@ def main():
                         raise SystemExit("Registration rejected, revoked, or another connector is active. Check Sources in Studio.")
                     response.raise_for_status()
                     task = response.json().get("task")
+                    backoff.reset()
+                    cloud_ready.set()
                     if task:
                         try:
                             result = agent.handle(task)
@@ -2013,21 +2082,23 @@ def main():
                 except httpx.HTTPStatusError as e:
                     code = e.response.status_code if e.response else 0
                     AGENT_TELEMETRY["status"] = f"RECONNECTING (HTTP {code})"
-                    if code in {502, 503, 504}:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio is waking up or deploying (HTTP {code}). Reconnecting in 5s...")
-                    elif code == 500:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio temporary error (HTTP 500). Retrying in 5s...")
-                    else:
-                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio returned HTTP {code}. Retrying in 5s...")
-                    time.sleep(5)
-                except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+                    cloud_ready.clear()
+                    delay = backoff.next_delay(e.response.headers.get("Retry-After"))
+                    message = "Cloud backend waking up or temporarily unavailable" if code in {429, 502, 503, 504} else f"Gateway returned HTTP {code}"
+                    print(f"{message}. Retrying in {delay:.1f}s...")
+                    stopped.wait(delay)
+                except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
+                    cloud_ready.clear()
+                    delay = backoff.next_delay()
                     AGENT_TELEMETRY["status"] = "RECONNECTING (Studio unreachable)"
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio unreachable ({type(e).__name__}). Retrying in 5s...")
-                    time.sleep(5)
-                except httpx.HTTPError as e:
+                    print(f"Studio unreachable or warming up. Retrying in {delay:.1f}s...")
+                    stopped.wait(delay)
+                except httpx.HTTPError:
+                    cloud_ready.clear()
+                    delay = backoff.next_delay()
                     AGENT_TELEMETRY["status"] = "RECONNECTING"
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Hosted Studio connection issue ({e}). Retrying in 5s...")
-                    time.sleep(5)
+                    print(f"Gateway connection interrupted. Retrying in {delay:.1f}s...")
+                    stopped.wait(delay)
     except KeyboardInterrupt:
         print("\nConnector stopped by user.")
     except SystemExit as e:

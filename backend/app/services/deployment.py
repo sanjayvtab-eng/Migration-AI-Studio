@@ -409,13 +409,8 @@ def _safe_execute_with_auto_healing(
                 'compiler_code': 'UNRESOLVED_COLUMN.WITH_SUGGESTION', 'attempt': 1,
             })
             _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'RUNNING', environment=environment, **metadata)
-            try:
-                execute(patched.rstrip(';') + ';', safe_retry=False)
-            except Exception:
-                _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'FAILED', environment=environment, **metadata)
-                raise
-            _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'PASSED', environment=environment, **metadata)
-            repairs.append(metadata)
+            _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'REVIEW_REQUIRED', environment=environment, **metadata)
+            raise ValueError('Compiler suggested an identifier correction. Regenerate, validate and approve a new artifact version before retrying.') from original_error
     return repairs
 
 
@@ -814,18 +809,17 @@ def medallion_deployment_status(
         failed_count = len(artifact_failures) if (complete and not artifact_failures) else (
             sum(row.status == "FAILED" for row in objects) or int(failure is not None)
         )
-        distinct_passed_targets = set()
-        for r in rows:
-            if r.status == "PASSED":
-                p = _payload(r)
-                ident = p.get("medallion_node_id") or p.get("target_fqn") or r.object_id
-                if ident and (p.get("layer") in {"BRONZE", "SILVER", "GOLD"} or p.get("medallion_node_id")):
-                    distinct_passed_targets.add(ident)
+        from app.services.medallion import list_medallion_artifacts, matching_resume_evidence
+        nodes = {n.id: n for n in db.scalars(select(MigrationMedallionNode).where(
+            MigrationMedallionNode.project_id == project_id, MigrationMedallionNode.environment == env)).all()}
+        objects_by_id = {o.id:o for o in db.scalars(select(MigrationObject).where(MigrationObject.project_id == project_id)).all()}
+        eligible = matching_resume_evidence(list_medallion_artifacts(db, project_id, environment=env),
+            nodes, objects_by_id, rows, databricks_workspace_identity(), None) if env == 'DEV' else {}
 
         return {
             "environment": env, "status": status, "run_id": run_id,
             "deployed": sum(row.status == "PASSED" for row in objects),
-            "total_verified_in_dev": len(distinct_passed_targets),
+            "total_verified_in_dev": len(eligible), "resume_eligible": len(eligible),
             "failed": failed_count,
             "failed_target": failed_payload.get("failed_target") or failed_payload.get("target_fqn"),
             "error": failed_payload.get("error"),
@@ -907,6 +901,7 @@ def _reconcile_medallion_run(
     manifest: list[tuple[MigrationDeployment, dict[str, Any]]],
 ) -> dict[str, Any]:
     details: list[dict[str, Any]] = []
+    reconciliation_id = uid("REC")
     passed = failed = 0
     ordered_manifest = sorted(
         manifest,
@@ -935,9 +930,11 @@ def _reconcile_medallion_run(
         count_queries[index] = f"SELECT COUNT(*) FROM {target}"
     count_results = {}
     if count_queries:
-        with ThreadPoolExecutor(max_workers=min(len(count_queries), 6)) as executor:
-            pending = {index: executor.submit(_isolated_execute, db.get_bind(), project_id,
-                                              query, safe_retry=True)
+        target_execute = detached_target_executor(db, project_id)
+        # Release the control-plane connection before waiting on cloud SQL.
+        db.commit()
+        with ThreadPoolExecutor(max_workers=min(len(count_queries), 2)) as executor:
+            pending = {index: executor.submit(target_execute, query, safe_retry=True)
                        for index, query in count_queries.items()}
             for index, future in pending.items():
                 try:
@@ -1016,15 +1013,15 @@ def _reconcile_medallion_run(
         details.append(item)
         db.add(MigrationReconciliationDetail(
             id=uid("RCD"), project_id=project_id, object_id=item["object_id"],
-            environment=environment, status=status, payload_json=_json({"run_id": run_id, **item}),
+            environment=environment, status=status, payload_json=_json({"run_id": run_id, "reconciliation_id": reconciliation_id, **item}),
         ))
     overall = "PASSED" if failed == 0 and details else "FAILED"
     summary = {
-        "run_id": run_id, "workflow": "MEDALLION", "passed": passed,
+        "run_id": run_id, "reconciliation_id": reconciliation_id, "workflow": "MEDALLION", "passed": passed,
         "failed": failed, "details_count": len(details),
     }
     db.add(MigrationReconciliation(
-        id=uid("REC"), project_id=project_id, environment=environment,
+        id=reconciliation_id, project_id=project_id, environment=environment,
         status=overall, payload_json=_json(summary),
     ))
     db.commit()
@@ -1060,6 +1057,7 @@ def run_reconciliation(
         raise ValueError(f"No PASSED {env} deployment run exists")
 
     objects = db.scalars(select(MigrationObject).where(MigrationObject.project_id == project_id)).all()
+    reconciliation_id = uid("REC")
     details = []
     passed = failed = 0
     for obj in objects:
@@ -1086,10 +1084,10 @@ def run_reconciliation(
                 "source_count": source_count, "target_count": target_count, "status": status, "error": error}
         details.append(item)
         db.add(MigrationReconciliationDetail(id=uid("RCD"), project_id=project_id, object_id=obj.id,
-                                             environment=env, status=status, payload_json=_json({"run_id": run.id, **item})))
+                                             environment=env, status=status, payload_json=_json({"run_id": run.id, "reconciliation_id": reconciliation_id, **item})))
     overall = "PASSED" if failed == 0 and details else "FAILED"
-    db.add(MigrationReconciliation(id=uid("REC"), project_id=project_id, environment=env, status=overall,
-                                   payload_json=_json({"run_id": run.id, "passed": passed, "failed": failed, "details_count": len(details)})))
+    db.add(MigrationReconciliation(id=reconciliation_id, project_id=project_id, environment=env, status=overall,
+                                   payload_json=_json({"run_id": run.id, "reconciliation_id": reconciliation_id, "passed": passed, "failed": failed, "details_count": len(details)})))
     db.commit()
     return {"run_id": run.id, "status": overall, "passed": passed, "failed": failed, "details": details}
 
@@ -1108,7 +1106,8 @@ def latest_reconciliation(db: Session, project_id: str, environment: str = "DEV"
         MigrationReconciliationDetail.project_id == project_id,
         MigrationReconciliationDetail.environment == env,
     ).order_by(MigrationReconciliationDetail.created_at.asc())).all())
-    details = [_payload(item) for item in detail_rows if _payload(item).get("run_id") == run_id]
+    details = [_payload(item) for item in detail_rows if _payload(item).get("run_id") == run_id
+               and (not summary.get("reconciliation_id") or _payload(item).get("reconciliation_id") == row.id)]
     return {**summary, "status": row.status, "reconciliation_id": row.id,
             "created_at": row.created_at, "details": details}
 
@@ -1157,26 +1156,10 @@ def evaluate_dev_gate(db: Session, project_id: str) -> dict[str, Any]:
     recon = db.scalars(select(MigrationReconciliation).where(
         MigrationReconciliation.project_id == project_id, MigrationReconciliation.environment == "DEV"
     ).order_by(MigrationReconciliation.created_at.desc())).first()
-    if not recon or recon.status != "PASSED":
-        if medallion:
-            # Medallion DEV deployment has 100% of objects executed & verified in DEV
-            recon = MigrationReconciliation(
-                id=uid("REC"),
-                project_id=project_id,
-                environment="DEV",
-                status="PASSED",
-                payload_json=_json({
-                    "run_id": deployment_run_id or "MDR_DEV",
-                    "passed": len(medallion[1]),
-                    "failed": 0,
-                    "details_count": len(medallion[1]),
-                    "auto_verified": True,
-                })
-            )
-            db.add(recon)
-            db.flush()
-        else:
-            blockers.append("Latest DEV reconciliation is not PASSED")
+    recon_payload = _payload(recon) if recon else {}
+    if (not recon or recon.status != "PASSED" or recon_payload.get("auto_verified")
+            or recon_payload.get("run_id") != deployment_run_id):
+        blockers.append("Run DEV reconciliation for the current deployment; measured evidence is missing, failed or stale")
 
     status = "PASSED" if not blockers else "BLOCKED"
     run = MigrationRun(id=uid("RUN"), project_id=project_id, stage="QUALITY_GATE", environment="DEV",
@@ -1205,14 +1188,7 @@ def test_promotion_precheck(db: Session, project_id: str, test_databricks: bool 
         MigrationQualityGate.project_id == project_id,
         MigrationQualityGate.environment == "DEV",
     ).order_by(MigrationQualityGate.created_at.desc())).first()
-    if manifest and (not dev_gate or dev_gate.status != "PASSED"):
-        try:
-            gate_eval = evaluate_dev_gate(db, project_id)
-            if gate_eval.get("status") == "PASSED":
-                dev_gate = db.get(MigrationQualityGate, gate_eval.get("gate_id"))
-        except Exception:
-            pass
-    if not dev_gate or dev_gate.status != "PASSED":
+    if not dev_gate or dev_gate.status != "PASSED" or (manifest and dev_gate.deployment_version != manifest[0]):
         blockers.append({"code": "DEV_GATE", "message": "Latest DEV quality gate is not PASSED."})
 
     manifest = _latest_successful_medallion_run(db, project_id, "DEV")
@@ -1328,11 +1304,37 @@ def _worker_execute(db, project_id, statement, *, safe_retry):
     return execute_sql(statement, safe_retry=safe_retry)
 
 
+def detached_target_executor(db, project_id):
+    """Snapshot credentials once; each target call owns its own Databricks cursor.
+
+    Never retain a control DB session or share a DBAPI cursor across threads.
+    """
+    from app.services.environment_provisioning import get_configuration, _token
+    from app.services.databricks_client import execute_sql_with_credentials
+    config = get_configuration(db, project_id)
+    if config is None:
+        return execute_sql  # legacy global configuration; no project DB in worker
+    if config.status != "READY":
+        raise ValueError("Test the project Databricks connection before reconciliation")
+    token = _token(config)
+    if not token:
+        raise ValueError("Project Databricks token is not configured")
+    def detached(statement, *, safe_retry):
+        try:
+            return execute_sql_with_credentials(statement, server_hostname=host,
+                http_path=http_path, access_token=token, safe_retry=safe_retry)
+        except Exception as exc:
+            raise RuntimeError(str(exc).replace(token, "[REDACTED]")) from None
+    host, http_path = config.workspace_host, config.http_path
+    return detached
+
+
 def _isolated_execute(bind, project_id, statement, *, safe_retry):
     # ContextVars do not propagate to executor threads. Bind a new session to
     # this project's workspace explicitly; never share the caller's session.
     with Session(bind=bind) as worker_db:
-        return _worker_execute(worker_db, project_id, statement, safe_retry=safe_retry)
+        target_execute = detached_target_executor(worker_db, project_id)
+    return target_execute(statement, safe_retry=safe_retry)
 
 
 def _parallel_bronze_clones(db, project_id, prepared):
@@ -1341,9 +1343,11 @@ def _parallel_bronze_clones(db, project_id, prepared):
     results = {}
     if not bronze:
         return results
-    with ThreadPoolExecutor(max_workers=min(len(bronze), 4)) as executor:
+    target_execute = detached_target_executor(db, project_id)
+    db.commit()
+    with ThreadPoolExecutor(max_workers=min(len(bronze), 2)) as executor:
         pending = [(item[3], executor.submit(
-            _isolated_execute, db.get_bind(), project_id,
+            target_execute,
             f"CREATE OR REPLACE TABLE {item[3]} DEEP CLONE {item[2]}", safe_retry=False))
             for item in bronze]
         for target, future in pending:
@@ -1708,7 +1712,7 @@ def prod_promotion_precheck(db: Session, project_id: str, test_databricks: bool 
 
 
 @with_project_databricks
-def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
+def promote_medallion_to_prod(db: Session, project_id: str, *, expected_source_run_id: str | None = None) -> dict[str, Any]:
     """Promote the immutable, gate-approved UAT Medallion manifest into PROD."""
     precheck = prod_promotion_precheck(db, project_id, test_databricks=True)
     if not precheck["eligible"]:
@@ -1716,6 +1720,8 @@ def promote_medallion_to_prod(db: Session, project_id: str) -> dict[str, Any]:
     manifest = _latest_successful_medallion_run(db, project_id, "UAT")
     if not manifest:
         raise ValueError("No complete successful UAT Medallion deployment exists")
+    if expected_source_run_id is not None and manifest[0] != expected_source_run_id:
+        raise ValueError("The UAT release changed after confirmation; review the current release before promotion")
 
     cfg = get_settings()
     run = MigrationRun(id=uid("RUN"), project_id=project_id, stage="PROD_DEPLOYMENT",

@@ -348,7 +348,7 @@ class OracleAdapter(DBAPIAdapter):
             kwargs["mode"] = mode
         return oracledb.connect(**kwargs)
 
-    def quote_identifier(self, value): return '"' + str(value).replace('"', '""').upper() + '"'
+    def quote_identifier(self, value): return '"' + str(value).replace('"', '""') + '"'
     def qualified(self, schema, name): return f"{self.quote_identifier(schema)}.{self.quote_identifier(name)}"
 
     def _limited_sql(self, projection, table, max_rows, offset=0):

@@ -629,51 +629,21 @@ AUTOMATED_PROMOTION_STATES = (
 
 
 def _latest_gate_status(db: Session, project_id: str, environment: str) -> str | None:
-    rec = db.scalars(
-        select(CanonicalRecord)
-        .where(
-            CanonicalRecord.project_id == project_id,
-            CanonicalRecord.record_type == "QUALITY_GATE",
-            CanonicalRecord.environment == environment,
-        )
-        .order_by(CanonicalRecord.created_at.desc())
-    ).first()
-    if rec:
-        return str(_payload(rec.payload_json).get("status") or "")
     from app.models.entities import MigrationQualityGate
-    gate = db.scalars(
-        select(MigrationQualityGate)
-        .where(
-            MigrationQualityGate.project_id == project_id,
-            MigrationQualityGate.environment == environment,
-        )
-        .order_by(MigrationQualityGate.created_at.desc())
-    ).first()
-    return gate.status if gate else None
+    row = db.scalars(select(MigrationQualityGate).where(
+        MigrationQualityGate.project_id == project_id,
+        MigrationQualityGate.environment == environment,
+    ).order_by(MigrationQualityGate.created_at.desc())).first()
+    return row.status if row else None
 
 
 def _latest_recon_status(db: Session, project_id: str, environment: str) -> str | None:
-    rec = db.scalars(
-        select(CanonicalRecord)
-        .where(
-            CanonicalRecord.project_id == project_id,
-            CanonicalRecord.record_type == "RECONCILIATION",
-            CanonicalRecord.environment == environment,
-        )
-        .order_by(CanonicalRecord.created_at.desc())
-    ).first()
-    if rec:
-        return str(_payload(rec.payload_json).get("status") or "")
     from app.models.canonical import MigrationReconciliation
-    recon = db.scalars(
-        select(MigrationReconciliation)
-        .where(
-            MigrationReconciliation.project_id == project_id,
-            MigrationReconciliation.environment == environment,
-        )
-        .order_by(MigrationReconciliation.created_at.desc())
-    ).first()
-    return recon.status if recon else None
+    row = db.scalars(select(MigrationReconciliation).where(
+        MigrationReconciliation.project_id == project_id,
+        MigrationReconciliation.environment == environment,
+    ).order_by(MigrationReconciliation.created_at.desc())).first()
+    return row.status if row else None
 
 
 def _automated_run_record(
@@ -710,24 +680,19 @@ def get_automated_promotion_preflight(db: Session, project_id: str) -> dict[str,
     dev_gate_status = _latest_gate_status(db, project_id, "DEV")
     dev_recon_status = _latest_recon_status(db, project_id, "DEV")
 
-    # If DEV deployment passed with an approved release, auto-evaluate DEV quality gate if pending
-    if dev_manifest and dev_gate_status != "PASSED":
-        try:
-            gate_res = deployment.evaluate_dev_gate(db, project_id)
-            dev_gate_status = gate_res.get("status")
-        except Exception:
-            pass
-
-    # When dev_manifest exists and DEV gate is passed, 100% of Medallion objects are verified in DEV.
-    dev_recon_passed = (dev_recon_status == "PASSED") or (bool(dev_manifest) and dev_gate_status == "PASSED")
+    # Status reads do not execute queries against the target or synthesize evidence.
+    measured = deployment.latest_reconciliation(db, project_id, "DEV")
+    dev_recon_passed = bool(measured and measured.get("status") == "PASSED"
+        and dev_manifest and measured.get("run_id") == dev_manifest[0]
+        and not measured.get("auto_verified"))
 
     blockers: list[str] = []
     if not dev_manifest:
         blockers.append("DEV deployment is not complete or no successful manifest found.")
     if dev_gate_status != "PASSED":
         blockers.append(f"DEV quality gate status is {dev_gate_status or 'NOT_EVALUATED'} (must be PASSED).")
-    if not dev_recon_passed and dev_recon_status == "FAILED":
-        blockers.append("DEV reconciliation status is FAILED.")
+    if not dev_recon_passed:
+        blockers.append("Measured DEV reconciliation for this release must be PASSED.")
 
     # Check unapproved reviews
     unapproved = db.scalars(
@@ -735,6 +700,7 @@ def get_automated_promotion_preflight(db: Session, project_id: str) -> dict[str,
         .join(MigrationStageArtifact, MigrationStageArtifact.id == MigrationStageArtifactVersion.artifact_id)
         .where(
             MigrationStageArtifact.project_id == project_id,
+            MigrationStageArtifactVersion.version == MigrationStageArtifact.current_version,
             MigrationStageArtifactVersion.review_status != "APPROVED",
         )
     ).all()

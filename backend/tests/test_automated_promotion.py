@@ -36,25 +36,15 @@ def _setup_dev_passed(db, monkeypatch, project_name="Automated Promotion Test"):
         lambda db, pid, env: (dev_run_id, manifest_items) if env == "DEV" else None,
     )
 
-    # DEV gate
-    gate = CanonicalRecord(
-        id=uid("REC"),
-        project_id=project.id,
-        environment="DEV",
-        record_type="QUALITY_GATE",
-        payload_json=json.dumps({"status": "PASSED", "gate_id": uid("GAT"), "blockers": []}),
-    )
-    db.add(gate)
-
-    # DEV reconciliation
-    recon = CanonicalRecord(
-        id=uid("REC"),
-        project_id=project.id,
-        environment="DEV",
-        record_type="RECONCILIATION",
-        payload_json=json.dumps({"status": "PASSED", "passed": 2, "failed": 0}),
-    )
-    db.add(recon)
+    # Measured typed evidence must refer to the authorized deployment manifest.
+    from app.models.entities import MigrationRun, MigrationQualityGate, User
+    from app.models.canonical import MigrationReconciliation
+    if not db.query(User).filter_by(username='admin').first():
+        db.add(User(id=uid('USR'),username='admin',password_hash='unused',role='ADMIN'))
+    run=MigrationRun(id=uid('RUN'),project_id=project.id,stage='QUALITY_GATE',environment='DEV',status='PASSED')
+    db.add(run);db.flush()
+    db.add(MigrationQualityGate(id=uid('GAT'),project_id=project.id,run_id=run.id,environment='DEV',status='PASSED',deployment_version=dev_run_id))
+    db.add(MigrationReconciliation(id=uid('REC'),project_id=project.id,environment='DEV',status='PASSED',payload_json=json.dumps({'run_id':dev_run_id,'passed':2,'failed':0,'details_count':2})))
     db.commit()
     return project, dev_run_id
 

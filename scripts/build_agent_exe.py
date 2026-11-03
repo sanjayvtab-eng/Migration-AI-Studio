@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import zipfile
+import hashlib
+import json
 
 
 def build():
@@ -50,16 +52,25 @@ def build():
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=str(root))
     if result.returncode != 0:
-        print("[Warning] PyInstaller build returned non-zero code. Checking outputs...")
+        raise RuntimeError("Agent build failed; refusing to package a stale executable")
     else:
         print("[OK] PyInstaller build completed successfully.")
 
     exe_path = dist_dir / "migration-agent.exe"
+    if not exe_path.is_file():
+        raise RuntimeError("Agent build produced no executable")
+    manifest = {
+        "agent_version": "2.5.0-remediation.1",
+        "source_sha256": hashlib.sha256(local_connector_py.read_bytes()).hexdigest(),
+        "executable_sha256": hashlib.sha256(exe_path.read_bytes()).hexdigest(),
+    }
+    (dist_dir / "agent-build-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     # 2. Build Universal Distribution ZIP Bundle
     zip_path = dist_dir / "migration-agent-bundle.zip"
     print(f"Creating distribution bundle: {zip_path}")
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("agent-build-manifest.json", json.dumps(manifest, indent=2))
         if exe_path.is_file():
             z.write(exe_path, "migration-agent.exe")
             print("  Added migration-agent.exe")

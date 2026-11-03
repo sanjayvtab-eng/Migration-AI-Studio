@@ -20,9 +20,9 @@ def verify_password(password: str, encoded: str) -> bool:
     except Exception:
         return False
 
-def create_access_token(subject: str, role: str) -> str:
+def create_access_token(subject: str, role: str, session_version: int = 0) -> str:
     s = get_settings(); now = datetime.now(timezone.utc)
-    return jwt.encode({"sub": subject, "role": role, "iat": now, "exp": now + timedelta(minutes=s.access_token_minutes)}, s.jwt_secret, algorithm=s.jwt_algorithm)
+    return jwt.encode({"sub": subject, "role": role, "sv": session_version, "iat": now, "exp": now + timedelta(minutes=s.access_token_minutes)}, s.jwt_secret, algorithm=s.jwt_algorithm)
 
 def decode_token(token: str) -> dict:
     s = get_settings()

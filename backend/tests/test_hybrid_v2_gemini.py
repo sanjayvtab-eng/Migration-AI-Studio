@@ -259,7 +259,7 @@ def test_t07_approved_semantic_immutable_through_reinference(client, auth_header
     assert post["semantic_role"] == "FACT"
     assert post["target_name"] == "fact_approved_fact"
     assert post["grain"] == ["TxnId"]
-    assert post["approved_by"] == "architect"
+    assert post["approved_by"] == "admin"
     assert post["approved_at"] is not None
     assert post["definition_source"] == "EXPLICIT"
     assert post["confidence"] == 1.0

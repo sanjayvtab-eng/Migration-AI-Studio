@@ -1,6 +1,8 @@
 import os
 import urllib.parse
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.exc import TimeoutError as DatabaseTimeout
+from threading import BoundedSemaphore
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool, NullPool
 from .config import get_settings
@@ -96,6 +98,30 @@ elif db_url.startswith("mysql"):
     engine_options["pool_timeout"] = int(os.getenv("DATABASE_POOL_TIMEOUT", "30"))
 
 engine = create_engine(db_url, **engine_options)
+
+def install_connection_budget(target_engine, limit=4, timeout=5):
+    # NullPool releases idle clients but does not bound active connections.
+    # Budget is per process; operators must account for API replicas/workers.
+    _connection_slots = BoundedSemaphore(max(1, limit))
+    @event.listens_for(target_engine, "do_connect", retval=True)
+    def bounded_connect(dialect, record, args, kwargs):
+        if not _connection_slots.acquire(timeout=timeout):
+            raise DatabaseTimeout("Control database connection budget exhausted; retry shortly")
+        record.info["connection_budget_slot"] = True
+        try:
+            return dialect.connect(*args, **kwargs)
+        except BaseException:
+            record.info.pop("connection_budget_slot", None)
+            _connection_slots.release()
+            raise
+    @event.listens_for(target_engine, "close")
+    def release_connection_slot(connection, record):
+        if record.info.pop("connection_budget_slot", False):
+            _connection_slots.release()
+
+if engine_options.get("poolclass") is NullPool:
+    install_connection_budget(engine, int(os.getenv("DATABASE_MAX_CONNECTIONS", "4")))
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 def get_db():

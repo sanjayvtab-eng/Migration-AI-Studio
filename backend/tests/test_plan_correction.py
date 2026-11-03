@@ -107,7 +107,7 @@ def test_cycle_cross_layer_and_required_delete_blocked(db, monkeypatch):
     with pytest.raises(ValueError, match='later Medallion layer'):
         service.update_plan_artifact(db, pid, spec['id'], clean['request_id'], {'layer': 'GOLD'})
     bronze = next(i for i in spec['artifacts'] if i['type'] == 'TABLE_COPY' and i['name'] == 'OrderItems')
-    with pytest.raises(ValueError, match='dependent artifacts'):
+    with pytest.raises(ValueError, match='dependent artifacts|requires a Bronze copy'):
         service.delete_plan_artifact(db, pid, spec['id'], bronze['request_id'])
 
 

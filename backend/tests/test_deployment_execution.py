@@ -37,7 +37,7 @@ def test_dev_deployment_records_evidence_and_can_gate(db,monkeypatch):
     assert status['status']=='PASSED' and status['passed']==1
     # add passed reconciliation evidence then gate must pass
     from app.models.canonical import MigrationReconciliation
-    db.add(MigrationReconciliation(id=uid('REC'),project_id=p.id,environment='DEV',status='PASSED',payload_json='{}'));db.commit()
+    db.add(MigrationReconciliation(id=uid('REC'),project_id=p.id,environment='DEV',status='PASSED',payload_json=deployment._json({'run_id':r['run_id']})));db.commit()
     g=deployment.evaluate_dev_gate(db,p.id)
     assert g['status']=='PASSED'
 
@@ -66,7 +66,7 @@ def test_destructive_artifact_requires_explicit_approval(monkeypatch):
     assert executed == []
 
     deployment._safe_execute_artifact('DELETE FROM target_table', allow_destructive=True)
-    assert executed == ['DELETE FROM target_table']
+    assert [sql.rstrip(';') for sql in executed] == ['DELETE FROM target_table']
 
 
 def test_target_ownership_is_scoped_to_databricks_workspace(db, monkeypatch):

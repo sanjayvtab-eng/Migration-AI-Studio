@@ -146,32 +146,32 @@ def test_ambiguous_or_unrelated_compiler_errors_are_not_repaired(error):
     assert compiler_identifier_repair('SELECT c.claim_service_id FROM cat.bronze.t c', error) is None
 
 
-def test_healing_audits_one_retry_without_replaying_prior_statement(db):
+def test_compiler_failure_requires_review_without_replaying_prior_statement(db):
     calls = []
     def execute(sql, **kwargs):
         calls.append(sql)
         if 'c.claim_service_id' in sql:
             raise RuntimeError(compiler_error())
     sql = 'CREATE TABLE cat.silver.bootstrap (id INT); SELECT c.claim_service_id FROM cat.bronze.t c;'
-    repaired = deployment._safe_execute_with_auto_healing(db, sql, project_id='P', run_id='R', executor=execute)
-    assert len(calls) == 3
+    with pytest.raises(ValueError, match='new artifact version'):
+        deployment._safe_execute_with_auto_healing(db, sql, project_id='P', run_id='R', executor=execute)
+    assert len(calls) == 2
     assert sum('CREATE TABLE' in call for call in calls) == 1
-    assert len(repaired) == 1
     rows = list(db.scalars(select(MigrationRunStep).where(MigrationRunStep.project_id == 'P')).all())
-    assert {row.status for row in rows} == {'RUNNING', 'PASSED'}
+    assert {row.status for row in rows} == {'RUNNING', 'REVIEW_REQUIRED'}
     evidence = json.loads(rows[-1].payload_json)
     assert evidence['run_id'] == 'R' and evidence['original_sql_hash'] != evidence['patched_sql_hash']
 
 
-def test_failed_retry_is_bounded_and_audited(db):
+def test_runtime_repair_never_executes_suggested_sql(db):
     calls = []
     def execute(sql, **kwargs):
         calls.append(sql)
         raise RuntimeError(compiler_error())
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match='new artifact version'):
         deployment._safe_execute_with_auto_healing(db, 'SELECT c.claim_service_id FROM cat.bronze.t c', project_id='P', run_id='R', executor=execute)
-    assert len(calls) == 2
-    assert 'FAILED' in {row.status for row in db.scalars(select(MigrationRunStep)).all()}
+    assert len(calls) == 1
+    assert 'REVIEW_REQUIRED' in {row.status for row in db.scalars(select(MigrationRunStep)).all()}
 
 
 def test_destructive_sql_is_not_executed_without_approval(db):

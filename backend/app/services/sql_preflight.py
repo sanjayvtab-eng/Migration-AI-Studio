@@ -19,6 +19,14 @@ def normalized_identifier(value: str) -> str:
     return value.casefold().replace('_', '')
 
 
+def identifier_stem(value: str) -> tuple[str, ...]:
+    """Bounded spelling normalization, never a business-key synonym search."""
+    value = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', value)
+    value = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', value)
+    return tuple(word[:-1] if len(word) > 3 and word.endswith('s') and not word.endswith('ss')
+                 else word for word in re.findall(r'[a-z0-9]+', value.casefold()))
+
+
 def relation_key(table: exp.Table | str) -> tuple[str, ...]:
     if isinstance(table, str):
         table = sqlglot.parse_one(table, read='databricks', into=exp.Table)
@@ -122,6 +130,12 @@ def _physical_name(name: str, columns: list[str]) -> str | None:
     candidates = [column for column in columns if normalized_identifier(column) == normalized_identifier(name)]
     if len(candidates) > 1:
         raise ValueError(f'Ambiguous physical column {name}')
+    if candidates:
+        return candidates[0]
+    # Applied only within an already bound relation, before artifact versioning.
+    candidates = [column for column in columns if identifier_stem(column) == identifier_stem(name)]
+    if len(candidates) > 1:
+        raise ValueError(f'Ambiguous physical column {name}; choose an explicit mapping')
     return candidates[0] if candidates else None
 
 

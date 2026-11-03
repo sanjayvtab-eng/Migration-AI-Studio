@@ -9,7 +9,8 @@ def _project_source(client, headers):
 
 def test_source_connection_endpoint_mocked(client,auth_headers,monkeypatch):
     pid,sid=_project_source(client,auth_headers)
-    monkeypatch.setattr(routes,'test_sqlserver_connection',lambda c:{'ok':True,'server':'LOCAL','database':'AnyDB','product_version':'16.0'})
+    from app.services import discovery
+    monkeypatch.setattr(discovery,'test_sqlserver_connection',lambda c:{'ok':True,'server':'LOCAL','database':'AnyDB','product_version':'16.0'})
     r=client.post(f'/api/projects/{pid}/sources/{sid}/test',headers=auth_headers)
     assert r.status_code==200 and r.json()['ok'] is True
 
@@ -61,10 +62,10 @@ def test_all_control_plane_module_endpoints(client,auth_headers):
 def test_promotion_precheck_isolated_by_project(client,auth_headers):
     p1=client.post('/api/projects',headers=auth_headers,json={'name':'Promote A'}).json()['id']
     p2=client.post('/api/projects',headers=auth_headers,json={'name':'Promote B'}).json()['id']
-    client.post(f'/api/projects/{p1}/quality-gates',headers=auth_headers,json={'environment':'DEV','status':'PASSED','pass_count':1,'fail_count':0,'blocker_count':0})
+    assert client.post(f'/api/projects/{p1}/quality-gates',headers=auth_headers,json={'environment':'DEV','status':'PASSED','pass_count':1,'fail_count':0,'blocker_count':0}).status_code == 403
     a=client.get(f'/api/projects/{p1}/promotion-precheck/TEST',headers=auth_headers).json()
     b=client.get(f'/api/projects/{p2}/promotion-precheck/TEST',headers=auth_headers).json()
-    assert a['eligible'] is True
+    assert a['eligible'] is False and any('DEV quality gate' in x for x in a['blockers'])
     assert b['eligible'] is False and any('DEV quality gate' in x for x in b['blockers'])
 
 

@@ -11,6 +11,20 @@ SOURCE_COLUMNS = {
 }
 
 
+def ensure_auth_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "migration_user" not in inspector.get_table_names():
+        return
+    existing = {c['name'] for c in inspector.get_columns('migration_user')}
+    fields = {'otp_attempts': 'INTEGER NOT NULL DEFAULT 0',
+              'password_proof_hash': 'VARCHAR(64)', 'password_proof_expires_at': 'TIMESTAMP',
+              'session_version': 'INTEGER NOT NULL DEFAULT 0'}
+    with engine.begin() as conn:
+        for name, ddl in fields.items():
+            if name not in existing:
+                conn.execute(text(f'ALTER TABLE migration_user ADD COLUMN {name} {ddl}'))
+
+
 def ensure_source_columns(engine) -> None:
     """Apply the additive v2.5 source fields for existing SQLite installations."""
     inspector = inspect(engine)

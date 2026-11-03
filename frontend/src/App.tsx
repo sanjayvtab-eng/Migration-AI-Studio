@@ -1,5 +1,6 @@
+import { finiteCount } from './stateMetrics';
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { api, downloadApi, subscribeApiActivity } from "./api";
+import { api, api as requestApi, downloadApi, subscribeApiActivity } from "./api";
 import {
   Activity,
   Boxes,
@@ -327,7 +328,7 @@ const moduleMap: any = {
   Administration: "administration",
 };
 
-const BUILD_VERSION = "2.4.1 BRONZE_TARGET_CONSISTENCY";
+const BUILD_VERSION = "2.5.0 REMEDIATION_1";
 
 function EyeIcon({ size = 18 }: { size?: number }) {
   return (
@@ -354,6 +355,7 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
   const [p, setP] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
+  const [verificationToken, setVerificationToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showLoginPassword, setShowLoginPassword] = useState(false);
@@ -439,6 +441,7 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
         method: "POST",
         body: JSON.stringify({ email, otp: otp.trim() }),
       });
+      setVerificationToken(r.verification_token || "");
       setInfo(r.message || "Email verified! Please set your new password.");
       setMode("set_password");
     } catch (e: any) {
@@ -451,8 +454,8 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
   async function handleSetPassword() {
     setErr("");
     setInfo("");
-    if (newPassword.length < 6) {
-      setErr("Password must be at least 6 characters long.");
+    if (newPassword.length < 12) {
+      setErr("Password must be at least 12 characters long.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -463,7 +466,7 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
     try {
       const r: any = await api("/register/set-password", {
         method: "POST",
-        body: JSON.stringify({ email, password: newPassword }),
+        body: JSON.stringify({ email, password: newPassword, verification_token: verificationToken }),
       });
       localStorage.setItem("mf_token", r.access_token);
       done();
@@ -690,7 +693,7 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
                 type={showNewPassword ? "text" : "password"}
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Create Password (min. 6 characters)"
+                placeholder="Create Password (min. 12 characters)"
                 disabled={loading}
                 autoFocus
                 style={{ width: "100%", paddingRight: 42, margin: 0 }}
@@ -1033,6 +1036,13 @@ export default function App() {
   const [masterRunning, setMasterRunning] = useState(false);
   const [autoPromotionStatus, setAutoPromotionStatus] = useState<any>(null);
   const [showAutoAuthModal, setShowAutoAuthModal] = useState(false);
+  const [autoAuthLoading, setAutoAuthLoading] = useState(false);
+  const refreshInFlight = useRef(new Set<string>());
+  const refreshScope = `${pid}|${page}`;
+  const activeProjectId = useRef(pid);
+  activeProjectId.current = pid;
+  const latestRefreshScope = useRef(refreshScope);
+  latestRefreshScope.current = refreshScope;
   const [autoAuthText, setAutoAuthText] = useState("");
   const [autoRunning, setAutoRunning] = useState(false);
   const [promptNativeText, setPromptNativeText] = useState(
@@ -1130,11 +1140,35 @@ export default function App() {
       setBusy(false);
     }
   }
+  useEffect(() => {
+    setEnvironmentConfig(null);
+    setEnvironmentPlan(null);
+    setMedDeployment(null);
+    setMedLogs([]);
+    setDeployment(null);
+    setReconResult(null);
+    setAutoPromotionStatus(null);
+    setShowAutoAuthModal(false);
+    setAutoAuthLoading(false);
+    setDirectDatabricksToken("");
+  }, [pid]);
+
   async function refresh() {
-    if (!ready) return;
-    setMsg("");
+    const scope = refreshScope;
+    if (!ready || refreshInFlight.current.has(scope)) return;
+    refreshInFlight.current.add(scope);
+    const checkScope = () => {
+      if (latestRefreshScope.current !== scope) throw new Error("Refresh superseded");
+    };
+    const api = async (path: string, init: RequestInit = {}): Promise<any> => {
+      checkScope();
+      const result = await requestApi(path, init);
+      checkScope();
+      return result;
+    };
     try {
       const ps = await loadProjects();
+      checkScope();
       const activeProj = ps.find(x => x.id === pid) || ps[0];
       const id = activeProj?.id;
       if (id !== pid) setPid(id || "");
@@ -1284,7 +1318,7 @@ export default function App() {
       if (id && id !== "undefined") {
         api(`/projects/${id}/master-orchestration/current`)
           .then((s: any) => setAutoPromotionStatus(s))
-          .catch(() => setAutoPromotionStatus(null));
+          .catch(() => {});
       }
 
       if (page === "Migration Workflow" && id) {
@@ -1349,7 +1383,9 @@ export default function App() {
       if (String(e.message).includes("Invalid or expired token")) {
         localStorage.removeItem("mf_token");
         setReady(false);
-      } else setMsg(e.message);
+      } else if (e.message !== "Refresh superseded") setMsg(e.message);
+    } finally {
+      refreshInFlight.current.delete(scope);
     }
   }
   useEffect(() => {
@@ -1389,8 +1425,8 @@ export default function App() {
 
     if (isJobActive) {
       const pollTimer = setInterval(() => {
-        refresh();
-      }, 3000);
+        if (document.visibilityState === "visible") refresh();
+      }, 10000);
       return () => clearInterval(pollTimer);
     }
   }, [
@@ -1673,6 +1709,23 @@ export default function App() {
       setBusy(false);
     }
   }
+  async function openPromotionAuthorization() {
+    if (!pid || autoAuthLoading) return;
+    const projectId = pid;
+    setAutoAuthText("");
+    setAutoAuthLoading(true);
+    setAutoPromotionStatus(null);
+    setShowAutoAuthModal(true);
+    try {
+      const status: any = await api(`/projects/${pid}/master-orchestration/current`);
+      if (activeProjectId.current === projectId) setAutoPromotionStatus(status);
+    } catch (error: any) {
+      setMsg(error.message);
+    } finally {
+      setAutoAuthLoading(false);
+    }
+  }
+
   async function authorizeAutomatedPromotion() {
     if (!pid) return;
     setBusy(true);
@@ -2997,20 +3050,15 @@ export default function App() {
   }, [deployActiveEnv, testGate, testPromotion, uatGate, uatPromotion, prodGate, prodPromotion, medDeployment, reconResult, deployment, attemptItems]);
 
   const deployedCount = useMemo(() => {
-    if (deployActiveEnv === "TEST") return Number(testPromotion?.passed ?? (testPromotion?.total ?? 0)) || 0;
-    if (deployActiveEnv === "UAT") return Number(uatPromotion?.passed ?? (uatPromotion?.total ?? 0)) || 0;
-    if (deployActiveEnv === "PROD") return Number(prodPromotion?.passed ?? (prodPromotion?.total ?? 0)) || 0;
+    if (deployActiveEnv === "TEST") return finiteCount(testPromotion?.passed);
+    if (deployActiveEnv === "UAT") return finiteCount(uatPromotion?.passed);
+    if (deployActiveEnv === "PROD") return finiteCount(prodPromotion?.passed);
     const rawDev = medDeployment?.deployed ?? (reconResult?.passed ?? attemptItems.filter((i: any) => i.env === "DEV" && i.status === "PASSED").length);
-    const n = Number(rawDev);
-    return Number.isFinite(n) ? n : 0;
+    return finiteCount(rawDev);
   }, [deployActiveEnv, testPromotion, uatPromotion, prodPromotion, medDeployment, reconResult, attemptItems]);
 
-  const verifiedToSkip = useMemo(() => {
-    const rawDev = Number(medDeployment?.total_verified_in_dev);
-    const devTotal = Number.isFinite(rawDev) ? rawDev : 0;
-    const dep = Number.isFinite(deployedCount) ? deployedCount : 0;
-    return Math.max(devTotal, dep);
-  }, [medDeployment?.total_verified_in_dev, deployedCount]);
+  // A historical success count is not a safe promise of checkpoint reuse.
+  const verifiedToSkip = finiteCount(medDeployment?.resume_eligible);
 
   const failedCount = useMemo(() => {
     if (deployActiveEnv === "TEST") return Number(testPromotion?.failed) || 0;
@@ -3404,7 +3452,7 @@ export default function App() {
                   ? "quota-exceeded"
                   : isDevEnvFailed
                   ? "failed"
-                  : "connected"
+                  : environmentConfig?.status === "READY" ? "connected" : "untested"
               }`}
               title={
                 isDevEnvRunning
@@ -3413,7 +3461,7 @@ export default function App() {
                   ? "Databricks DEV: Metastore Quota Exceeded (Limit: 500 tables reached)"
                   : isDevEnvFailed
                   ? `Databricks DEV: Execution Failed - ${activeDeploymentFailure || "Check logs"}`
-                  : "Active Target Environment: Databricks DEV (Connected)"
+                  : environmentConfig?.status === "READY" ? "Databricks target connection tested" : "Databricks target is not configured or not tested"
               }
             >
               <span
@@ -3424,7 +3472,7 @@ export default function App() {
                     ? "dot-amber"
                     : isDevEnvFailed
                     ? "dot-red"
-                    : "dot-green"
+                    : environmentConfig?.status === "READY" ? "dot-green" : "dot-amber"
                 }`}
               />
               <span>
@@ -3434,7 +3482,7 @@ export default function App() {
                   ? "DEV: Quota Exceeded"
                   : isDevEnvFailed
                   ? "DEV: Failed"
-                  : "DEV: Connected"}
+                  : environmentConfig?.status === "READY" ? "DEV: Ready" : "DEV: Not tested"}
               </span>
             </div>
 
@@ -4317,15 +4365,7 @@ export default function App() {
                           className="primary-action"
                           style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", border: "none" }}
                           disabled={busy || autoRunning}
-                          onClick={() => {
-                          setAutoAuthText("");
-                          setShowAutoAuthModal(true);
-                          if (pid) {
-                            api(`/projects/${pid}/master-orchestration/current`)
-                              .then((s: any) => setAutoPromotionStatus(s))
-                              .catch(() => {});
-                          }
-                        }}
+                          onClick={openPromotionAuthorization}
                         >
                           <Play size={15} /> Authorize Automated Promotion to PROD
                         </button>
@@ -4908,7 +4948,7 @@ export default function App() {
                           const isBlocked = st === "BLOCKED" || st === "FAILED";
                           const isActive = !isCompleted && !isBlocked && !isReview;
 
-                          const progressPct = isCompleted ? 100 : isReview ? 75 : isActive ? 50 : 25;
+                          const progressPct = p.id === pid ? workflowProgress : 0;
                           const progressClass = isCompleted ? "completed" : isReview ? "review" : isActive ? "active" : "default";
 
                           const statusLabel = isCompleted ? "Completed" : isReview ? "Awaiting Review" : isBlocked ? "Blocked" : "Active";
@@ -4961,7 +5001,7 @@ export default function App() {
                                       style={{ width: `${progressPct}%` }}
                                     />
                                   </div>
-                                  <span className="progress-text">{progressPct}% Complete</span>
+                                  <span className="progress-text">{p.id === pid ? `${progressPct}% Complete` : "Open to inspect"}</span>
                                 </div>
                               </td>
                               <td>
@@ -9913,7 +9953,10 @@ export default function App() {
                     </button>
                     <button className="primary-action" disabled={!pid || busy || prodPrecheck?.eligible !== true}
                       onClick={() => action(async () => {
-                        const result: any = await api(`/projects/${pid}/promotions/prod/deploy`, { method: "POST" });
+                        const confirmation = window.prompt("Type PROMOTE TO PROD to authorize this exact UAT release.");
+                        if (confirmation !== "PROMOTE TO PROD") return;
+                        const releaseId = prodPrecheck?.source_deployment_run_id;
+                        const result: any = await api(`/projects/${pid}/promotions/prod/deploy`, { method: "POST", body: JSON.stringify({confirmation_text: confirmation, release_id: releaseId}) });
                         setProdPromotion(result); return result;
                       })}>
                       <Play size={15} /> Promote and Deploy to PROD
@@ -10202,7 +10245,7 @@ export default function App() {
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#065f46", fontWeight: 700, fontSize: 15 }}>
                         <CheckCircle2 size={18} color="#10b981" />
-                        DEV Medallion Deployment Complete ({verifiedToSkip || 42} Objects Verified in Databricks DEV)
+                        DEV Medallion Deployment Complete ({deployedCount} Objects Verified in Databricks DEV)
                       </div>
                       <div style={{ color: "#047857", fontSize: 13, marginTop: 4 }}>
                         All 42 artifacts are verified in Databricks DEV. Ready to promote through TEST → UAT → PROD.
@@ -10225,15 +10268,7 @@ export default function App() {
                           cursor: "pointer",
                           boxShadow: "0 2px 4px rgba(37, 99, 235, 0.3)",
                         }}
-                        onClick={() => {
-                          setAutoAuthText("");
-                          setShowAutoAuthModal(true);
-                          if (pid) {
-                            api(`/projects/${pid}/master-orchestration/current`)
-                              .then((s: any) => setAutoPromotionStatus(s))
-                              .catch(() => {});
-                          }
-                        }}
+                        onClick={openPromotionAuthorization}
                       >
                         <Play size={14} /> Authorize Automated Promotion (TEST → UAT → PROD)
                       </button>
@@ -11099,7 +11134,7 @@ export default function App() {
             },
             2: {
               title: "Stage 2 of 9: Environment Setup",
-              context: "Databricks DEV Target Configured",
+              context: environmentConfig?.status === "READY" ? "Databricks target connection tested" : "Databricks target setup required",
               backText: "← Back to Projects",
               backTarget: "Projects",
               backDisabled: false,
@@ -11109,7 +11144,7 @@ export default function App() {
             },
             3: {
               title: "Stage 3 of 9: Sources",
-              context: `${sources.length || 1} SQL Server Source Configured`,
+              context: `${sources.length} Database Sources Configured`,
               backText: "← Back to Environment",
               backTarget: "Environment Setup",
               backDisabled: false,
@@ -11415,11 +11450,12 @@ export default function App() {
                     <div style={{ background: "#1e293b", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
                       <div><span style={{ color: "#64748b" }}>Source Project:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.source_project?.name || current?.name || "Current Project"}</b></div>
                       <div><span style={{ color: "#64748b" }}>Release Manifest:</span> <b style={{ color: "#38bdf8", fontFamily: "monospace" }}>{autoPromotionStatus?.preflight?.release_id || activeRunId || "DEV Approved Release"}</b></div>
-                      <div><span style={{ color: "#64748b" }}>Artifact Count:</span> <b style={{ color: "#f1f5f9" }}>{autoPromotionStatus?.preflight?.artifact_count || verifiedToSkip || 42} artifacts</b></div>
+                      <div><span style={{ color: "#64748b" }}>Artifact Count:</span> <b style={{ color: "#f1f5f9" }}>{finiteCount(autoPromotionStatus?.preflight?.artifact_count)} artifacts</b></div>
                       <div><span style={{ color: "#64748b" }}>Governance Risk:</span> <b style={{ color: "#fbbf24" }}>HIGH (Production promotion included)</b></div>
-                      <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog || "hotelmigrate_dev"} → {autoPromotionStatus?.preflight?.test_catalog || "hotelmigrate_test"} → {autoPromotionStatus?.preflight?.uat_catalog || "hotelmigrate_uat"} → {autoPromotionStatus?.preflight?.prod_catalog || "hotelmigrate_prod"}</b></div>
+                      <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog || "Not available"} → {autoPromotionStatus?.preflight?.test_catalog || "Not available"} → {autoPromotionStatus?.preflight?.uat_catalog || "Not available"} → {autoPromotionStatus?.preflight?.prod_catalog || "Not available"}</b></div>
                     </div>
 
+                    <p role="status">{autoAuthLoading ? "Checking the current release and prerequisites…" : autoPromotionStatus?.preflight?.eligible ? "Current release is eligible for authorization." : "Authorization blocked. Complete measured DEV reconciliation and resolve the listed prerequisites."}</p>
                     <div style={{ marginBottom: 16 }}>
                       <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#cbd5e1", marginBottom: 6 }}>
                         Confirmation Required: Type <code>PROMOTE TO PROD</code>
@@ -11452,7 +11488,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={autoAuthText.trim() !== "PROMOTE TO PROD" || autoRunning}
+                        disabled={autoAuthText.trim() !== "PROMOTE TO PROD" || autoRunning || autoAuthLoading || !autoPromotionStatus?.preflight?.eligible}
                         onClick={() => { setShowAutoAuthModal(false); authorizeAutomatedPromotion(); }}
                         style={{
                           padding: "8px 18px",

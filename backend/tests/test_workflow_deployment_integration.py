@@ -110,6 +110,7 @@ def test_medallion_reuses_bronze_and_reconciles_with_saved_project_connection(db
         return SCHEMA if statement.startswith("DESCRIBE") else [(5,)] if statement.startswith("SELECT COUNT") else []
 
     monkeypatch.setattr(environment_provisioning, "project_execute", execute)
+    monkeypatch.setattr(deployment,"detached_target_executor",lambda *_: lambda sql,**kw: statements.append(sql) or [(5,)])
     monkeypatch.setattr(bronze_ingestion, "_source_count", lambda *a: 5)
     monkeypatch.setattr(deployment, "_source_table_count", lambda *a: 5)
     loader = Mock(side_effect=AssertionError("Verified Bronze must not be loaded twice"))
@@ -328,7 +329,8 @@ def test_provider_secret_is_redacted_before_failure_logs_are_saved(db, client, a
     secret = "synthetic-test-token-must-never-appear-in-logs"
     monkeypatch.setenv(config.token_env_key, secret)
     monkeypatch.setattr(bronze_ingestion, "connector_info", lambda *a: {"mode": "DIRECT"})
-    monkeypatch.setattr(medallion, "execute_sql", Mock(return_value=None))
+    monkeypatch.setattr(databricks_client, "execute_sql", Mock(return_value=None))
+    monkeypatch.setattr(bronze_ingestion,"_source_count",lambda *a:5)
     monkeypatch.setattr(environment_provisioning, "execute_sql_with_credentials",
                         Mock(side_effect=RuntimeError(f"Provider rejected {secret}")))
 

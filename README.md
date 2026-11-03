@@ -1,3 +1,7 @@
+# Remediation candidate 2.5.0 remediation 1
+
+This candidate incorporates local fixes for the combined security and operational findings. Read [the 30-finding status register](remediation/Consolidated-Findings-and-Fixes.md) and [upgrade notes](remediation/Upgrade-and-Validation.md) before testing. Open findings and live acceptance work remain; this is not a production certification. Use the separately rebuilt agent, not the old archive's executable.
+
 # Migration AI Studio — 2.5.0 Multi Source Connectivity
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/vtabsquare/Databricks-Migration)
@@ -6,7 +10,7 @@ Migration AI Studio now accepts SQL Server, PostgreSQL, MySQL/MariaDB, and Oracl
 
 Configure a source from the Stage 1 engine tiles. PostgreSQL supports schema and SSL mode, MySQL supports charset, Oracle supports Service Name or SID plus Normal/SYSDBA mode, and SQL Server retains Windows or SQL authentication and ODBC driver selection. Passwords submitted through the API are encrypted at rest using a key derived from `JWT_SECRET`.
 
-**Build marker:** the UI must display `Build 2.4.1 BRONZE_TARGET_CONSISTENCY`. If you do not see that marker, you are running an older extracted folder or browser/Vite instance.
+**Build marker:** the UI must display `Build 2.5.0 REMEDIATION_1`. If you do not see that marker, you are running an older extracted folder or browser/Vite instance.
 
 ## Windows quick start
 1. Copy `.env.example` to `.env` and configure SQL Server/Databricks values.
@@ -15,7 +19,7 @@ Configure a source from the Stage 1 engine tiles. PostgreSQL supports schema and
 4. Create the first administrator with `python scripts\bootstrap_admin.py` from the project root.
 
 ## If you previously ran an older build
-Close all old Vite/Uvicorn terminals before starting this build. The build version in the header/login page should read `2.4.1 BRONZE_TARGET_CONSISTENCY`.
+Close all old Vite/Uvicorn terminals before starting this build. The build version in the header/login page should read `2.5.0 REMEDIATION_1`.
 
 # SQL Server → Databricks AI Migration Factory — Enterprise Edition
 

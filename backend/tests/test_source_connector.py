@@ -7,7 +7,7 @@ import json
 import pytest
 from sqlalchemy import select
 from app.models.connector import SourceConnector, ConnectorTask
-from app.models.entities import MigrationSource
+from app.models.entities import MigrationSource, MigrationProject, User
 from app.services import source_connector as transport
 from app.services.discovery import connection_diagnostic
 from app.services.deployment import _source_table_count, _source_rows
@@ -18,6 +18,8 @@ spec.loader.exec_module(agent_module)
 
 
 def registered(client, db, headers, source_id="SRC", project_id="PROJ"):
+    if not db.get(MigrationProject, project_id):
+        db.add(MigrationProject(id=project_id,name=project_id,created_by="admin")); db.commit()
     db.add(MigrationSource(id=source_id, project_id=project_id, profile_name="Local", server_name="PC\\SQLEXPRESS", database_name="Demo"))
     db.commit()
     path = f"/api/projects/{project_id}/sources/{source_id}/connector"
@@ -39,8 +41,9 @@ def test_registration_auth_scope_rotation_and_revocation(client, db, auth_header
     assert token not in client.get(path, headers=auth_headers).text
     assert client.post(path).status_code == 401
     from app.core.security import create_access_token
+    db.add(User(id="VIEWER",username="viewer",password_hash="unused",role="VIEWER")); db.commit()
     viewer = {"Authorization": "Bearer " + create_access_token("viewer", "VIEWER")}
-    assert client.post(path, headers=viewer).status_code == 403
+    assert client.post(path, headers=viewer).status_code == 404
     assert client.post(path.replace("PROJ", "OTHER"), headers=auth_headers).status_code == 404
     assert client.post("/api/connector/poll", headers=auth_headers).status_code == 401
     assert client.post("/api/connector/poll", headers=headers).status_code == 200
@@ -100,7 +103,8 @@ def test_offline_discovery_does_not_ingest(client, db, auth_headers):
 
 
 def test_source_test_and_discovery_use_connector(client, db, auth_headers, monkeypatch):
-    registered(client, db, auth_headers)
+    _, connector_headers, _ = registered(client, db, auth_headers)
+    assert client.post("/api/connector/heartbeat", headers=connector_headers).status_code == 200
     from app.api import routes
     called = []
     def reply(source_id, operation):
@@ -108,7 +112,8 @@ def test_source_test_and_discovery_use_connector(client, db, auth_headers, monke
         return {"ok": True} if operation == "test" else {"database": "Demo", "objects": []}
     monkeypatch.setattr(routes, "connector_request", reply)
     monkeypatch.setattr(routes, "ingest_snapshot", lambda *args: {})
-    monkeypatch.setattr(routes, "test_sqlserver_connection", lambda *args: pytest.fail("Direct connection used"))
+    from app.services import discovery
+    monkeypatch.setattr(discovery, "test_sqlserver_connection", lambda *args: pytest.fail("Direct connection used"))
     assert client.post("/api/projects/PROJ/sources/SRC/test", headers=auth_headers).status_code == 200
     assert client.post("/api/projects/PROJ/discovery/live/SRC", headers=auth_headers).status_code == 200
     assert called == [("SRC", "test"), ("SRC", "test"), ("SRC", "discover")]
@@ -120,7 +125,7 @@ def test_value_roundtrip(value):
 
 
 def test_local_agent_rejects_arbitrary_operations_and_wrong_source():
-    agent = agent_module.LocalAgent("SRC", "PC", "Demo", "secret")
+    agent = agent_module.UniversalLocalAgent("SRC", "SQLSERVER", "PC", 1433, "Demo", connection_string="secret")
     base = {"source_id": "SRC", "server": "PC", "database": "Demo", "operation": "execute_sql", "payload": {"sql": "DROP TABLE Orders"}}
     with pytest.raises(ValueError, match="Unsupported operation"):
         agent.handle(base)
@@ -156,7 +161,7 @@ def test_connector_url_rejects_remote_http_and_unsafe_urls(url):
 
 
 def test_local_cursor_batches_do_not_skip_rows(monkeypatch):
-    agent = agent_module.LocalAgent("SRC", "PC", "Demo", "secret")
+    agent = agent_module.UniversalLocalAgent("SRC", "SQLSERVER", "PC", 1433, "Demo", connection_string="secret")
     rows = iter([(Decimal("1.25"),), (Decimal("2.50"),), None])
     closed = []
     agent.streams["stream"] = [SimpleNamespace(close=lambda: closed.append(True)),
@@ -183,7 +188,7 @@ def test_table_read_uses_local_metadata_and_parameterized_lookup(monkeypatch):
         def fetchall(self):
             return [("Amount", "decimal", 19, 4)]
     conn = SimpleNamespace(cursor=lambda: Cursor(), close=lambda: closed.append(True))
-    agent = agent_module.LocalAgent("SRC", "PC", "Demo", "secret")
+    agent = agent_module.UniversalLocalAgent("SRC", "SQLSERVER", "PC", 1433, "Demo", connection_string="secret")
     monkeypatch.setattr(agent, "connect", lambda: conn)
     task = {"source_id": "SRC", "server": "PC", "database": "Demo", "operation": "open",
             "payload": {"schema": "dbo", "table": "Orders];DROP TABLE X--", "columns": ["Amount"], "max_rows": 5}}

@@ -2469,7 +2469,7 @@ def _physical_generator(generator):
                 key = relation_key(source)
                 for table in table_map.values():
                     if key in {relation_key(_fqn(catalog, 'bronze', table['name'])), relation_key(_fqn(catalog, 'silver', f"vw_{_snake(table['name'])}_clean"))}:
-                        return _col_name_for_rel('.'.join(qident(part) for part in key), table, column.name)
+                        return _col_name_for_rel('.'.join(qident(part) for part in key), table, fallback)
             return fallback
         content = bind_physical_columns(content, schemas, resolver=physical)
         return (content, result[1]) if isinstance(result, tuple) else content

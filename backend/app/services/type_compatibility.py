@@ -28,12 +28,12 @@ from uuid import UUID
 from .rules import map_sqlserver_type
 
 
-BINARY_SOURCE_TYPES = {"binary", "varbinary", "image", "timestamp", "rowversion"}
-INTEGER_SOURCE_TYPES = {"bigint", "int", "smallint", "tinyint"}
-FLOAT_SOURCE_TYPES = {"float", "real"}
-DECIMAL_SOURCE_TYPES = {"decimal", "numeric", "money", "smallmoney"}
+BINARY_SOURCE_TYPES = {"binary", "varbinary", "image", "timestamp", "rowversion", "bytea", "raw", "long raw", "blob", "longblob", "mediumblob", "tinyblob"}
+INTEGER_SOURCE_TYPES = {"bigint", "int", "smallint", "tinyint", "integer", "serial", "bigserial"}
+FLOAT_SOURCE_TYPES = {"float", "real", "double", "double precision"}
+DECIMAL_SOURCE_TYPES = {"decimal", "numeric", "money", "smallmoney", "number"}
 STRING_SOURCE_TYPES = {
-    "char", "varchar", "text", "nchar", "nvarchar", "ntext", "sysname", "json"
+    "char", "varchar", "text", "nchar", "nvarchar", "ntext", "sysname", "json", "varchar2", "nvarchar2", "clob", "nclob", "character varying", "longtext", "mediumtext", "tinytext"
 }
 DATE_SOURCE_TYPES = {"date"}
 DATETIME_SOURCE_TYPES = {"datetime", "datetime2", "smalldatetime"}
@@ -131,7 +131,7 @@ ADAPTER_SPECS: tuple[AdapterSpec, ...] = (
         "Binary values are source-projected as style-2 hexadecimal text and rebuilt with Databricks unhex().",
         "SQLSERVER_HEX_STYLE_2",
     ),
-    AdapterSpec("boolean.native.v1", "BOOLEAN", frozenset({"bit"}), "BOOLEAN_NATIVE"),
+    AdapterSpec("boolean.native.v1", "BOOLEAN", frozenset({"bit", "bool", "boolean"}), "BOOLEAN_NATIVE"),
     AdapterSpec("integer.native.v1", "INTEGER", frozenset(INTEGER_SOURCE_TYPES), "INTEGER_NATIVE"),
     AdapterSpec("float.native.v1", "FLOAT", frozenset(FLOAT_SOURCE_TYPES), "FLOAT_NATIVE"),
     AdapterSpec("decimal.native.v2", "DECIMAL", frozenset(DECIMAL_SOURCE_TYPES), "DECIMAL_NATIVE"),
@@ -420,6 +420,8 @@ def normalize_source_value(column: Any, value: Any, row_index: int | None = None
     """Normalize one source value using discovered metadata only."""
     if value is None:
         return None
+    if hasattr(value, "read") and callable(value.read):
+        value = value.read()  # Native Oracle LOB driver value, before normalization.
     plan = transport_plan(column.data_type, getattr(column, "precision", None), getattr(column, "scale", None))
     if plan.strategy == "HEX_STRING_TO_BINARY":
         return _normalize_hex(column, plan, value, row_index)

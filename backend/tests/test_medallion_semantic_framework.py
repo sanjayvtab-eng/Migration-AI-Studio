@@ -270,7 +270,7 @@ def test_failed_medallion_routine_repair_creates_new_validated_unapproved_versio
         project_id=pid, artifact_version_id=candidate.id,
         review_type='ARCHITECT_REVIEW', status='APPROVED',
     ).one()
-    assert mirrored.reviewer == 'architect'
+    assert mirrored.reviewer == 'admin'
 
 def test_medallion_dev_deployment_is_review_gated_and_layer_ordered(client,auth_headers,db,monkeypatch):
     from app.services.medallion import deploy_medallion_dev

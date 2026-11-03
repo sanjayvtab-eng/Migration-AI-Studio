@@ -108,28 +108,25 @@ def test_parquet_keeps_canonical_values_and_nulls(monkeypatch):
         Path(path).unlink()
 
 
-def test_parallel_clones_use_distinct_sessions_and_project_context(db, monkeypatch):
-    barrier = Barrier(4)
-    lock = Lock()
+def test_parallel_clones_bound_concurrency_without_control_sessions(db, monkeypatch):
+    barrier = Barrier(2)
     observed = []
     def execute(sql, **kwargs):
-        session, project_id = _project_scope.get()
-        with lock:
-            observed.append((id(session), project_id, get_ident(), sql))
+        assert not db.in_transaction()
+        observed.append((get_ident(), sql))
         barrier.wait(timeout=10)
         return []
-    monkeypatch.setattr(deployment, 'execute_sql', execute)
+    monkeypatch.setattr(deployment, 'detached_target_executor', lambda session,pid: execute)
     prepared = [(None,None,f'`dev`.`bronze`.`t{i}`',f'`test`.`bronze`.`t{i}`',
                  SimpleNamespace(layer='BRONZE',node_type='DELTA_TABLE'),None) for i in range(4)]
     result = deployment._parallel_bronze_clones(db, 'project_a', prepared)
     assert all(value is None for value in result.values())
-    assert len({item[0] for item in observed}) == 4
-    assert len({item[2] for item in observed}) == 4
-    assert all(item[1] == 'project_a' and 'DEEP CLONE' in item[3] for item in observed)
+    assert len(observed)==4 and len({item[0] for item in observed})==2
+    assert all('DEEP CLONE' in item[1] for item in observed)
 
 
 def test_clone_failure_remains_an_error(db, monkeypatch):
-    monkeypatch.setattr(deployment, 'execute_sql', lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError('clone failed')))
+    monkeypatch.setattr(deployment, 'detached_target_executor', lambda *_: lambda *a,**k: (_ for _ in ()).throw(RuntimeError('clone failed')))
     prepared = [(None,None,'`dev`.`bronze`.`t`','`test`.`bronze`.`t`',
                  SimpleNamespace(layer='BRONZE',node_type='DELTA_TABLE'),None)]
     assert isinstance(deployment._parallel_bronze_clones(db, 'p', prepared)[prepared[0][3]], RuntimeError)
@@ -142,7 +139,7 @@ def test_copy_restores_types_and_cleans_files(db, monkeypatch, tmp_path):
     path = tmp_path / 'bulk.parquet'
     path.write_bytes(b'parquet-placeholder')
     calls = []
-    monkeypatch.setattr(bronze, '_export_table_to_parquet', lambda *_: (str(path),5000))
+    monkeypatch.setattr(bronze, '_export_table_to_parquet', lambda *_, **_kw: (str(path),5000))
     monkeypatch.setattr(bronze, '_upload_to_uc_volume', lambda *args: calls.append(('upload',args[-1])))
     monkeypatch.setattr(bronze, '_volume_file_request', lambda *args: calls.append(('delete',args[-1])))
     monkeypatch.setattr(bronze, '_target_count', lambda *_: 5000)
@@ -160,7 +157,7 @@ def test_copy_restores_types_and_cleans_files(db, monkeypatch, tmp_path):
 
 
 def test_reconciliation_parallel_counts_record_ordered_failures(monkeypatch):
-    barrier = Barrier(6)
+    barrier = Barrier(2)
     main_thread = get_ident()
     nodes = {f'n{i}': SimpleNamespace(id=f'n{i}',node_type='DELTA_TABLE',layer='SILVER',
                                      source_object_id=None,target_fqn=f'c.s.t{i}',target_name=f't{i}')
@@ -171,13 +168,13 @@ def test_reconciliation_parallel_counts_record_ordered_failures(monkeypatch):
         return nodes.get(key)
     fake_db = SimpleNamespace(get=get, get_bind=lambda: None,
                               add=lambda row: records.append(row),commit=lambda: None)
-    def query(_bind, _pid, sql, **kwargs):
+    def query(sql, **kwargs):
         assert get_ident() != main_thread
         barrier.wait(timeout=10)
         if sql.endswith('t2'):
             raise RuntimeError('count failed')
         return [(10,)]
-    monkeypatch.setattr(deployment, '_isolated_execute', query)
+    monkeypatch.setattr(deployment, 'detached_target_executor', lambda *_: query)
     manifest = [(SimpleNamespace(object_id=None), {'medallion_node_id':f'n{i}',
                   'target_fqn':f'c.s.t{i}','layer':'SILVER'}) for i in reversed(range(6))]
     result = deployment._reconcile_medallion_run(fake_db,'p','TEST','run',manifest)
@@ -217,6 +214,7 @@ def test_failed_clone_blocks_dependent_artifacts(db, monkeypatch, environment):
             raise RuntimeError('clone failed')
         return []
     monkeypatch.setattr(deployment,'execute_sql',execute)
+    monkeypatch.setattr(deployment,'detached_target_executor',lambda *_:execute)
     monkeypatch.setattr(deployment,'_execute_promoted_sql',lambda *_args,**_kw:pytest.fail('dependent artifact ran after clone failure'))
     result = getattr(deployment,'promote_medallion_to_'+environment)(db,project.id)
     assert result['status'] == 'FAILED' and 'clone failed' in result['error']

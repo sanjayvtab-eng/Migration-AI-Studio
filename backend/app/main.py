@@ -12,13 +12,16 @@ from app.api.connectors import router as connector_router
 from app.models.entities import User
 from app.models import canonical
 from app.services.engine import uid
-from app.core.schema_upgrade import ensure_source_columns, ensure_project_columns
+from app.core.schema_upgrade import ensure_source_columns, ensure_project_columns, ensure_auth_columns
 from sqlalchemy import func, select
+from sqlalchemy.exc import TimeoutError as DatabaseTimeout
+from fastapi.responses import JSONResponse
 
 s=get_settings()
 Base.metadata.create_all(engine)
 ensure_source_columns(engine)
 ensure_project_columns(engine)
+ensure_auth_columns(engine)
 if s.bootstrap_admin_username and s.bootstrap_admin_password:
     if len(s.bootstrap_admin_password) < 12:
         raise RuntimeError("BOOTSTRAP_ADMIN_PASSWORD must contain at least 12 characters")
@@ -36,11 +39,16 @@ from app.services.scheduler_service import start_scheduler, stop_scheduler
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_scheduler()
+    if s.incremental_sync_enabled:
+        start_scheduler()
     yield
     stop_scheduler()
 
-app=FastAPI(title=s.app_name,version="2.5.0",lifespan=lifespan)
+app=FastAPI(title=s.app_name,version="2.5.0-remediation.1",lifespan=lifespan)
+
+@app.exception_handler(DatabaseTimeout)
+async def database_busy(request, exc):
+    return JSONResponse(status_code=503, content={"detail":"Control database is busy; retry shortly"}, headers={"Retry-After":"5"})
 app.add_middleware(CORSMiddleware,allow_origins=s.origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 class SecurityHeaders(BaseHTTPMiddleware):
@@ -60,6 +68,7 @@ app.add_middleware(SecurityHeaders)
 app.include_router(router)
 app.include_router(connector_router)
 @app.get("/health", tags=["System"])
+@app.get("/healthz", tags=["System"])
 async def root_health():
     return {"status": "ok", "service": "migration-factory"}
 

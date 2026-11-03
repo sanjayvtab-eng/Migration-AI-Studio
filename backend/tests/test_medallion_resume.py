@@ -24,6 +24,8 @@ def test_medallion_deployment_resumes_from_failed_object(db, monkeypatch):
     node1 = nodes[0]
     node2 = nodes[1]
 
+    from app.services import deployment
+    monkeypatch.setattr(deployment,"databricks_workspace_identity",lambda:"workspace-test")
     # Pre-record node1 as PASSED in DEV
     db.add(MigrationDeployment(
         id=medallion.uid("DPL"),
@@ -38,6 +40,8 @@ def test_medallion_deployment_resumes_from_failed_object(db, monkeypatch):
             "artifact_version_id": "V1",
             "artifact_content_hash": "hash1",
             "layer": node1.layer,
+            "databricks_workspace":"workspace-test",
+            "source_hash":table.source_hash, "max_rows":None,
         })
     ))
     db.commit()

@@ -2,10 +2,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import re
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, Header, Response
+from fastapi import APIRouter, Depends, HTTPException, Header, Response, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token, decode_token
 from app.models.entities import *
@@ -76,7 +76,7 @@ class ArtifactIn(BaseModel): object_id:str; environment:str="DEV"
 class LoginIn(BaseModel): username:str; password:str
 class RegisterRequestIn(BaseModel): email:str
 class VerifyOtpIn(BaseModel): email:str; otp:str
-class SetPasswordIn(BaseModel): email:str; password:str
+class SetPasswordIn(BaseModel): email:str; password:str; verification_token:str = ""
 class ReviewIn(BaseModel): artifact_version_id:str; review_type:str="ARCHITECT_REVIEW"; status:str; reviewer:str; comments:str|None=None
 class GateIn(BaseModel): environment:str; status:str; pass_count:int=0; fail_count:int=0; blocker_count:int=0; deployment_version:str|None=None
 class LayerOverrideIn(BaseModel): selected_layer:str; user:str; reason:str
@@ -127,6 +127,10 @@ class DeployDevIn(BaseModel):
 
 class DatabricksTokenIn(BaseModel):
     token: str
+
+class ProductionPromotionIn(BaseModel):
+    confirmation_text: str
+    release_id: str
 
 class DatabricksConfigurationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -317,10 +321,33 @@ def _sqlserver_conn_for_source(src: MigrationSource) -> str:
     return f"DRIVER={{{driver}}};SERVER={src.server_name};DATABASE={src.database_name};Trusted_Connection=yes;TrustServerCertificate=yes;"
 
 
-def auth(authorization: str|None=Header(default=None)):
-    if not authorization or not authorization.lower().startswith("bearer "): raise HTTPException(401,"Authentication required")
-    try: return decode_token(authorization.split(" ",1)[1])
-    except Exception: raise HTTPException(401,"Invalid or expired token")
+def auth(request: Request, authorization: str|None=Header(default=None), db:Session=Depends(get_db)):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401,"Authentication required")
+    try:
+        principal = decode_token(authorization.split(" ",1)[1])
+    except Exception:
+        raise HTTPException(401,"Invalid or expired token")
+    user = db.scalar(select(User).where(User.username == principal.get("sub")))
+    if not user or user.locked or principal.get("sv", 0) != user.session_version:
+        raise HTTPException(401,"Invalid or expired token")
+    principal['role'] = user.role
+    project_id = request.path_params.get('project_id')
+    if project_id:
+        project = db.get(MigrationProject, project_id)
+        if not project or (project.created_by or 'admin') != user.username:
+            raise HTTPException(404,"Project not found")
+    path = request.url.path
+    mutation = request.method not in {'GET','HEAD','OPTIONS'}
+    if mutation and user.role not in {'ADMIN','LEAD','ENGINEER'}:
+        raise HTTPException(403,"This role cannot modify application state")
+    governed = any(part in path for part in ('/review','/approve','/deploy','/promotion','/master-orchestration','/quality-gates'))
+    if mutation and governed and user.role not in {'ADMIN','LEAD'}:
+        raise HTTPException(403,"Release reviewer permission is required")
+    if path.startswith('/api/users') and user.role != 'ADMIN':
+        raise HTTPException(403,"Administrator permission is required")
+    return principal
+
 
 def _admin_actor(user: dict) -> str:
     if str(user.get("role","")).upper()!="ADMIN":
@@ -334,226 +361,140 @@ def _environment_error(exc: Exception):
     raise exc
 
 @router.get("/health")
-def health(): return system_health_check()
+@router.get("/public/health")
+def health(): return {"status":"ok","service":"migration-factory"}
 
 @router.post("/bootstrap-admin")
 def bootstrap_admin(data:LoginIn,db:Session=Depends(get_db)):
+    if get_settings().environment.upper() == "PROD": raise HTTPException(403,"Use administrator provisioning on the server")
+    if len(data.password) < 12: raise HTTPException(400,"Password must contain at least 12 characters")
     if db.scalar(select(func.count()).select_from(User))>0: raise HTTPException(409,"Users already exist")
     u=User(id=uid("USR"),username=data.username,password_hash=hash_password(data.password),role="ADMIN");db.add(u);db.commit();return {"created":True}
 
-@router.post("/auth/forgot-password")
-async def forgot_password_request_otp(data: RegisterRequestIn, db: Session = Depends(get_db)):
-    email = data.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(400, "Valid email address is required")
-    
-    from app.services import supabase_auth_service
-    sb_user = supabase_auth_service.get_user_by_email(email)
-    existing = db.scalar(select(User).where((User.email == email) | (User.username == email)))
-    
-    settings = get_settings()
-    is_bootstrap_email = bool(settings.brevo_sender_email and settings.brevo_sender_email.lower() == email)
-    
-    if not sb_user and not existing and not is_bootstrap_email:
-        admin_u = db.scalar(select(User).where(User.username == "admin"))
-        if not admin_u:
-            raise HTTPException(404, "No account found with this email. Please register first.")
-    
-    import random
+def _otp_digest(email, code):
+    import hashlib, hmac
+    return hmac.new(get_settings().jwt_secret.encode(), f"{email}:{code}".encode(), hashlib.sha256).hexdigest()[:16]
+
+
+async def _request_password_code(email, db, *, register=False):
+    import secrets
     from datetime import timedelta
-    otp_code = f"{random.randint(100000, 999999)}"
-    expires = datetime.utcnow() + timedelta(minutes=10)
-    
-    supabase_auth_service.upsert_user_otp(email, otp_code, expires)
-    if existing:
-        existing.otp = otp_code
-        existing.otp_expires_at = expires
-    else:
-        admin_u = db.scalar(select(User).where(User.username == "admin"))
-        if admin_u and (not admin_u.email or admin_u.email == email or is_bootstrap_email):
-            admin_u.email = email
-            admin_u.otp = otp_code
-            admin_u.otp_expires_at = expires
-    db.commit()
-    
     from app.services.email_service import send_otp_email
-    email_sent, email_detail = await send_otp_email(email, otp_code)
-    print(f"[AUTH] Generated Reset Password OTP for {email}: {otp_code} (dispatched={email_sent})")
-    
-    msg = "Password reset code sent to your email" if email_sent else f"OTP: {otp_code} (Delivery note: {email_detail})"
-    return {
-        "message": msg,
-        "email": email,
-        "email_dispatched": email_sent,
-        "detail": email_detail,
-        "is_reset": True
-    }
-
-
-@router.post("/register/request-otp")
-async def register_request_otp(data:RegisterRequestIn,db:Session=Depends(get_db)):
-    email = data.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(400, "Valid email address is required")
-    
-    from app.services import supabase_auth_service
-    sb_user = supabase_auth_service.get_user_by_email(email)
-    if sb_user and sb_user.get("is_verified") and sb_user.get("password_hash"):
-        raise HTTPException(409, "An account with this email already exists. Please sign in.")
-    
-    existing = db.scalar(select(User).where((User.email == email) | (User.username == email)))
-    if existing and existing.is_verified and existing.password_hash:
-        raise HTTPException(409, "An account with this email already exists. Please sign in.")
-    
-    import random
-    from datetime import timedelta
-    otp_code = f"{random.randint(100000, 999999)}"
-    expires = datetime.utcnow() + timedelta(minutes=10)
-    
-    # Save OTP to Supabase app_users table
-    supabase_auth_service.upsert_user_otp(email, otp_code, expires)
-
-    # Also mirror into local database
-    if not existing:
-        existing = User(
-            id=uid("USR"),
-            username=email,
-            email=email,
-            password_hash="",
-            role="ADMIN",
-            otp=otp_code,
-            otp_expires_at=expires,
-            is_verified=False
-        )
-        db.add(existing)
-    else:
-        existing.email = email
-        existing.otp = otp_code
-        existing.otp_expires_at = expires
+    email = email.strip().lower()
+    if not email or '@' not in email:
+        raise HTTPException(400,'A valid email is required')
+    user = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    if register and not get_settings().registration_enabled:
+        raise HTTPException(403,'Self-registration is disabled; contact an administrator')
+    generic = {'message':'If this account is eligible, a verification code will be emailed.', 'email':email}
+    if not register and not user:
+        return generic
+    if register and user and user.password_hash:
+        return generic
+    now = datetime.utcnow()
+    if user and user.otp_expires_at and user.otp_expires_at > now + timedelta(minutes=9):
+        raise HTTPException(429,'Please wait before requesting another code')
+    if not user:
+        user = User(id=uid('USR'), username=email, email=email, password_hash='', role='VIEWER', is_verified=False)
+        db.add(user)
+    code = str(100000 + secrets.randbelow(900000))
+    user.otp = _otp_digest(email, code)
+    user.otp_attempts = 0
+    user.otp_expires_at = now + timedelta(minutes=10)
+    user.password_proof_hash = None
+    user.password_proof_expires_at = None
     db.commit()
-    
-    from app.services.email_service import send_otp_email
-    email_sent, email_detail = await send_otp_email(email, otp_code)
-    print(f"[AUTH] Generated OTP for {email}: {otp_code} (dispatched={email_sent})")
-    
-    msg = "OTP verification code sent to your email" if email_sent else f"OTP: {otp_code} (Delivery note: {email_detail})"
-    return {
-        "message": msg,
-        "email": email,
-        "email_dispatched": email_sent,
-        "detail": email_detail
-    }
-
-
-@router.post("/register/verify-otp")
-def register_verify_otp(data:VerifyOtpIn,db:Session=Depends(get_db)):
-    email = data.email.strip().lower()
-    otp_input = data.otp.strip()
-    
-    from app.services import supabase_auth_service
-    ok, err_msg = supabase_auth_service.verify_user_otp(email, otp_input)
-    
-    # Also verify local record if Supabase was bypassed
-    u = db.scalar(select(User).where((User.email == email) | (User.username == email)))
-    if not ok:
-        if not u or not u.otp:
-            raise HTTPException(400, err_msg)
-        if u.otp_expires_at and u.otp_expires_at < datetime.utcnow():
-            raise HTTPException(400, "OTP code has expired. Please request a new code.")
-        if u.otp != otp_input:
-            raise HTTPException(400, "Invalid verification code")
-
-    if u:
-        u.is_verified = True
-        u.otp = None
+    sent, _ = await send_otp_email(email, code)
+    if not sent:
+        # Delivery failure never exposes the code through HTTP or logs.
+        user.otp = None
         db.commit()
-    
-    return {
-        "verified": True,
-        "message": "Email verified successfully. Please create your password.",
-        "email": email
-    }
+    return generic
 
 
-@router.post("/register/set-password")
-def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
+@router.post('/auth/forgot-password')
+async def forgot_password_request_otp(data:RegisterRequestIn,db:Session=Depends(get_db)):
+    return await _request_password_code(data.email, db)
+
+
+@router.post('/register/request-otp')
+async def register_request_otp(data:RegisterRequestIn,db:Session=Depends(get_db)):
+    return await _request_password_code(data.email, db, register=True)
+
+
+@router.post('/register/verify-otp')
+def register_verify_otp(data:VerifyOtpIn,db:Session=Depends(get_db)):
+    import secrets, hashlib
+    from datetime import timedelta
     email = data.email.strip().lower()
-    pwd = data.password.strip()
-    if len(pwd) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters long")
-    
-    from app.services import supabase_auth_service
-    hashed = hash_password(pwd)
-    supabase_auth_service.set_user_password(email, hashed)
-
-    u = db.scalar(select(User).where((User.email == email) | (User.username == email)))
-    if not u:
-        u = User(
-            id=uid("USR"),
-            username=email,
-            email=email,
-            password_hash=hashed,
-            role="ADMIN",
-            is_verified=True
-        )
-        db.add(u)
-    else:
-        u.password_hash = hashed
-        u.role = "ADMIN"
-        u.is_verified = True
-        u.failed_attempts = 0
-        u.locked = False
+    user = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    if not user or not user.otp or not user.otp_expires_at or user.otp_expires_at <= datetime.utcnow():
+        raise HTTPException(400,'Invalid or expired verification code')
+    if user.otp_attempts >= 5 or not secrets.compare_digest(user.otp, _otp_digest(email, data.otp.strip())):
+        user.otp_attempts += 1
+        if user.otp_attempts >= 5: user.otp = None
+        db.commit()
+        raise HTTPException(400,'Invalid or expired verification code')
+    proof = secrets.token_urlsafe(32)
+    # Atomic consumption makes concurrent successful verification of one OTP impossible.
+    changed = db.execute(update(User).where(User.id == user.id, User.otp == user.otp,
+        User.otp_expires_at > datetime.utcnow()).values(otp=None,
+        password_proof_hash=hashlib.sha256(proof.encode()).hexdigest(),
+        password_proof_expires_at=datetime.utcnow()+timedelta(minutes=5)))
+    if changed.rowcount != 1:
+        db.rollback(); raise HTTPException(400,'Verification code has already been consumed')
     db.commit()
-    
-    return {
-        "access_token": create_access_token(u.username, u.role),
-        "token_type": "bearer",
-        "role": u.role,
-        "username": u.username
-    }
+    return {'verified':True, 'email':email, 'verification_token':proof,
+            'message':'Code verified. Complete the password change within five minutes.'}
 
 
-@router.post("/login")
+@router.post('/register/set-password')
+def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
+    import hashlib
+    email = data.email.strip().lower()
+    if len(data.password) < 12:
+        raise HTTPException(400,'Password must contain at least 12 characters')
+    if not data.verification_token:
+        raise HTTPException(400,'Verified password-change proof is required')
+    user = db.scalar(select(User).where((User.email == email) | (User.username == email)))
+    if not user or user.locked:
+        raise HTTPException(400,'Password change is unavailable')
+    digest = hashlib.sha256(data.verification_token.encode()).hexdigest()
+    changed = db.execute(update(User).where(User.id == user.id,
+        User.password_proof_hash == digest, User.password_proof_expires_at > datetime.utcnow()
+        ).values(password_hash=hash_password(data.password), password_proof_hash=None,
+                 password_proof_expires_at=None, session_version=User.session_version+1,
+                 is_verified=True, failed_attempts=0))
+    if changed.rowcount != 1:
+        db.rollback(); raise HTTPException(400,'Invalid, expired or consumed password-change proof')
+    db.commit();db.refresh(user)
+    return {'access_token':create_access_token(user.username,user.role,user.session_version),
+            'token_type':'bearer','role':user.role,'username':user.username}
+
+
+@router.post('/login')
 def login(data:LoginIn,db:Session=Depends(get_db)):
     identifier = data.username.strip()
-    
-    # 1. Try Supabase app_users authentication first
-    from app.services import supabase_auth_service
-    sb_user = supabase_auth_service.authenticate_app_user(identifier, data.password)
-    if sb_user:
-        raw_role = str(sb_user.get("role") or "ADMIN").upper()
-        role = "ADMIN" if raw_role in ("ADMIN", "USER") else raw_role
-        if role not in ("ADMIN", "ENGINEER", "LEAD", "VIEWER"):
-            role = "ADMIN"
-        email = sb_user.get("email", identifier)
-        # Ensure local user exists for foreign key references
-        local_u = db.scalar(select(User).where((User.username == email) | (User.email == email.lower())))
-        if not local_u:
-            local_u = User(
-                id=uid("USR"),
-                username=email,
-                email=email,
-                password_hash=sb_user.get("password_hash", ""),
-                role=role,
-                is_verified=True,
-            )
-            db.add(local_u)
-        else:
-            local_u.role = role
-        db.commit()
-        return {"access_token": create_access_token(email, local_u.role), "token_type": "bearer", "role": local_u.role, "username": email, "email": email}
-
-    # 2. Fallback to local User (e.g. bootstrap admin)
-    u = db.scalar(select(User).where((User.username == identifier) | (User.email == identifier.lower())))
-    if not u or u.locked or not verify_password(data.password, u.password_hash if u else ""):
-        if u:
-            u.failed_attempts += 1
-            if u.failed_attempts >= 5: u.locked = True
+    user = db.scalar(select(User).where((User.username == identifier) | (User.email == identifier.lower())))
+    if not user:
+        from app.services.supabase_auth_service import authenticate_app_user
+        remote = authenticate_app_user(identifier, data.password)
+        if remote and remote.get('is_verified'):
+            role = str(remote.get('role') or 'VIEWER').upper()
+            if role not in {'ADMIN','LEAD','ENGINEER','VIEWER'}: role = 'VIEWER'
+            email = remote.get('email',identifier).lower()
+            user = User(id=uid('USR'),username=email,email=email,password_hash=remote['password_hash'],role=role,is_verified=True)
+            db.add(user);db.flush()
+    if not user or user.locked or not verify_password(data.password, user.password_hash):
+        if user and not user.locked:
+            user.failed_attempts += 1
+            if user.failed_attempts >= 5: user.locked=True
             db.commit()
-        raise HTTPException(401, "Invalid credentials or account locked")
-    u.failed_attempts = 0
-    db.commit()
-    return {"access_token": create_access_token(u.username, u.role), "token_type": "bearer", "role": u.role, "username": u.username, "email": u.email}
+        raise HTTPException(401,'Invalid credentials or account locked')
+    user.failed_attempts=0;db.commit()
+    return {'access_token':create_access_token(user.username,user.role,user.session_version),
+            'token_type':'bearer','role':user.role,'username':user.username,'email':user.email}
+
 
 @router.post("/projects")
 def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)):
@@ -1277,7 +1218,7 @@ def artifact(project_id:str,data:ArtifactIn,db:Session=Depends(get_db),_=Depends
 def validate(project_id:str,object_id:str,environment:str="DEV",db:Session=Depends(get_db),_=Depends(auth)): return static_validate(db,project_id,object_id,environment)
 
 @router.post("/projects/{project_id}/reviews")
-def review(project_id:str,data:ReviewIn,db:Session=Depends(get_db),_=Depends(auth)):
+def review(project_id:str,data:ReviewIn,db:Session=Depends(get_db),user=Depends(auth)):
     av=db.get(MigrationArtifactVersion,data.artifact_version_id)
     if not av or av.project_id!=project_id: raise HTTPException(404,"Artifact version not found in project")
     status=data.status.upper().strip()
@@ -1314,9 +1255,9 @@ def review(project_id:str,data:ReviewIn,db:Session=Depends(get_db),_=Depends(aut
         MigrationReview.artifact_version_id==av.id,
         MigrationReview.review_type==data.review_type,
     ).order_by(MigrationReview.reviewed_at.desc())).first()
-    if latest and latest.status==status and latest.reviewer==data.reviewer and (latest.comments or "")== (data.comments or ""):
+    if latest and latest.status==status and latest.reviewer==str(user["sub"]) and (latest.comments or "")== (data.comments or ""):
         return {"id":latest.id,"status":latest.status,"effective_status":latest.status,"duplicate_prevented":True}
-    r=MigrationReview(id=uid("REV"),project_id=project_id,artifact_version_id=av.id,review_type=data.review_type,status=status,reviewer=data.reviewer,comments=data.comments)
+    r=MigrationReview(id=uid("REV"),project_id=project_id,artifact_version_id=av.id,review_type=data.review_type,status=status,reviewer=str(user["sub"]),comments=data.comments)
     db.add(r);db.commit()
     return {"id":r.id,"status":r.status,"effective_status":r.status,"duplicate_prevented":False}
 
@@ -1330,7 +1271,7 @@ def remediation_analyze(project_id:str,object_id:str,data:RemediationAnalyzeIn,d
 @router.post("/projects/{project_id}/artifacts/{object_id}/remediation/accept")
 def remediation_accept(project_id:str,object_id:str,data:RemediationAcceptIn,db:Session=Depends(get_db),_=Depends(auth)):
     try:
-        av=accept_remediation(db,project_id,object_id,data.ai_run_id,data.reviewer)
+        av=accept_remediation(db,project_id,object_id,data.ai_run_id,str(_["sub"]))
         return {"accepted":True,"artifact_version_id":av.id,"version":av.version,"approval_required":True,"auto_deployed":False}
     except ValueError as e:
         raise HTTPException(400,str(e))
@@ -1420,7 +1361,7 @@ def remediation_plan_api(project_id:str,environment:str="DEV",db:Session=Depends
 @router.post("/projects/{project_id}/remediation/run")
 def remediation_run_api(project_id:str,data:RemediationBatchIn,db:Session=Depends(get_db),user=Depends(auth)):
     try:
-        reviewer=data.reviewer.strip() or user.get("sub","unknown")
+        reviewer=user["sub"]
         return run_remediation_batch(
             db,project_id,environment=data.environment,use_ai=data.use_ai,
             apply_valid_candidates=data.apply_valid_candidates,reviewer=reviewer,max_objects=data.max_objects,
@@ -1431,7 +1372,7 @@ def remediation_run_api(project_id:str,data:RemediationBatchIn,db:Session=Depend
 @router.post("/projects/{project_id}/artifacts/{object_id}/remediation/repair")
 def remediation_repair_one_api(project_id:str,object_id:str,data:RemediationOneIn,db:Session=Depends(get_db),user=Depends(auth)):
     try:
-        reviewer=data.reviewer.strip() or user.get("sub","unknown")
+        reviewer=user["sub"]
         return remediate_one_artifact(
             db,project_id,object_id,environment=data.environment,use_ai=data.use_ai,reviewer=reviewer,
         )
@@ -1479,14 +1420,14 @@ def semantics_upsert_api(project_id:str,data:SemanticIn,db:Session=Depends(get_d
 @router.post("/projects/{project_id}/semantics/{semantic_id}/approve")
 def semantics_approve_api(project_id:str,semantic_id:str,data:SemanticApproveIn,db:Session=Depends(get_db),_=Depends(auth)):
     try:
-        row=approve_semantic(db,project_id,semantic_id,data.actor,role=data.role)
+        row=approve_semantic(db,project_id,semantic_id,str(_["sub"]),role=data.role)
         return {"id":row.id,"status":row.status,"approved_by":row.approved_by,"approved_at":row.approved_at,"semantic_role":row.semantic_role,"target_name":row.target_name}
     except ValueError as e: raise HTTPException(400,str(e))
 
 @router.post("/projects/{project_id}/semantics/approve-all")
 def semantics_approve_all_api(project_id:str,data:SemanticApproveIn,db:Session=Depends(get_db),_=Depends(auth)):
     try:
-        return approve_all_semantics(db,project_id,data.actor)
+        return approve_all_semantics(db,project_id,str(_["sub"]))
     except ValueError as e: raise HTTPException(400,str(e))
 
 @router.post("/projects/{project_id}/medallion/plan")
@@ -1519,13 +1460,13 @@ def medallion_artifact_detail_api(project_id:str,version_id:str,db:Session=Depen
 @router.post("/projects/{project_id}/medallion/artifacts/approve-all")
 def medallion_artifacts_approve_all_api(project_id:str,data:MedallionReviewIn,environment:str="DEV",db:Session=Depends(get_db),_=Depends(auth)):
     try:
-        return approve_all_medallion_artifacts(db,project_id,environment=environment,reviewer=data.reviewer)
+        return approve_all_medallion_artifacts(db,project_id,environment=environment,reviewer=str(_["sub"]))
     except ValueError as e: raise HTTPException(400,str(e))
 
 @router.post("/projects/{project_id}/medallion/artifacts/{version_id}/review")
 def medallion_artifact_review_api(project_id:str,version_id:str,data:MedallionReviewIn,db:Session=Depends(get_db),_=Depends(auth)):
     try:
-        row=review_medallion_artifact(db,project_id,version_id,status=data.status,reviewer=data.reviewer)
+        row=review_medallion_artifact(db,project_id,version_id,status=data.status,reviewer=str(_["sub"]))
         return {"artifact_version_id":row.id,"review_status":row.review_status,"reviewer":row.reviewer,"reviewed_at":row.reviewed_at}
     except ValueError as e: raise HTTPException(400,str(e))
 
@@ -1534,7 +1475,7 @@ def medallion_artifact_remediate_api(project_id:str,version_id:str,data:Remediat
     try:
         return remediate_medallion_artifact(
             db,project_id,version_id,environment=data.environment,use_ai=data.use_ai,
-            reviewer=getattr(user,"username",None) or data.reviewer,
+            reviewer=user["sub"],
         )
     except (ValueError,RuntimeError) as e: raise HTTPException(400,str(e))
 
@@ -1551,8 +1492,7 @@ def medallion_deploy_resume_api(project_id:str,data:MedallionDeployIn=None,db:Se
 
 @router.post("/projects/{project_id}/quality-gates")
 def quality_gate(project_id:str,data:GateIn,db:Session=Depends(get_db),_=Depends(auth)):
-    run=MigrationRun(id=uid("RUN"),project_id=project_id,stage="QUALITY_GATE",environment=data.environment.upper(),status=data.status,ended_at=datetime.utcnow());db.add(run);db.flush()
-    g=MigrationQualityGate(id=uid("GAT"),project_id=project_id,run_id=run.id,environment=data.environment.upper(),status=data.status,pass_count=data.pass_count,fail_count=data.fail_count,blocker_count=data.blocker_count,deployment_version=data.deployment_version);db.add(g);db.commit();return {"run_id":run.id,"gate_id":g.id}
+    raise HTTPException(403,"Quality gates must be calculated from measured deployment and reconciliation evidence")
 
 @router.get("/projects/{project_id}/lifecycle")
 def lifecycle_api(project_id:str,db:Session=Depends(get_db),_=Depends(auth)): return lifecycle(db,project_id)
@@ -1577,7 +1517,7 @@ def dashboard(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
 @router.put("/projects/{project_id}/classification/{object_id}")
 def layer_override(project_id:str,object_id:str,data:LayerOverrideIn,db:Session=Depends(get_db),_=Depends(auth)):
     try:
-        c=override_layer(db,project_id,object_id,data.selected_layer,data.user,data.reason);return {"object_id":c.object_id,"selected_layer":c.selected_layer,"override_user":c.override_user,"override_reason":c.override_reason}
+        c=override_layer(db,project_id,object_id,data.selected_layer,str(_["sub"]),data.reason);return {"object_id":c.object_id,"selected_layer":c.selected_layer,"override_user":c.override_user,"override_reason":c.override_reason}
     except ValueError as e: raise HTTPException(400,str(e))
 
 @router.get("/projects/{project_id}/promotion-precheck/{environment}")
@@ -1766,9 +1706,13 @@ def prod_promotion_precheck_api(project_id:str,db:Session=Depends(get_db),_=Depe
 
 
 @router.post("/projects/{project_id}/promotions/prod/deploy")
-def prod_promotion_deploy_api(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
+def prod_promotion_deploy_api(project_id:str,data:ProductionPromotionIn,db:Session=Depends(get_db),user=Depends(auth)):
+    from app.services.deployment import _latest_successful_medallion_run
+    manifest = _latest_successful_medallion_run(db,project_id,"UAT")
+    if data.confirmation_text != "PROMOTE TO PROD" or not manifest or data.release_id != manifest[0]:
+        raise HTTPException(409,"Confirm the exact current UAT release before production promotion")
     try:
-        result=promote_medallion_to_prod(db,project_id)
+        result=promote_medallion_to_prod(db,project_id,expected_source_run_id=data.release_id)
         if result.get("status")=="FAILED": raise HTTPException(400,result)
         return result
     except ValueError as e: raise HTTPException(400,str(e))
@@ -1969,9 +1913,12 @@ def databricks_test(_=Depends(auth)):
 
 _GEMINI_HEALTH_CACHE: dict[str, Any] = {"timestamp": 0, "status": "connected", "model": "gemini-3.5-flash", "latency_ms": 120.0, "error": None}
 
-@router.get("/health")
-@router.get("/public/health")
-def system_health_check(project_id: str | None = None, db: Session = Depends(get_db)):
+@router.get("/system/health")
+def system_health_check(project_id: str | None = None, db: Session = Depends(get_db), user=Depends(auth)):
+    if project_id:
+        project = db.get(MigrationProject, project_id)
+        if not project or (project.created_by or "admin") != user["sub"]:
+            raise HTTPException(404,"Project not found")
     import time
     started = time.perf_counter()
     backend_latency = max(1.0, round((time.perf_counter() - started) * 1000, 1))
@@ -2088,7 +2035,7 @@ class ScheduleUpdateIn(BaseModel):
 
 
 @router.get("/projects/{project_id}/schedule", tags=["Schedule"])
-def get_project_schedule(project_id: str, db: Session = Depends(get_db)):
+def get_project_schedule(project_id: str, db: Session = Depends(get_db), _=Depends(auth)):
     from app.services.scheduler_service import compute_next_run_at
     schedule = db.query(MigrationSchedule).filter(MigrationSchedule.project_id == project_id).first()
     if not schedule:
@@ -2148,7 +2095,9 @@ def get_project_schedule(project_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/projects/{project_id}/schedule", tags=["Schedule"])
-def update_project_schedule(project_id: str, payload: ScheduleUpdateIn, db: Session = Depends(get_db)):
+def update_project_schedule(project_id: str, payload: ScheduleUpdateIn, db: Session = Depends(get_db), _=Depends(auth)):
+    if payload.is_enabled and not get_settings().incremental_sync_enabled:
+        raise HTTPException(409,"Incremental sync is disabled pending correctness validation")
     from app.services.scheduler_service import compute_next_run_at
     schedule = db.query(MigrationSchedule).filter(MigrationSchedule.project_id == project_id).first()
     if not schedule:
@@ -2189,7 +2138,10 @@ def update_project_schedule(project_id: str, payload: ScheduleUpdateIn, db: Sess
 
 
 @router.post("/projects/{project_id}/schedule/trigger-now", tags=["Schedule"])
-async def trigger_schedule_now(project_id: str, db: Session = Depends(get_db)):
+async def trigger_schedule_now(project_id: str, db: Session = Depends(get_db), _=Depends(auth)):
     from app.services.watermark_service import run_incremental_sync_for_project
-    summary = await run_incremental_sync_for_project(db, project_id, actor="MANUAL_TRIGGER")
+    try:
+        summary = await run_incremental_sync_for_project(db, project_id, actor="MANUAL_TRIGGER")
+    except ValueError as exc:
+        raise HTTPException(409,str(exc)) from exc
     return summary
