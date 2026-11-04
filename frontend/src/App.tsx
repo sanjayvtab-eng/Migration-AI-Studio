@@ -1192,7 +1192,7 @@ export default function App() {
     setEnvironmentPlan(null);
     setMedDeployment(null);
     setMedLogs([]);
-    setDeployment(null);
+    setDeployment({ environment: "DEV", status: "NOT_STARTED", logs: [] });
     setReconResult(null);
     setAutoPromotionStatus(null);
     setShowAutoAuthModal(false);
@@ -2888,15 +2888,16 @@ export default function App() {
     const items: any[] = [];
 
     // 1. DEV Medallion logs
-    if (medLogs && medLogs.length > 0) {
+    if (Array.isArray(medLogs) && medLogs.length > 0) {
       medLogs.forEach((x: any, idx: number) => {
-        const d = x.details || {};
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const d = (x && typeof x.details === "object" && x.details !== null) ? x.details : {};
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `dev-med-${x.run_id || ""}-${idx}`,
           env: "DEV",
           time: x.timestamp || new Date().toISOString(),
-          layer: (d.layer || "BRONZE").toUpperCase(),
+          layer: (typeof d.layer === "string" ? d.layer : (typeof x.layer === "string" ? x.layer : "BRONZE")).toUpperCase(),
           target: x.target_fqn || d.target_fqn || d.object_id || "-",
           version: d.artifact_version != null ? `v${d.artifact_version}` : (d.artifact_version_id || "v1"),
           status,
@@ -2908,14 +2909,15 @@ export default function App() {
     }
 
     // 2. DEV Reconciliation details
-    if (reconResult?.details && reconResult.details.length > 0) {
+    if (reconResult?.details && Array.isArray(reconResult.details) && reconResult.details.length > 0) {
       reconResult.details.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `dev-recon-${x.medallion_node_id || idx}-${x.artifact_version_id || idx}`,
           env: "DEV",
           time: reconResult.timestamp || reconResult.created_at || new Date().toISOString(),
-          layer: (x.layer || "BRONZE").toUpperCase(),
+          layer: (typeof x.layer === "string" ? x.layer : "BRONZE").toUpperCase(),
           target: x.target_fqn || x.object || "-",
           version: x.artifact_version ? `v${x.artifact_version}` : "v1",
           status,
@@ -2927,14 +2929,15 @@ export default function App() {
     }
 
     // 3. DEV Deployment logs
-    if (deployment?.logs && deployment.logs.length > 0) {
+    if (deployment?.logs && Array.isArray(deployment.logs) && deployment.logs.length > 0) {
       deployment.logs.slice().reverse().forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `dev-dep-${idx}`,
           env: "DEV",
           time: x.created_at || new Date().toISOString(),
-          layer: (x.layer || "BRONZE").toUpperCase(),
+          layer: (typeof x.layer === "string" ? x.layer : "BRONZE").toUpperCase(),
           target: x.target_fqn || x.action || x.object_id || "-",
           version: x.artifact_version ? `v${x.artifact_version}` : "v1",
           status,
@@ -2946,9 +2949,10 @@ export default function App() {
     }
 
     // 4. TEST Promotion & Recon
-    if (testPromotion?.logs && testPromotion.logs.length > 0) {
+    if (testPromotion?.logs && Array.isArray(testPromotion.logs) && testPromotion.logs.length > 0) {
       testPromotion.logs.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `test-prom-${idx}`,
           env: "TEST",
@@ -2963,14 +2967,15 @@ export default function App() {
         });
       });
     }
-    if (testRecon?.details && testRecon.details.length > 0) {
+    if (testRecon?.details && Array.isArray(testRecon.details) && testRecon.details.length > 0) {
       testRecon.details.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `test-recon-${idx}`,
           env: "TEST",
           time: testRecon.created_at || new Date().toISOString(),
-          layer: (x.layer || "RECON").toUpperCase(),
+          layer: (typeof x.layer === "string" ? x.layer : "RECON").toUpperCase(),
           target: x.target_fqn || x.object || "-",
           version: x.artifact_version ? `v${x.artifact_version}` : "v1",
           status,
@@ -2982,9 +2987,10 @@ export default function App() {
     }
 
     // 5. UAT Promotion & Recon
-    if (uatPromotion?.logs && uatPromotion.logs.length > 0) {
+    if (uatPromotion?.logs && Array.isArray(uatPromotion.logs) && uatPromotion.logs.length > 0) {
       uatPromotion.logs.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `uat-prom-${idx}`,
           env: "UAT",
@@ -2999,14 +3005,15 @@ export default function App() {
         });
       });
     }
-    if (uatRecon?.details && uatRecon.details.length > 0) {
+    if (uatRecon?.details && Array.isArray(uatRecon.details) && uatRecon.details.length > 0) {
       uatRecon.details.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `uat-recon-${idx}`,
           env: "UAT",
           time: uatRecon.created_at || new Date().toISOString(),
-          layer: (x.layer || "RECON").toUpperCase(),
+          layer: (typeof x.layer === "string" ? x.layer : "RECON").toUpperCase(),
           target: x.target_fqn || x.object || "-",
           version: x.artifact_version ? `v${x.artifact_version}` : "v1",
           status,
@@ -3018,9 +3025,10 @@ export default function App() {
     }
 
     // 6. PROD Promotion & Recon
-    if (prodPromotion?.logs && prodPromotion.logs.length > 0) {
+    if (prodPromotion?.logs && Array.isArray(prodPromotion.logs) && prodPromotion.logs.length > 0) {
       prodPromotion.logs.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `prod-prom-${idx}`,
           env: "PROD",
@@ -3035,14 +3043,15 @@ export default function App() {
         });
       });
     }
-    if (prodRecon?.details && prodRecon.details.length > 0) {
+    if (prodRecon?.details && Array.isArray(prodRecon.details) && prodRecon.details.length > 0) {
       prodRecon.details.forEach((x: any, idx: number) => {
-        const status = (x.status || "PASSED").toUpperCase();
+        if (!x) return;
+        const status = (typeof x?.status === "string" ? x.status : "PASSED").toUpperCase();
         items.push({
           id: `prod-recon-${idx}`,
           env: "PROD",
           time: prodRecon.created_at || new Date().toISOString(),
-          layer: (x.layer || "RECON").toUpperCase(),
+          layer: (typeof x.layer === "string" ? x.layer : "RECON").toUpperCase(),
           target: x.target_fqn || x.object || "-",
           version: x.artifact_version ? `v${x.artifact_version}` : "v1",
           status,
@@ -3086,11 +3095,11 @@ export default function App() {
         medDeployment?.status === "PASSED" ||
         reconResult?.status === "PASSED" ||
         deployment?.status === "PASSED" ||
-        (attemptItems?.length > 0 && attemptItems.every((i: any) => i.status === "PASSED")) ||
-        life.find((x: any) => x.environment === "DEV")?.status === "PASSED"
+        (Array.isArray(attemptItems) && attemptItems.length > 0 && attemptItems.every((i: any) => i?.status === "PASSED")) ||
+        (Array.isArray(life) && life.find((x: any) => x?.environment === "DEV")?.status === "PASSED")
       );
     }
-    return life.find((x: any) => x.environment === environment)?.status === "PASSED";
+    return Boolean(Array.isArray(life) && life.find((x: any) => x?.environment === environment)?.status === "PASSED");
   };
 
   const overallStatus: string = useMemo((): string => {
@@ -4458,7 +4467,7 @@ export default function App() {
                           <Play size={15} /> Resume from Last Checkpoint
                         </button>
                       )}
-                      {autoPromotionStatus.run && !["COMPLETED", "CANCELLED"].includes(autoPromotionStatus.run.status) && (
+                      {autoPromotionStatus?.run && !["COMPLETED", "CANCELLED"].includes(autoPromotionStatus?.run?.status) && (
                         <button
                           className="secondary-action"
                           style={{ borderColor: "rgba(239, 68, 68, 0.4)", color: "#f87171" }}
@@ -7673,22 +7682,22 @@ export default function App() {
                   <div className="deployment-summary">
                     <div className="summary-stat">
                       <span>Status</span>
-                      <Badge s={medDeployment.status || "UNKNOWN"} />
+                      <Badge s={medDeployment?.status || "UNKNOWN"} />
                     </div>
                     <div className="summary-stat">
                       <span>Run ID</span>
-                      <b>{medDeployment.run_id || "-"}</b>
+                      <b>{medDeployment?.run_id || "-"}</b>
                     </div>
                     <div className="summary-stat">
                       <span>Deployed</span>
                       <b>
-                        {medDeployment.deployed ?? medLogs.filter((x) => x.status === "PASSED" && x.details?.medallion_node_id).length}
+                        {medDeployment?.deployed ?? (Array.isArray(medLogs) ? medLogs.filter((x) => x?.status === "PASSED" && x?.details?.medallion_node_id).length : 0)}
                       </b>
                     </div>
                     <div className="summary-stat">
                       <span>Failed</span>
                       <b>
-                        {medDeployment.failed ?? medLogs.filter((x) => x.status === "FAILED" && x.details?.medallion_node_id).length}
+                        {medDeployment?.failed ?? (Array.isArray(medLogs) ? medLogs.filter((x) => x?.status === "FAILED" && x?.details?.medallion_node_id).length : 0)}
                       </b>
                     </div>
                   </div>
@@ -9542,7 +9551,7 @@ export default function App() {
                         <span style={{ fontWeight: 700, fontSize: 13, color: "#1e293b" }}>
                           Latest Execution Summary ({formatDateTime(scheduleConfig.schedule.last_run_summary.executed_at, true)})
                         </span>
-                        <Badge s={scheduleConfig.schedule.last_run_summary.status} />
+                        <Badge s={scheduleConfig?.schedule?.last_run_summary?.status || "NOT_STARTED"} />
                       </div>
                       <div style={{ display: "flex", gap: 24, fontSize: 13, color: "#475569" }}>
                         <div>Duration: <b>{scheduleConfig.schedule.last_run_summary.duration_seconds}s</b></div>
@@ -9691,32 +9700,32 @@ export default function App() {
                 <div className="deployment-summary">
                   <div className="summary-stat">
                     <span>Status</span>
-                    <Badge s={deployment.status || "NOT_STARTED"} />
+                    <Badge s={deployment?.status || "NOT_STARTED"} />
                   </div>
                   <div className="summary-stat">
                     <span>Run ID</span>
-                    <b>{deployment.run_id || "-"}</b>
+                    <b>{deployment?.run_id || "-"}</b>
                   </div>
                   <div className="summary-stat">
                     <span>Objects</span>
-                    <b>{deployment.total || 0}</b>
+                    <b>{deployment?.total || 0}</b>
                   </div>
                   <div className="summary-stat">
                     <span>Passed</span>
-                    <b>{deployment.passed || 0}</b>
+                    <b>{deployment?.passed || 0}</b>
                   </div>
                   <div className="summary-stat">
                     <span>Failed</span>
-                    <b>{deployment.failed || 0}</b>
+                    <b>{deployment?.failed || 0}</b>
                   </div>
                   <div className="summary-stat">
                     <span>Checkpoint</span>
-                    <b>{deployment.checkpoint || "-"}</b>
+                    <b>{deployment?.checkpoint || "-"}</b>
                   </div>
                 </div>
-                {deployment.failed_object && (
+                {deployment?.failed_object && (
                   <div className="notice">
-                    Failed object: {deployment.failed_object}. Fix the issue,
+                    Failed object: {String(deployment.failed_object)}. Fix the issue,
                     then use Resume Failed Run.
                   </div>
                 )}
@@ -9728,7 +9737,7 @@ export default function App() {
                 )}
               </Panel>
               <Panel title="Execution evidence">
-                {deployment.logs?.length ? (
+                {deployment?.logs?.length ? (
                   <table>
                     <thead>
                       <tr>
@@ -9740,7 +9749,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {deployment.logs
+                      {(deployment?.logs || [])
                         .slice()
                         .reverse()
                         .map((x: any, i: number) => (
@@ -9865,7 +9874,7 @@ export default function App() {
                           Run {autoPromotionStatus.run.run_id} · {autoPromotionStatus.run.current_operation}
                         </h4>
                       </div>
-                      <Badge s={autoPromotionStatus.run.status} />
+                      <Badge s={autoPromotionStatus?.run?.status || "NOT_STARTED"} />
                     </div>
                     {autoPromotionStatus.is_active && (
                       <small style={{ color: "#94a3b8", display: "block", marginTop: 4 }}>
@@ -9987,18 +9996,18 @@ export default function App() {
                         <small>EXECUTION {promotionExecution.run_id}</small>
                         <b>{promotionExecution.source_environment} → {promotionExecution.target_environment}</b>
                       </div>
-                      <Badge s={promotionExecution.status} />
+                      <Badge s={promotionExecution?.status || "NOT_STARTED"} />
                     </div>
                     <div className="prompt-exec-stages promotion-exec-stages">
                       {Object.entries(promotionExecution.stages || {}).map(([name, stage]: [string, any]) => (
                         <div className="prompt-exec-step" key={name}>
-                          <span>{name}</span><Badge s={stage.status} />
+                          <span>{name}</span><Badge s={stage?.status || "NOT_STARTED"} />
                           {stage.deployed_count !== undefined && <small>{stage.deployed_count} deployed</small>}
                           {stage.passed !== undefined && <small>{stage.passed} reconciled</small>}
                         </div>
                       ))}
                     </div>
-                    {promotionExecution.status === "FAILED" && (
+                    {promotionExecution?.status === "FAILED" && (
                       <div className="prompt-exec-error">
                         <b><ShieldAlert size={15} /> Failed stage: {promotionExecution.failed_stage}</b>
                         <span>{promotionExecution.error}</span>
@@ -10081,7 +10090,7 @@ export default function App() {
                   <div className="subsection">
                     <h4>TEST reconciliation</h4>
                     <div className="deployment-summary">
-                      <div className="summary-stat"><span>Status</span><Badge s={testRecon.status} /></div>
+                      <div className="summary-stat"><span>Status</span><Badge s={testRecon?.status || "NOT_STARTED"} /></div>
                       <div className="summary-stat"><span>Checked</span><b>{testRecon.details_count || 0}</b></div>
                       <div className="summary-stat"><span>Passed</span><b>{testRecon.passed || 0}</b></div>
                       <div className="summary-stat"><span>Failed</span><b>{testRecon.failed || 0}</b></div>
@@ -10204,7 +10213,7 @@ export default function App() {
                   <div className="subsection">
                     <h4>UAT reconciliation</h4>
                     <div className="deployment-summary">
-                      <div className="summary-stat"><span>Status</span><Badge s={uatRecon.status} /></div>
+                      <div className="summary-stat"><span>Status</span><Badge s={uatRecon?.status || "NOT_STARTED"} /></div>
                       <div className="summary-stat"><span>Checked</span><b>{uatRecon.details_count || 0}</b></div>
                       <div className="summary-stat"><span>Passed</span><b>{uatRecon.passed || 0}</b></div>
                       <div className="summary-stat"><span>Failed</span><b>{uatRecon.failed || 0}</b></div>
@@ -10312,7 +10321,7 @@ export default function App() {
                   <div className="subsection">
                     <h4>PROD reconciliation</h4>
                     <div className="deployment-summary">
-                      <div className="summary-stat"><span>Status</span><Badge s={prodRecon.status} /></div>
+                      <div className="summary-stat"><span>Status</span><Badge s={prodRecon?.status || "NOT_STARTED"} /></div>
                       <div className="summary-stat"><span>Checked</span><b>{prodRecon.details_count || 0}</b></div>
                       <div className="summary-stat"><span>Passed</span><b>{prodRecon.passed || 0}</b></div>
                       <div className="summary-stat"><span>Failed</span><b>{prodRecon.failed || 0}</b></div>
@@ -10701,10 +10710,13 @@ export default function App() {
                       </thead>
                       <tbody>
                         {filteredAttempts.map((item: any) => {
-                          const isFailed = item.status === "FAILED";
-                          const envKey = (item.env || "DEV").toLowerCase();
+                          if (!item) return null;
+                          const statusStr = typeof item?.status === "string" ? item.status : "PASSED";
+                          const isFailed = statusStr === "FAILED";
+                          const envKey = String(item.env || "DEV").toLowerCase();
+                          const layerStr = String(item.layer || "BRONZE");
                           return (
-                            <tr key={item.id}>
+                            <tr key={item.id || Math.random()}>
                               <td className="col-time" style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: "#64748b" }}>
                                 {formatDateTime(item.time)}
                               </td>
@@ -10714,8 +10726,8 @@ export default function App() {
                                 </span>
                               </td>
                               <td className="col-layer">
-                                <span className={`deploy-layer-badge ${item.layer.toLowerCase()}`}>
-                                  {item.layer}
+                                <span className={`deploy-layer-badge ${layerStr.toLowerCase()}`}>
+                                  {layerStr}
                                 </span>
                               </td>
                               <td className="col-target">
@@ -10724,12 +10736,12 @@ export default function App() {
                                 </span>
                               </td>
                               <td className="col-version" style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: "#475569" }}>
-                                {item.version}
+                                {String(item.version || "-")}
                               </td>
                               <td className="col-status">
-                                <span className={`deploy-status-pill ${item.status.toLowerCase()}`}>
+                                <span className={`deploy-status-pill ${statusStr.toLowerCase()}`}>
                                   <span className="deploy-status-dot" />
-                                  {item.status}
+                                  {statusStr}
                                 </span>
                               </td>
                               <td className="col-action">
