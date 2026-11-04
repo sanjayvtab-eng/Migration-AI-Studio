@@ -4951,7 +4951,7 @@ export default function App() {
                       <tbody>
                         {filteredProjects.map((p, index) => {
                           const isSelected = p.id === pid;
-                          const isNearBottom = filteredProjects.length > 1 && (index >= filteredProjects.length - 1 || (filteredProjects.length >= 4 && index >= filteredProjects.length - 2));
+                          const isNearBottom = filteredProjects.length >= 4 && index >= filteredProjects.length - 2;
                           const projectSourceEngines = (p.id === pid && sources.length > 0)
                             ? Array.from(new Set(sources.map((s) => s.engine || "SQLSERVER")))
                             : (p.source_engines && p.source_engines.length > 0)
@@ -5075,13 +5075,13 @@ export default function App() {
                                   </span>
                                 </div>
                               </td>
-                              <td>
+                              <td style={{ position: "relative", zIndex: activeMenuProjectId === p.id ? 1000 : 2 }}>
                                 <div
                                   className="actions-cell"
                                   style={{
                                     justifyContent: "flex-end",
                                     position: "relative",
-                                    zIndex: activeMenuProjectId === p.id ? 100 : 1,
+                                    zIndex: activeMenuProjectId === p.id ? 1000 : 2,
                                   }}
                                 >
                                   <div style={{ position: "relative" }}>
