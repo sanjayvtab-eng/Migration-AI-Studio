@@ -3536,7 +3536,7 @@ export default function App() {
                       <b className="profile-name" title={currentUserInfo.username}>{currentUserInfo.username}</b>
                       <span className="profile-role">{currentUserInfo.role}</span>
                       <span className="profile-scope" title={current?.name || "Release 7 Prompt Native"}>
-                        Project: {current?.name || "Release 7 Prompt Native"}
+                        Project: {current?.name || "No active project"}
                       </span>
                     </div>
                   </div>

@@ -22,18 +22,16 @@ Base.metadata.create_all(engine)
 ensure_source_columns(engine)
 ensure_project_columns(engine)
 ensure_auth_columns(engine)
-if s.bootstrap_admin_username and s.bootstrap_admin_password:
-    if len(s.bootstrap_admin_password) < 12:
-        raise RuntimeError("BOOTSTRAP_ADMIN_PASSWORD must contain at least 12 characters")
-    with SessionLocal() as db:
-        if db.scalar(select(func.count()).select_from(User)) == 0:
-            db.add(User(
-                id=uid("USR"),
-                username=s.bootstrap_admin_username,
-                password_hash=hash_password(s.bootstrap_admin_password),
-                role="ADMIN",
-            ))
-            db.commit()
+with SessionLocal() as db:
+    # Purge legacy admin accounts and ensure existing users use their real email
+    legacy_users = db.scalars(select(User).where((User.username == "admin") | (User.role == "ADMIN"))).all()
+    for lu in legacy_users:
+        if lu.email and "@" in lu.email:
+            lu.username = lu.email
+            lu.role = "VIEWER"
+        else:
+            db.delete(lu)
+    db.commit()
 from contextlib import asynccontextmanager
 from app.services.scheduler_service import start_scheduler, stop_scheduler
 

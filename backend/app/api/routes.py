@@ -405,6 +405,13 @@ async def _request_password_code(email, db, *, register=False):
     if not user:
         user = User(id=uid('USR'), username=email, email=email, password_hash='', role='VIEWER', is_verified=False)
         db.add(user)
+    else:
+        if user.username != email:
+            user.username = email
+        if user.email != email:
+            user.email = email
+        if user.role == 'ADMIN':
+            user.role = 'VIEWER'
     code = str(100000 + secrets.randbelow(900000))
     user.otp = _otp_digest(email, code)
     user.otp_attempts = 0
@@ -478,8 +485,10 @@ def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
     if changed.rowcount != 1:
         db.rollback(); raise HTTPException(400,'Invalid, expired or consumed password-change proof')
     db.commit();db.refresh(user)
-    return {'access_token':create_access_token(user.username,user.role,user.session_version),
-            'token_type':'bearer','role':user.role,'username':user.username}
+    subject = user.email if (user.email and '@' in user.email) else user.username
+    display_role = 'Viewer' if user.role == 'ADMIN' and user.email else user.role
+    return {'access_token':create_access_token(subject,display_role,user.session_version),
+            'token_type':'bearer','role':display_role,'username':subject}
 
 
 @router.post('/login')
@@ -502,8 +511,10 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
             db.commit()
         raise HTTPException(401,'Invalid credentials or account locked')
     user.failed_attempts=0;db.commit()
-    return {'access_token':create_access_token(user.username,user.role,user.session_version),
-            'token_type':'bearer','role':user.role,'username':user.username,'email':user.email}
+    subject = user.email if (user.email and '@' in user.email) else user.username
+    display_role = 'Viewer' if user.role == 'ADMIN' and user.email else user.role
+    return {'access_token':create_access_token(subject,display_role,user.session_version),
+            'token_type':'bearer','role':display_role,'username':subject,'email':user.email or subject}
 
 
 @router.post("/projects")
