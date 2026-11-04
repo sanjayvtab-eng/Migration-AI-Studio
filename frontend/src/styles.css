@@ -913,12 +913,19 @@
   border: 1px solid #e2e8f0;
   border-radius: 14px;
   box-shadow: 0 4px 16px -2px rgba(15, 23, 42, 0.04);
-  overflow: visible;
+  overflow: visible !important;
 }
 
 .projects-table-wrapper {
-  overflow-x: auto;
+  overflow: visible !important;
   border-radius: 14px;
+  min-height: 240px;
+}
+
+@media (max-width: 900px) {
+  .projects-table-wrapper {
+    overflow-x: auto !important;
+  }
 }
 
 .projects-table {
@@ -1003,8 +1010,48 @@
   white-space: nowrap;
 }
 
+.source-target-chip.unconfigured {
+  background: #fffbeb;
+  border: 1px dashed #f59e0b;
+  color: #92400e;
+}
+
+.source-target-chip.unconfigured .pending-source-tag {
+  font-weight: 600;
+  color: #b45309;
+  font-style: italic;
+  font-size: 11px;
+}
+
+.source-target-chip.configured {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
 .source-target-chip span.arrow {
   color: #94a3b8;
+  font-weight: 700;
+}
+
+.source-engine-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.engine-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid transparent;
+  line-height: 1.2;
+}
+
+.target-badge {
+  font-weight: 700;
+  color: #0f172a;
 }
 
 .progress-cell-wrap {
@@ -1189,13 +1236,21 @@
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.12);
-  z-index: 100;
-  min-width: 170px;
-  padding: 5px;
+  box-shadow: 0 14px 35px rgba(15, 23, 42, 0.18), 0 4px 10px rgba(15, 23, 42, 0.08);
+  z-index: 1000 !important;
+  min-width: 175px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.actions-dropdown.open-up {
+  top: auto !important;
+  bottom: 100% !important;
+  margin-top: 0 !important;
+  margin-bottom: 6px !important;
+  box-shadow: 0 -14px 35px rgba(15, 23, 42, 0.18), 0 -4px 10px rgba(15, 23, 42, 0.08) !important;
 }
 
 .actions-dropdown button {

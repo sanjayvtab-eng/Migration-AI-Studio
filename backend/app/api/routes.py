@@ -533,6 +533,8 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)
         p = existing
     else:
         p = ensure_project(db, data.name, created_by=creator)
+    sources_stmt = select(MigrationSource.engine).where(MigrationSource.project_id == p.id)
+    engines = list(set([row[0] for row in db.execute(sources_stmt) if row[0]]))
     return {
         "id": p.id,
         "name": p.name,
@@ -540,6 +542,8 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "created_by": p.created_by or creator,
         "owner": p.created_by or creator,
+        "source_engines": engines,
+        "source_count": len(engines),
     }
 
 @router.get("/projects")
@@ -556,6 +560,16 @@ def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
         stmt = select(MigrationProject).where(MigrationProject.created_by == current_user)
     
     projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
+    project_ids = [p.id for p in projects]
+    source_engines_by_project: dict[str, list[str]] = {}
+    if project_ids:
+        sources_stmt = select(MigrationSource.project_id, MigrationSource.engine).where(MigrationSource.project_id.in_(project_ids))
+        for p_id, eng in db.execute(sources_stmt):
+            if p_id not in source_engines_by_project:
+                source_engines_by_project[p_id] = []
+            if eng and eng not in source_engines_by_project[p_id]:
+                source_engines_by_project[p_id].append(eng)
+
     return [
         {
             "id": p.id,
@@ -564,6 +578,8 @@ def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "created_by": p.created_by or current_user,
             "owner": p.created_by or current_user,
+            "source_engines": source_engines_by_project.get(p.id, []),
+            "source_count": len(source_engines_by_project.get(p.id, [])),
         }
         for p in projects
     ]

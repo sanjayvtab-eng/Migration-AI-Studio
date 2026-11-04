@@ -70,7 +70,16 @@ import LandingPage from "./LandingPage";
 import WorkspacePhaseStepper from "./WorkspacePhaseStepper";
 import { ApiStatusPanel } from "./ApiStatusPanel";
 
-type Project = { id: string; name: string; status: string; created_at?: string; owner?: string; created_by?: string };
+type Project = {
+  id: string;
+  name: string;
+  status: string;
+  created_at?: string;
+  owner?: string;
+  created_by?: string;
+  source_engines?: string[];
+  source_count?: number;
+};
 type Source = {
   id: string;
   profile_name: string;
@@ -4940,8 +4949,14 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredProjects.map((p) => {
+                        {filteredProjects.map((p, index) => {
                           const isSelected = p.id === pid;
+                          const isNearBottom = filteredProjects.length > 1 && (index >= filteredProjects.length - 1 || (filteredProjects.length >= 4 && index >= filteredProjects.length - 2));
+                          const projectSourceEngines = (p.id === pid && sources.length > 0)
+                            ? Array.from(new Set(sources.map((s) => s.engine || "SQLSERVER")))
+                            : (p.source_engines && p.source_engines.length > 0)
+                            ? p.source_engines
+                            : [];
                           const st = (p.status || "").toUpperCase();
                           const isCompleted = st === "COMPLETED" || st === "CLOSED" || st === "PASSED";
                           const isReview = st.includes("REVIEW") || st === "PENDING";
@@ -4965,6 +4980,10 @@ export default function App() {
                               key={p.id}
                               className={`project-row ${isSelected ? "selected-row" : ""}`}
                               onClick={() => setPid(p.id)}
+                              style={{
+                                position: "relative",
+                                zIndex: activeMenuProjectId === p.id ? 100 : 1,
+                              }}
                             >
                               <td>
                                 <div className="project-name-cell">
@@ -4987,11 +5006,41 @@ export default function App() {
                                 </div>
                               </td>
                               <td>
-                                <div className="source-target-chip">
-                                  <span>SQL Server</span>
-                                  <span className="arrow">→</span>
-                                  <span>Databricks UC</span>
-                                </div>
+                                {projectSourceEngines.length > 0 ? (
+                                  <div className="source-target-chip configured">
+                                    <span className="source-engine-tag">
+                                      {projectSourceEngines.map((eng, idx) => {
+                                        const engKey = eng as keyof typeof SOURCE_ENGINES;
+                                        const info = SOURCE_ENGINES[engKey] || { label: eng, color: "#2563eb" };
+                                        return (
+                                          <span
+                                            key={eng}
+                                            className="engine-badge"
+                                            style={{
+                                              borderColor: `${info.color}40`,
+                                              backgroundColor: `${info.color}15`,
+                                              color: info.color,
+                                              marginRight: idx < projectSourceEngines.length - 1 ? "4px" : "0"
+                                            }}
+                                          >
+                                            {info.label}
+                                          </span>
+                                        );
+                                      })}
+                                    </span>
+                                    <span className="arrow">→</span>
+                                    <span className="target-badge">Databricks UC</span>
+                                  </div>
+                                ) : (
+                                  <div
+                                    className="source-target-chip unconfigured"
+                                    title="No data source configured yet. Add a database source in Stage 3: Sources."
+                                  >
+                                    <span className="pending-source-tag">Pending Source</span>
+                                    <span className="arrow">→</span>
+                                    <span className="target-badge">Databricks UC</span>
+                                  </div>
+                                )}
                               </td>
                               <td>
                                 <div className="progress-cell-wrap">
@@ -5027,7 +5076,14 @@ export default function App() {
                                 </div>
                               </td>
                               <td>
-                                <div className="actions-cell" style={{ justifyContent: "flex-end" }}>
+                                <div
+                                  className="actions-cell"
+                                  style={{
+                                    justifyContent: "flex-end",
+                                    position: "relative",
+                                    zIndex: activeMenuProjectId === p.id ? 100 : 1,
+                                  }}
+                                >
                                   <div style={{ position: "relative" }}>
                                     <button
                                       className="menu-trigger-btn"
@@ -5035,12 +5091,13 @@ export default function App() {
                                         e.stopPropagation();
                                         setActiveMenuProjectId(activeMenuProjectId === p.id ? null : p.id);
                                       }}
+                                      title="Project options"
                                     >
                                       <MoreVertical size={14} />
                                     </button>
                                     {activeMenuProjectId === p.id && (
                                       <div
-                                        className="actions-dropdown"
+                                        className={`actions-dropdown ${isNearBottom ? "open-up" : ""}`}
                                         onClick={(e) => e.stopPropagation()}
                                       >
                                         <button
