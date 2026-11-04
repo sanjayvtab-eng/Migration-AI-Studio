@@ -99,7 +99,7 @@ elif db_url.startswith("mysql"):
 
 engine = create_engine(db_url, **engine_options)
 
-def install_connection_budget(target_engine, limit=4, timeout=5):
+def install_connection_budget(target_engine, limit=25, timeout=30):
     # NullPool releases idle clients but does not bound active connections.
     # Budget is per process; operators must account for API replicas/workers.
     _connection_slots = BoundedSemaphore(max(1, limit))
@@ -112,15 +112,33 @@ def install_connection_budget(target_engine, limit=4, timeout=5):
             return dialect.connect(*args, **kwargs)
         except BaseException:
             record.info.pop("connection_budget_slot", None)
-            _connection_slots.release()
+            try:
+                _connection_slots.release()
+            except ValueError:
+                pass
             raise
     @event.listens_for(target_engine, "close")
     def release_connection_slot(connection, record):
         if record.info.pop("connection_budget_slot", False):
-            _connection_slots.release()
+            try:
+                _connection_slots.release()
+            except ValueError:
+                pass
+
+    @event.listens_for(target_engine, "invalidate")
+    def release_connection_slot_invalidate(connection, record, exception=None):
+        if record.info.pop("connection_budget_slot", False):
+            try:
+                _connection_slots.release()
+            except ValueError:
+                pass
 
 if engine_options.get("poolclass") is NullPool:
-    install_connection_budget(engine, int(os.getenv("DATABASE_MAX_CONNECTIONS", "4")))
+    install_connection_budget(
+        engine,
+        int(os.getenv("DATABASE_MAX_CONNECTIONS", "25")),
+        timeout=int(os.getenv("DATABASE_CONNECT_TIMEOUT", "30")),
+    )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 

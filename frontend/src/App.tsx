@@ -2108,10 +2108,19 @@ export default function App() {
     if (!pid || !promptSpec?.id) return;
     if (!window.confirm("Deploy the approved executable prompt-native artifact set to DEV and run reconciliation?")) return;
     setBusy(true);
+    setMsg("Deploying approved artifacts to Databricks DEV and running reconciliation...");
     try {
       const result: any = await api(`/projects/${pid}/prompt-specifications/${promptSpec.id}/deploy-dev`, { method: "POST" });
       await loadPromptSpecification(promptSpec.id);
-      setMsg(result.status === "DEV_GATE_PASSED" ? "Prompt-native DEV deployment and reconciliation passed." : `DEV workflow stopped with status ${result.status}.`);
+      const status: any = await api(`/projects/${pid}/medallion/deployments/dev/status`).catch(() => null);
+      if (status) {
+        setMedDeployment(status);
+        if (status.run_id) {
+          const logs: any = await api(`/projects/${pid}/medallion/deployments/${status.run_id}/logs`).catch(() => ({ logs: [] }));
+          setMedLogs(logs?.logs || []);
+        }
+      }
+      setMsg(result.status === "DEV_GATE_PASSED" ? "Prompt-native DEV deployment and reconciliation passed." : `DEV workflow status: ${result.status}.`);
     } catch (e: any) {
       setMsg(e.message);
     } finally {
@@ -9102,6 +9111,155 @@ export default function App() {
             <>
               {(page === "Deployment" || page === "Deployments") && (
                 <>
+                  {/* Stage 8 Header */}
+                  <div className="wf-page-header" style={{ marginBottom: 16 }}>
+                    <div className="wf-breadcrumbs">
+                      <span>Stage 8 of 9</span>
+                      <span className="wf-breadcrumbs-sep">/</span>
+                      <span>Phase 3: Deploy &amp; Cutover</span>
+                      <span className="wf-breadcrumbs-sep">|</span>
+                      <b>DEV Deployment Execution &amp; Validation</b>
+                    </div>
+                  </div>
+
+                  {/* Primary DEV Execution & Validation Logs Panel */}
+                  <Panel
+                    title={`DEV Deployment Execution & Validation Logs · ${medDeployment?.run_id || "Latest Run"}`}
+                    actions={
+                      <div className="deploy-actions" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <select
+                          value={medLogFilter}
+                          onChange={(e) => setMedLogFilter(e.target.value)}
+                          style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12 }}
+                        >
+                          <option value="ALL">All statuses ({medLogs.length})</option>
+                          <option value="PASSED">Passed only</option>
+                          <option value="FAILED">Failed only</option>
+                        </select>
+                        <button
+                          disabled={!medLogs.length && !logView.length}
+                          onClick={copyMedallionLogs}
+                          style={{ display: "flex", alignItems: "center", gap: 5 }}
+                        >
+                          <ScrollText size={14} /> Copy Logs
+                        </button>
+                        <button
+                          disabled={!pid || busy}
+                          onClick={medDeployment?.run_id ? downloadMedallionLogs : downloadDevLogs}
+                          style={{ display: "flex", alignItems: "center", gap: 5 }}
+                        >
+                          <Download size={14} /> Download CSV
+                        </button>
+                        <button
+                          disabled={!pid || busy}
+                          onClick={async () => {
+                            setBusy(true);
+                            try {
+                              const status: any = await api(`/projects/${pid}/medallion/deployments/dev/status`).catch(() => null);
+                              if (status) {
+                                setMedDeployment(status);
+                                if (status.run_id) {
+                                  const logs: any = await api(`/projects/${pid}/medallion/deployments/${status.run_id}/logs`).catch(() => ({ logs: [] }));
+                                  setMedLogs(logs?.logs || []);
+                                }
+                              }
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                          title="Refresh deployment status and execution logs"
+                          style={{ display: "flex", alignItems: "center", gap: 5 }}
+                        >
+                          <RefreshCw size={14} className={busy ? "spinning" : ""} /> Refresh Logs
+                        </button>
+                      </div>
+                    }
+                  >
+                    <div className="deployment-summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginBottom: 16 }}>
+                      <div className="summary-stat">
+                        <span>Status</span>
+                        <Badge s={medDeployment?.status || promptSpec?.status || "NOT_STARTED"} />
+                      </div>
+                      <div className="summary-stat">
+                        <span>Run ID</span>
+                        <b style={{ fontSize: 11, fontFamily: "monospace" }}>{medDeployment?.run_id || "-"}</b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Deployed</span>
+                        <b style={{ color: "#059669" }}>
+                          {medDeployment?.deployed ?? medLogs.filter((x) => x.status === "PASSED" && x.details?.medallion_node_id).length}
+                        </b>
+                      </div>
+                      <div className="summary-stat">
+                        <span>Failed</span>
+                        <b style={{ color: "#dc2626" }}>
+                          {medDeployment?.failed ?? medLogs.filter((x) => x.status === "FAILED" && x.details?.medallion_node_id).length}
+                        </b>
+                      </div>
+                    </div>
+
+                    {medLogs.length > 0 ? (
+                      <div style={{ overflowX: "auto" }}>
+                        <table className="projects-table" style={{ width: "100%", fontSize: 12 }}>
+                          <thead>
+                            <tr>
+                              <th>Time</th>
+                              <th>Layer</th>
+                              <th>Target</th>
+                              <th>Artifact Version</th>
+                              <th>Status</th>
+                              <th>Rows / Action</th>
+                              <th>Error / Details</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {medLogs
+                              .filter((x) => medLogFilter === "ALL" || x.status === medLogFilter)
+                              .map((x: any, i: number) => {
+                                const d = x.details || {};
+                                return (
+                                  <tr key={`${x.run_id}-${i}`}>
+                                    <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(x.timestamp)}</td>
+                                    <td>
+                                      <Badge s={d.layer || "-"} />
+                                    </td>
+                                    <td>
+                                      <code style={{ fontSize: 11 }}>{x.target_fqn || d.target_fqn || "-"}</code>
+                                    </td>
+                                    <td>
+                                      {d.artifact_version != null && <b>v{d.artifact_version} </b>}
+                                      <code title={d.artifact_content_hash || ""}>{d.artifact_version_id || "-"}</code>
+                                    </td>
+                                    <td>
+                                      <Badge s={x.status || "-"} />
+                                    </td>
+                                    <td style={{ fontWeight: 600 }}>
+                                      {d.load?.rows_loaded != null
+                                        ? `${Number(d.load.rows_loaded).toLocaleString()} rows loaded`
+                                        : d.load?.rows != null
+                                        ? `${Number(d.load.rows).toLocaleString()} rows`
+                                        : d.action || (d.medallion_run_started ? "Run started" : d.medallion_run_complete ? "Run completed" : d.medallion_run_finished ? "Run finished" : "-")}
+                                    </td>
+                                    <td style={{ color: d.error ? "#dc2626" : "#64748b", fontSize: 11 }}>
+                                      {d.error || x.message || "-"}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div style={{ padding: 24, textAlign: "center", color: "#64748b", background: "#f8fafc", borderRadius: 8, border: "1px dashed #cbd5e1" }}>
+                        <ScrollText size={28} style={{ opacity: 0.5, marginBottom: 8 }} />
+                        <p style={{ margin: "4px 0 0 0", fontSize: 13, fontWeight: 600 }}>No DEV execution logs recorded yet</p>
+                        <p style={{ margin: "4px 0 0 0", fontSize: 12 }}>
+                          Execute "Deploy &amp; Validate on DEV" from Stage 7 (Migration Studio) to run artifact generation, loading, and reconciliation on Databricks DEV.
+                        </p>
+                      </div>
+                    )}
+                  </Panel>
+
                   <Panel
                 title="Scheduled Incremental Data Refresh (Delta Sync)"
                 actions={
