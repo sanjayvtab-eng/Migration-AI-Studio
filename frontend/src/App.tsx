@@ -821,7 +821,7 @@ function getUserFromToken(): { username: string; role: string; initials: string 
     );
     const parsed = JSON.parse(jsonPayload);
     const sub: string = parsed.sub || parsed.username || "User";
-    const role: string = parsed.role === "ADMIN" ? "Enterprise Admin" : (parsed.role || "Viewer");
+    const role: string = parsed.role === "ADMIN" ? "Administrator" : (parsed.role || "Viewer");
     const namePart = sub.includes("@") ? sub.split("@")[0] : sub;
     let initials = "US";
     const parts = namePart.split(/[._-]/);

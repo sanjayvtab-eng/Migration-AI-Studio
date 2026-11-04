@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api")
 
 
 def admin(user=Depends(auth)):
-    if user.get("role") != "ADMIN":
+    if str(user.get("role", "")).upper() not in {"ADMIN", "LEAD", "ENGINEER"}:
         raise HTTPException(403, "Administrator permission required")
     return user
 

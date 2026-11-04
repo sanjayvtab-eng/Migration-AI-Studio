@@ -23,14 +23,14 @@ ensure_source_columns(engine)
 ensure_project_columns(engine)
 ensure_auth_columns(engine)
 with SessionLocal() as db:
-    # Purge legacy admin accounts and ensure existing users use their real email
-    legacy_users = db.scalars(select(User).where((User.username == "admin") | (User.role == "ADMIN"))).all()
-    for lu in legacy_users:
-        if lu.email and "@" in lu.email:
-            lu.username = lu.email
-            lu.role = "VIEWER"
-        else:
-            db.delete(lu)
+    # Ensure all registered user accounts have full ADMIN role so they can register connectors and run migrations
+    users = db.scalars(select(User)).all()
+    for u in users:
+        if u.email and "@" in u.email:
+            u.username = u.email
+            u.role = "ADMIN"
+        elif u.username == "admin":
+            db.delete(u)
     db.commit()
 from contextlib import asynccontextmanager
 from app.services.scheduler_service import start_scheduler, stop_scheduler

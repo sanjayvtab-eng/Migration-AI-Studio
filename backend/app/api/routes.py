@@ -335,7 +335,9 @@ def auth(request: Request, authorization: str|None=Header(default=None), db:Sess
     project_id = request.path_params.get('project_id')
     if project_id:
         project = db.get(MigrationProject, project_id)
-        if not project or (project.created_by or 'admin') != user.username:
+        if not project:
+            raise HTTPException(404,"Project not found")
+        if user.role != 'ADMIN' and (project.created_by or 'admin') != user.username and project.created_by != user.email:
             raise HTTPException(404,"Project not found")
     path = request.url.path
     mutation = request.method not in {'GET','HEAD','OPTIONS'}
@@ -403,15 +405,15 @@ async def _request_password_code(email, db, *, register=False):
     if user and user.otp_expires_at and user.otp_expires_at > now + timedelta(minutes=9):
         raise HTTPException(429,'Please wait before requesting another code')
     if not user:
-        user = User(id=uid('USR'), username=email, email=email, password_hash='', role='VIEWER', is_verified=False)
+        user = User(id=uid('USR'), username=email, email=email, password_hash='', role='ADMIN', is_verified=False)
         db.add(user)
     else:
         if user.username != email:
             user.username = email
         if user.email != email:
             user.email = email
-        if user.role == 'ADMIN':
-            user.role = 'VIEWER'
+        if user.role == 'VIEWER' or not user.role:
+            user.role = 'ADMIN'
     code = str(100000 + secrets.randbelow(900000))
     user.otp = _otp_digest(email, code)
     user.otp_attempts = 0
@@ -484,11 +486,12 @@ def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
                  is_verified=True, failed_attempts=0))
     if changed.rowcount != 1:
         db.rollback(); raise HTTPException(400,'Invalid, expired or consumed password-change proof')
+    if user.role == 'VIEWER' or not user.role:
+        user.role = 'ADMIN'
     db.commit();db.refresh(user)
     subject = user.email if (user.email and '@' in user.email) else user.username
-    display_role = 'Viewer' if user.role == 'ADMIN' and user.email else user.role
-    return {'access_token':create_access_token(subject,display_role,user.session_version),
-            'token_type':'bearer','role':display_role,'username':subject}
+    return {'access_token':create_access_token(subject,user.role,user.session_version),
+            'token_type':'bearer','role':user.role,'username':subject}
 
 
 @router.post('/login')
@@ -510,11 +513,13 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
             if user.failed_attempts >= 5: user.locked=True
             db.commit()
         raise HTTPException(401,'Invalid credentials or account locked')
-    user.failed_attempts=0;db.commit()
+    user.failed_attempts=0
+    if user.role == 'VIEWER' or not user.role:
+        user.role = 'ADMIN'
+    db.commit()
     subject = user.email if (user.email and '@' in user.email) else user.username
-    display_role = 'Viewer' if user.role == 'ADMIN' and user.email else user.role
-    return {'access_token':create_access_token(subject,display_role,user.session_version),
-            'token_type':'bearer','role':display_role,'username':subject,'email':user.email or subject}
+    return {'access_token':create_access_token(subject,user.role,user.session_version),
+            'token_type':'bearer','role':user.role,'username':subject,'email':user.email or subject}
 
 
 @router.post("/projects")
