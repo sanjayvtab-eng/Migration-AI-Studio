@@ -33,6 +33,9 @@ def build():
         "--name", "migration-agent",
         "--collect-all", "cryptography",
         "--collect-all", "oracledb",
+        "--collect-all", "certifi",
+        "--copy-metadata", "certifi",
+        "--copy-metadata", "httpx",
         "--hidden-import", "psycopg2",
         "--hidden-import", "pymysql",
         "--hidden-import", "pyodbc",
@@ -45,6 +48,13 @@ def build():
         "--hidden-import", "httpx",
         "--hidden-import", "pyarrow",
         "--hidden-import", "pyarrow.parquet",
+        "--exclude-module", "matplotlib",
+        "--exclude-module", "IPython",
+        "--exclude-module", "tkinter",
+        "--exclude-module", "PIL",
+        "--exclude-module", "pandas",
+        "--exclude-module", "scipy",
+        "--exclude-module", "pytest",
         "--distpath", str(dist_dir),
         "--workpath", str(build_dir),
         str(local_connector_py)
@@ -65,6 +75,10 @@ def build():
         "executable_sha256": hashlib.sha256(exe_path.read_bytes()).hexdigest(),
     }
     (dist_dir / "agent-build-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    bin_dir = root / "backend" / "app" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(exe_path, bin_dir / "migration-agent.exe")
+    print(f"  Copied to backend/app/bin/migration-agent.exe")
 
     # 2. Build Universal Distribution ZIP Bundle
     zip_path = dist_dir / "migration-agent-bundle.zip"

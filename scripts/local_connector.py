@@ -34,6 +34,22 @@ from uuid import UUID
 AGENT_BUILD_VERSION = "2.5.0-remediation.1"
 
 
+def get_safe_verify():
+    """Resolve SSL certificate verification safely in frozen binaries and scripts."""
+    try:
+        import certifi
+        cafile = certifi.where()
+        if cafile and os.path.isfile(cafile):
+            return cafile
+    except Exception:
+        pass
+    try:
+        import ssl
+        return ssl.create_default_context()
+    except Exception:
+        return True
+
+
 class ReconnectBackoff:
     """Capped jittered delays; reset after a successful gateway exchange."""
     def __init__(self):
@@ -1420,7 +1436,7 @@ class UniversalLocalAgent:
                     "Content-Length": str(file_size),
                 }
 
-                with httpx.Client(timeout=httpx.Timeout(900, connect=30), follow_redirects=False) as upload_client:
+                with httpx.Client(timeout=httpx.Timeout(900, connect=30), follow_redirects=False, verify=get_safe_verify()) as upload_client:
                     with open(local_parquet_path, "rb") as f_stream:
                         resp = upload_client.put(upload_url, headers=headers, content=f_stream)
                     if resp.status_code >= 300:
@@ -1678,7 +1694,7 @@ def fetch_studio_profile(url: str, token: str) -> dict:
         return {}
     try:
         import httpx
-        with httpx.Client(timeout=10, follow_redirects=True) as client:
+        with httpx.Client(timeout=10, follow_redirects=True, verify=get_safe_verify()) as client:
             resp = client.get(
                 f"{url.rstrip('/')}/api/connector/info",
                 headers={"Authorization": f"Bearer {token}"}
@@ -1978,6 +1994,7 @@ def main():
             headers={"Authorization": "Bearer " + token, "X-Connector-Instance": instance_id},
             timeout=httpx.Timeout(90, connect=10),
             follow_redirects=False,
+            verify=get_safe_verify(),
         ) as client:
             def keep_alive():
                 while not stopped.wait(15):
