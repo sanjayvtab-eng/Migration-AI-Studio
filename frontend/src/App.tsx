@@ -1,5 +1,5 @@
 import { finiteCount } from './stateMetrics';
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { api, api as requestApi, downloadApi, subscribeApiActivity } from "./api";
 import {
   Activity,
@@ -272,20 +272,22 @@ function computeUtcEquivalent(localHHMM: string): string {
   }
 }
 
-function formatSqlIdent(raw: string): string {
+function formatSqlIdent(raw: any): string {
   if (!raw || raw === "-") return "-";
-  const cleaned = raw.replace(/[`'"]/g, "").trim();
+  const str = typeof raw === "string" ? raw : (typeof raw === "object" ? (raw.target_fqn || raw.object || raw.name || JSON.stringify(raw)) : String(raw));
+  const cleaned = str.replace(/[`'"]/g, "").trim();
   const parts = cleaned.split(".");
   if (parts.length >= 2) {
-    return parts.map((p) => `\`${p}\``).join(".");
+    return parts.map((p: string) => `\`${p}\``).join(".");
   }
   return `\`${cleaned}\``;
 }
 
-function truncateRunId(id: string): string {
+function truncateRunId(id: any): string {
   if (!id || id === "-") return "-";
-  if (id.length <= 22) return id;
-  return `${id.slice(0, 9)}...${id.slice(-8)}`;
+  const str = typeof id === "string" ? id : String(id);
+  if (str.length <= 22) return str;
+  return `${str.slice(0, 9)}...${str.slice(-8)}`;
 }
 
 function formatTerminalTime(val: any): string {
@@ -782,9 +784,45 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
     </div>
   );
 }
-function Badge({ s }: { s: string }) {
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 32, background: "#fff", borderRadius: 12, border: "1px solid #fecaca", margin: 24, textAlign: "center" }}>
+          <h3 style={{ color: "#dc2626", margin: "0 0 12px 0" }}>An unexpected render error occurred in this view</h3>
+          <p style={{ color: "#64748b", fontSize: 13, margin: "0 0 16px 0", fontFamily: "monospace" }}>
+            {String(this.state.error?.message || this.state.error || "Unknown render exception")}
+          </p>
+          <button
+            className="btn-primary-blue"
+            onClick={() => {
+              this.setState({ hasError: false, error: null });
+              window.location.reload();
+            }}
+          >
+            Reload Page
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function Badge({ s }: { s: any }) {
+  const str = typeof s === "string" ? s : (s != null ? (typeof s === "object" ? (s.status || s.name || JSON.stringify(s)) : String(s)) : "");
   return (
-    <span className={`badge ${String(s || "").toLowerCase()}`}>{s || "-"}</span>
+    <span className={`badge ${str.toLowerCase()}`}>{str || "-"}</span>
   );
 }
 function Panel({
@@ -3093,7 +3131,11 @@ export default function App() {
 
   const failedTargetIdent = medDeployment?.failed_target || deployment?.failed_object || attemptItems.find((i: any) => i.status === "FAILED")?.target || "migration_dev.bronze.customer_sales";
 
-  const failureSummaryMessage = medDeployment?.error || attemptItems.find((i: any) => i.status === "FAILED")?.error || (failedCount > 0 ? `Metastore exception caught during execution for ${failedTargetIdent}. Dependent pipeline transformations halted.` : "");
+  const failureSummaryMessage = useMemo(() => {
+    const raw = medDeployment?.error || attemptItems.find((i: any) => i.status === "FAILED")?.error || (failedCount > 0 ? `Metastore exception caught during execution for ${formatSqlIdent(failedTargetIdent)}. Dependent pipeline transformations halted.` : "");
+    if (!raw) return "";
+    return typeof raw === "object" ? (raw.message || raw.detail || JSON.stringify(raw)) : String(raw);
+  }, [medDeployment?.error, attemptItems, failedCount, failedTargetIdent]);
 
   const rawTraceContent = useMemo(() => {
     const failedItem = attemptItems.find((i: any) => i.status === "FAILED");
@@ -3628,6 +3670,7 @@ export default function App() {
         </header>
 
         <section className="content">
+          <ErrorBoundary>
           {msg && (
             <div className={msg.includes("success") ? "notice ok" : "notice"}>
               {msg}
@@ -3888,6 +3931,14 @@ export default function App() {
                         </button>
                       );
                     })()}
+                    <button
+                      className="btn-secondary"
+                      onClick={() => setPage("Deployments")}
+                      title="View DEV deployment execution logs in Stage 8"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}
+                    >
+                      <ScrollText size={14} /> View DEV Logs →
+                    </button>
                   </div>
                 </div>
 
@@ -9124,7 +9175,7 @@ export default function App() {
 
                   {/* Primary DEV Execution & Validation Logs Panel */}
                   <Panel
-                    title={`DEV Deployment Execution & Validation Logs · ${medDeployment?.run_id || "Latest Run"}`}
+                    title={`DEV Deployment Execution & Validation Logs · ${typeof medDeployment?.run_id === "string" ? medDeployment.run_id : "Latest Run"}`}
                     actions={
                       <div className="deploy-actions" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <select
@@ -9132,12 +9183,12 @@ export default function App() {
                           onChange={(e) => setMedLogFilter(e.target.value)}
                           style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 12 }}
                         >
-                          <option value="ALL">All statuses ({medLogs.length})</option>
+                          <option value="ALL">All statuses ({(Array.isArray(medLogs) ? medLogs : []).length})</option>
                           <option value="PASSED">Passed only</option>
                           <option value="FAILED">Failed only</option>
                         </select>
                         <button
-                          disabled={!medLogs.length && !logView.length}
+                          disabled={!(Array.isArray(medLogs) && medLogs.length > 0) && !(Array.isArray(logView) && logView.length > 0)}
                           onClick={copyMedallionLogs}
                           style={{ display: "flex", alignItems: "center", gap: 5 }}
                         >
@@ -9175,30 +9226,65 @@ export default function App() {
                       </div>
                     }
                   >
+                    {/* Failure Banner with Exact Error Message */}
+                    {(medDeployment?.error || medDeployment?.failed_target || (typeof medDeployment?.status === "string" && medDeployment.status === "FAILED")) && (
+                      <div style={{
+                        padding: "12px 16px",
+                        background: "#fef2f2",
+                        border: "1px solid #fecaca",
+                        borderRadius: 8,
+                        marginBottom: 16,
+                        color: "#991b1b"
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>
+                          <AlertTriangle size={16} />
+                          <span>Deployment Execution Alert · DEV Failure Detected</span>
+                        </div>
+                        {medDeployment?.failed_target && (
+                          <div style={{ fontSize: 12, marginBottom: 4 }}>
+                            <b>Failed Target:</b> <code>{formatSqlIdent(medDeployment.failed_target)}</code>
+                          </div>
+                        )}
+                        {medDeployment?.error && (
+                          <div style={{ fontSize: 12, fontFamily: "monospace", wordBreak: "break-word", background: "#fee2e2", padding: "8px 10px", borderRadius: 6, marginTop: 6 }}>
+                            {typeof medDeployment.error === "object" ? JSON.stringify(medDeployment.error) : String(medDeployment.error)}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="deployment-summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginBottom: 16 }}>
                       <div className="summary-stat">
                         <span>Status</span>
-                        <Badge s={medDeployment?.status || promptSpec?.status || "NOT_STARTED"} />
+                        <Badge s={typeof medDeployment?.status === "string" ? medDeployment.status : (typeof promptSpec?.status === "string" ? promptSpec.status : "NOT_STARTED")} />
                       </div>
                       <div className="summary-stat">
                         <span>Run ID</span>
-                        <b style={{ fontSize: 11, fontFamily: "monospace" }}>{medDeployment?.run_id || "-"}</b>
+                        <b style={{ fontSize: 11, fontFamily: "monospace" }}>{String(medDeployment?.run_id || "-")}</b>
                       </div>
                       <div className="summary-stat">
                         <span>Deployed</span>
                         <b style={{ color: "#059669" }}>
-                          {medDeployment?.deployed ?? medLogs.filter((x) => x.status === "PASSED" && x.details?.medallion_node_id).length}
+                          {typeof medDeployment?.deployed === "number"
+                            ? medDeployment.deployed
+                            : Array.isArray(medLogs)
+                            ? medLogs.filter((x: any) => x?.status === "PASSED" && x?.details?.medallion_node_id).length
+                            : 0}
                         </b>
                       </div>
                       <div className="summary-stat">
                         <span>Failed</span>
                         <b style={{ color: "#dc2626" }}>
-                          {medDeployment?.failed ?? medLogs.filter((x) => x.status === "FAILED" && x.details?.medallion_node_id).length}
+                          {typeof medDeployment?.failed === "number"
+                            ? medDeployment.failed
+                            : Array.isArray(medLogs)
+                            ? medLogs.filter((x: any) => x?.status === "FAILED" && x?.details?.medallion_node_id).length
+                            : 0}
                         </b>
                       </div>
                     </div>
 
-                    {medLogs.length > 0 ? (
+                    {Array.isArray(medLogs) && medLogs.length > 0 ? (
                       <div style={{ overflowX: "auto" }}>
                         <table className="projects-table" style={{ width: "100%", fontSize: 12 }}>
                           <thead>
@@ -9214,34 +9300,51 @@ export default function App() {
                           </thead>
                           <tbody>
                             {medLogs
-                              .filter((x) => medLogFilter === "ALL" || x.status === medLogFilter)
+                              .filter((x: any) => !medLogFilter || medLogFilter === "ALL" || x?.status === medLogFilter)
                               .map((x: any, i: number) => {
-                                const d = x.details || {};
+                                const d = (x && typeof x.details === "object" && x.details !== null) ? x.details : {};
+                                const rawErr = d.error || x?.message || (d.error_type ? `${d.error_type}: ${typeof d.error === "object" ? JSON.stringify(d.error) : d.error}` : "");
+                                const errStr = rawErr ? (typeof rawErr === "object" ? JSON.stringify(rawErr) : String(rawErr)) : "";
+                                const layerStr = typeof d.layer === "string" ? d.layer : (typeof x?.layer === "string" ? x.layer : "-");
+                                const targetStr = typeof (x?.target_fqn || d.target_fqn) === "string" ? (x?.target_fqn || d.target_fqn) : "-";
+                                const statusStr = typeof x?.status === "string" ? x.status : "-";
+                                const actionStr = typeof d.action === "string" ? d.action : "-";
+                                const runIdStr = typeof x?.run_id === "string" ? x.run_id : `run-${i}`;
                                 return (
-                                  <tr key={`${x.run_id}-${i}`}>
-                                    <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(x.timestamp)}</td>
+                                  <tr key={`${runIdStr}-${i}`}>
+                                    <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(x?.timestamp)}</td>
                                     <td>
-                                      <Badge s={d.layer || "-"} />
+                                      <Badge s={layerStr} />
                                     </td>
                                     <td>
-                                      <code style={{ fontSize: 11 }}>{x.target_fqn || d.target_fqn || "-"}</code>
+                                      <code style={{ fontSize: 11 }}>{targetStr}</code>
                                     </td>
                                     <td>
-                                      {d.artifact_version != null && <b>v{d.artifact_version} </b>}
-                                      <code title={d.artifact_content_hash || ""}>{d.artifact_version_id || "-"}</code>
+                                      {d.artifact_version != null && <b>v{String(d.artifact_version)} </b>}
+                                      <code title={typeof d.artifact_content_hash === "string" ? d.artifact_content_hash : ""}>
+                                        {typeof d.artifact_version_id === "string" ? d.artifact_version_id : "-"}
+                                      </code>
                                     </td>
                                     <td>
-                                      <Badge s={x.status || "-"} />
+                                      <Badge s={statusStr} />
                                     </td>
                                     <td style={{ fontWeight: 600 }}>
                                       {d.load?.rows_loaded != null
                                         ? `${Number(d.load.rows_loaded).toLocaleString()} rows loaded`
                                         : d.load?.rows != null
                                         ? `${Number(d.load.rows).toLocaleString()} rows`
-                                        : d.action || (d.medallion_run_started ? "Run started" : d.medallion_run_complete ? "Run completed" : d.medallion_run_finished ? "Run finished" : "-")}
+                                        : actionStr !== "-"
+                                        ? actionStr
+                                        : d.medallion_run_started
+                                        ? "Run started"
+                                        : d.medallion_run_complete
+                                        ? "Run completed"
+                                        : d.medallion_run_finished
+                                        ? "Run finished"
+                                        : "-"}
                                     </td>
-                                    <td style={{ color: d.error ? "#dc2626" : "#64748b", fontSize: 11 }}>
-                                      {d.error || x.message || "-"}
+                                    <td style={{ color: errStr ? "#dc2626" : "#64748b", fontSize: 11, maxWidth: 350, wordBreak: "break-word" }}>
+                                      {errStr || "-"}
                                     </td>
                                   </tr>
                                 );
@@ -10634,11 +10737,11 @@ export default function App() {
                                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                                     <span
                                       className="deploy-error-pill"
-                                      title={item.error || "Deployment failed (Click to view full error)"}
+                                      title={typeof item.error === "object" ? JSON.stringify(item.error) : String(item.error || "Deployment failed")}
                                       style={{ cursor: "pointer", maxWidth: 380, whiteSpace: "normal", wordBreak: "break-word" }}
-                                      onClick={() => alert(`Environment: ${item.env}\nTarget: ${item.target}\n\nError Details:\n${item.error || "Execution error"}`)}
+                                      onClick={() => alert(`Environment: ${item.env}\nTarget: ${item.target}\n\nError Details:\n${typeof item.error === "object" ? JSON.stringify(item.error, null, 2) : String(item.error || "Execution error")}`)}
                                     >
-                                      {item.error || "Execution error"}
+                                      {typeof item.error === "object" ? JSON.stringify(item.error) : String(item.error || "Execution error")}
                                     </span>
                                     <span
                                       className="deploy-inspect-link"
@@ -11321,6 +11424,7 @@ export default function App() {
               )}
             </Panel>
           )}
+          </ErrorBoundary>
         </section>
 
         {/* Step 2: Universal Bottom Action Rail (<UniversalActionRail />) */}
