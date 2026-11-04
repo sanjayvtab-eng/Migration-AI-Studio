@@ -351,7 +351,7 @@ function EyeOffIcon({ size = 18 }: { size?: number }) {
 function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
   const [mode, setMode] = useState<"login" | "register_email" | "reset_email" | "verify_otp" | "set_password">("login");
   const [isResetFlow, setIsResetFlow] = useState(false);
-  const [u, setU] = useState("admin");
+  const [u, setU] = useState("");
   const [p, setP] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
@@ -809,9 +809,9 @@ function Empty({ text }: { text: string }) {
 function getUserFromToken(): { username: string; role: string; initials: string } {
   try {
     const token = localStorage.getItem("mf_token");
-    if (!token) return { username: "Admin", role: "Enterprise Admin", initials: "AD" };
+    if (!token) return { username: "Guest", role: "Viewer", initials: "GU" };
     const base64Url = token.split(".")[1];
-    if (!base64Url) return { username: "Admin", role: "Enterprise Admin", initials: "AD" };
+    if (!base64Url) return { username: "Guest", role: "Viewer", initials: "GU" };
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
     const jsonPayload = decodeURIComponent(
       atob(base64)
@@ -820,10 +820,10 @@ function getUserFromToken(): { username: string; role: string; initials: string 
         .join("")
     );
     const parsed = JSON.parse(jsonPayload);
-    const sub: string = parsed.sub || parsed.username || "Admin";
-    const role: string = parsed.role === "ADMIN" ? "Enterprise Admin" : (parsed.role || "Enterprise Admin");
+    const sub: string = parsed.sub || parsed.username || "User";
+    const role: string = parsed.role === "ADMIN" ? "Enterprise Admin" : (parsed.role || "Viewer");
     const namePart = sub.includes("@") ? sub.split("@")[0] : sub;
-    let initials = "AD";
+    let initials = "US";
     const parts = namePart.split(/[._-]/);
     if (parts.length >= 2 && parts[0] && parts[1]) {
       initials = (parts[0][0] + parts[1][0]).toUpperCase();
@@ -836,7 +836,7 @@ function getUserFromToken(): { username: string; role: string; initials: string 
     }
     return { username: sub, role, initials };
   } catch {
-    return { username: "Admin", role: "Enterprise Admin", initials: "AD" };
+    return { username: "Guest", role: "Viewer", initials: "GU" };
   }
 }
 
