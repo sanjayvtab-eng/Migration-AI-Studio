@@ -21,6 +21,8 @@ services:
         value: admin
       - key: BOOTSTRAP_ADMIN_PASSWORD
         sync: false
+      - key: REGISTRATION_ENABLED
+        value: "true"
       - key: ALLOWED_ORIGINS
         value: "*"
       - key: SQLSERVER_DRIVER
