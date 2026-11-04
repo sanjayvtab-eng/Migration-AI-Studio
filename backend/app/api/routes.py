@@ -412,11 +412,13 @@ async def _request_password_code(email, db, *, register=False):
     user.password_proof_hash = None
     user.password_proof_expires_at = None
     db.commit()
-    sent, _ = await send_otp_email(email, code)
+    sent, reason = await send_otp_email(email, code)
     if not sent:
         # Delivery failure never exposes the code through HTTP or logs.
         user.otp = None
         db.commit()
+        if register:
+            raise HTTPException(502, f"Failed to deliver verification email: {reason}")
     return generic
 
 
