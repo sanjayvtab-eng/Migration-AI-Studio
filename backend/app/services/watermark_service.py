@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -420,8 +421,10 @@ async def run_incremental_sync_for_project(
     overall_status = "SUCCESS"
 
     for table in tables:
+        # Yield to event loop to allow Render health checks (/healthz) to respond immediately
+        await asyncio.sleep(0.01)
         try:
-            res = run_incremental_table_sync(db, project_id, run_id, plan, table)
+            res = await asyncio.to_thread(run_incremental_table_sync, db, project_id, run_id, plan, table)
             table_results.append(res)
             total_delta += res.get("delta_rows", 0)
         except Exception as exc:

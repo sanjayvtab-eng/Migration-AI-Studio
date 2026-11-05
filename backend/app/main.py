@@ -51,7 +51,7 @@ app.add_middleware(CORSMiddleware,allow_origins=s.origins,allow_credentials=True
 
 class SecurityHeaders(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in {"/health", "/healthz"}:
             return await call_next(request)
         response=await call_next(request)
         response.headers["X-Content-Type-Options"]="nosniff"
