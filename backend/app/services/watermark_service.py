@@ -182,8 +182,20 @@ def fetch_incremental_rows(
     max_rows: int | None = None,
 ):
     """
-    Open an engine-specific incremental cursor while preserving the canonical row contract.
+    Open an engine-specific incremental cursor or local connector stream while preserving the canonical row contract.
     """
+    if connector_info(source.id)["mode"] == "CONNECTOR":
+        stream = TableStream(
+            source.id,
+            table,
+            columns,
+            max_rows=max_rows,
+            watermark_col=watermark.watermark_column,
+            watermark_val=watermark.last_watermark_value,
+        )
+        stream.__enter__()
+        return stream, stream
+
     adapter = adapter_for_source(source)
     context = adapter.open_delta_cursor(
         table, columns, watermark.watermark_column, watermark.last_watermark_value,
@@ -213,6 +225,10 @@ def run_incremental_table_sync(
     source = db.get(MigrationSource, table.source_id)
     if not source or source.project_id != project_id:
         raise RuntimeError(f"Source profile not found for table {table.object_name}")
+
+    connection = connector_info(source.id)
+    if connection.get("mode") == "CONNECTOR" and connection.get("status") != "ONLINE":
+        raise RuntimeError(f"Local connector agent is offline for source {source.profile_name}. Please start the connector agent to sync delta records.")
 
     columns = _columns(db, project_id, table.id)
     if not columns:

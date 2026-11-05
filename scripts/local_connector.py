@@ -1320,19 +1320,43 @@ class UniversalLocalAgent:
                 limit = data.get("max_rows")
                 table_sql = qualified_table(schema, table, self.engine)
 
+                wm_col = data.get("watermark_column")
+                wm_val = data.get("watermark_value")
+
+                where_clause = ""
+                order_clause = ""
+                params = []
+
+                if wm_col:
+                    wm_ident = quote_identifier(wm_col, self.engine)
+                    order_clause = f" ORDER BY {wm_ident} ASC"
+                    if wm_val is not None and str(wm_val).strip():
+                        if self.engine == "SQLSERVER":
+                            where_clause = f" WHERE {wm_ident} > ?"
+                            params.append(wm_val)
+                        elif self.engine in {"MYSQL", "POSTGRESQL"}:
+                            where_clause = f" WHERE {wm_ident} > %s"
+                            params.append(wm_val)
+                        elif self.engine == "ORACLE":
+                            where_clause = f" WHERE {wm_ident} > :wm"
+                            params.append(wm_val)
+
                 if self.engine == "SQLSERVER":
                     top = f"TOP ({int(limit)}) " if limit else ""
-                    sql = f"SELECT {top}{proj} FROM {table_sql}"
+                    sql = f"SELECT {top}{proj} FROM {table_sql}{where_clause}{order_clause}"
                 elif self.engine in {"MYSQL", "POSTGRESQL"}:
                     lim = f" LIMIT {int(limit)}" if limit else ""
-                    sql = f"SELECT {proj} FROM {table_sql}{lim}"
+                    sql = f"SELECT {proj} FROM {table_sql}{where_clause}{order_clause}{lim}"
                 elif self.engine == "ORACLE":
                     lim = f" FETCH FIRST {int(limit)} ROWS ONLY" if limit else ""
-                    sql = f"SELECT {proj} FROM {table_sql}{lim}"
+                    sql = f"SELECT {proj} FROM {table_sql}{where_clause}{order_clause}{lim}"
                 else:
-                    sql = f"SELECT {proj} FROM {table_sql}"
+                    sql = f"SELECT {proj} FROM {table_sql}{where_clause}{order_clause}"
 
-                cur.execute(sql)
+                if params:
+                    cur.execute(sql, params)
+                else:
+                    cur.execute(sql)
                 stream_id = secrets.token_hex(24)
                 self.streams[stream_id] = [conn, cur, time.monotonic(), None, table_key]
                 conn = None  # Handed off to streams

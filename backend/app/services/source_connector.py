@@ -104,10 +104,16 @@ def decode_value(value):
 
 class TableStream:
     """Maintain one local SQL cursor; fetches never repeat OFFSET queries."""
-    def __init__(self, source_id, obj, columns, max_rows=None):
+    def __init__(self, source_id, obj, columns, max_rows=None, watermark_col=None, watermark_val=None):
         self.source_id = source_id
-        self.payload = {"schema": obj.schema_name, "table": obj.object_name,
-                        "columns": [c.column_name for c in columns], "max_rows": max_rows}
+        self.payload = {
+            "schema": obj.schema_name,
+            "table": obj.object_name,
+            "columns": [c.column_name for c in columns],
+            "max_rows": max_rows,
+            "watermark_column": watermark_col,
+            "watermark_value": str(watermark_val) if watermark_val is not None else None,
+        }
         self.stream_id = None
 
     def __enter__(self):

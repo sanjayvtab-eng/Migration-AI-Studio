@@ -2184,6 +2184,6 @@ async def trigger_schedule_now(project_id: str, db: Session = Depends(get_db), _
     from app.services.watermark_service import run_incremental_sync_for_project
     try:
         summary = await run_incremental_sync_for_project(db, project_id, actor="MANUAL_TRIGGER")
-    except ValueError as exc:
-        raise HTTPException(409,str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
     return summary
