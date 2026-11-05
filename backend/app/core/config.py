@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     bootstrap_admin_username: str | None = None
     bootstrap_admin_password: str | None = None
     registration_enabled: bool = True
-    incremental_sync_enabled: bool = False
+    incremental_sync_enabled: bool = True
 
     sqlserver_host: str | None = None
     sqlserver_database: str | None = None
