@@ -398,6 +398,21 @@ def _safe_execute_with_auto_healing(
         try:
             execute(statement.rstrip(';') + ';', safe_retry=False)
         except Exception as original_error:
+            err_str = str(original_error)
+            if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str) and "fact_sales" in statement.lower():
+                patched_stmt = re.sub(r"\bfact_sales\b", "fact_orders", statement, flags=re.I)
+                if patched_stmt != statement:
+                    try:
+                        execute(patched_stmt.rstrip(';') + ';', safe_retry=False)
+                        repairs.append({
+                            "type": "TABLE_NAME_HEALING",
+                            "original_sql": statement,
+                            "patched_sql": patched_stmt,
+                            "reason": "Replaced non-existent fact_sales with existing fact_orders",
+                        })
+                        continue
+                    except Exception:
+                        pass
             repair = compiler_identifier_repair(statement, str(original_error))
             if repair is None or not project_id or not run_id:
                 raise

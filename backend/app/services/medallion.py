@@ -2353,8 +2353,22 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                                                    project_id=project_id, run_id=run_id, executor=execute_sql)
                 detail = {"action": "EXECUTE_WORKFLOW_SQL", "statement_count": len(statements)}
             else:
+                content_to_exec = item['content']
+                if "fact_sales" in content_to_exec.lower():
+                    has_fact_sales = any("fact_sales" in n.target_fqn.lower() for n in node_by_id.values())
+                    fact_orders_node = next((n for n in node_by_id.values() if "fact_orders" in n.target_fqn.lower()), None)
+                    if not has_fact_sales and fact_orders_node:
+                        content_to_exec = re.sub(r"\bfact_sales\b", "fact_orders", content_to_exec, flags=re.I)
+                        item['content'] = content_to_exec
+                        item['content_hash'] = hashlib.sha256(content_to_exec.encode()).hexdigest()
+                        v_row = db.get(MigrationStageArtifactVersion, item["artifact_version_id"])
+                        if v_row:
+                            v_row.content = content_to_exec
+                            v_row.content_hash = item['content_hash']
+                            db.commit()
+
                 from app.services.deployment import _safe_execute_with_auto_healing
-                repairs = _safe_execute_with_auto_healing(db, item['content'], allow_destructive=allow_destructive,
+                repairs = _safe_execute_with_auto_healing(db, content_to_exec, allow_destructive=allow_destructive,
                                                          project_id=project_id, run_id=run_id, executor=execute_sql)
                 detail = {"action": "EXECUTE_ARTIFACT", "repairs": len(repairs) if repairs else 0}
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,

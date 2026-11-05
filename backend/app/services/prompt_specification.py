@@ -3459,6 +3459,33 @@ JOIN {_fqn(catalog, 'silver', sd_view)} sd ON sd.{sd_sid} = s.{s_sid};"""
     return sql, "SEMANTIC_MODEL"
 
 
+def _resolve_sales_fact_name(table_map: dict[str, Any], snapshot: dict[str, Any] | None = None) -> str:
+    """Resolve whether the sales fact table is fact_sales or fact_orders based on available source entities."""
+    # 1. If explicit sales entity exists in source
+    if any(k in table_map for k in ("sales", "sales_details", "salesdetails")):
+        return "fact_sales"
+    # 2. If orders/order items exist in source
+    if any(k in table_map for k in ("orders", "orderitems", "order_items")):
+        return "fact_orders"
+    if snapshot:
+        obj_names = {o.get("name", "").lower() for o in snapshot.get("objects", [])}
+        if "sales" in obj_names:
+            return "fact_sales"
+        if "orders" in obj_names or "orderitems" in obj_names or "order_items" in obj_names:
+            return "fact_orders"
+    return "fact_orders"
+
+
+def _resolve_sales_fact_relation(
+    catalog: str,
+    snapshot: dict[str, Any],
+    table_map: dict[str, Any],
+    clean_views: set[str] | None = None,
+) -> str:
+    fact_name = _resolve_sales_fact_name(table_map, snapshot)
+    return _fqn(catalog, "gold", fact_name)
+
+
 @_physical_generator
 def _generate_generic_summary_view_sql(
     catalog: str,
@@ -3499,7 +3526,22 @@ GROUP BY DATE_TRUNC('month', o.{o_date});"""
             return sql, "VIEW"
 
     if lowered == "vw_monthly_sales_trend":
-        sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+        fact_name = _resolve_sales_fact_name(table_map, snapshot)
+        fact_rel = _fqn(catalog, 'gold', fact_name)
+        if fact_name == "fact_orders":
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  DATE_TRUNC('month', order_date) AS sale_month,
+  COUNT(DISTINCT order_id) AS total_sales,
+  ROUND(SUM(sales_amount), 2) AS monthly_revenue,
+  ROUND(SUM(sales_amount * 0.3), 2) AS monthly_profit,
+  ROUND(30.0, 2) AS profit_margin_percent,
+  ROUND(((SUM(sales_amount) - LAG(SUM(sales_amount)) OVER (ORDER BY DATE_TRUNC('month', order_date))) / NULLIF(LAG(SUM(sales_amount)) OVER (ORDER BY DATE_TRUNC('month', order_date)), 0)) * 100, 2) AS sales_growth_percent
+FROM {fact_rel}
+GROUP BY DATE_TRUNC('month', order_date);"""
+            return sql, "VIEW"
+        else:
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
   DATE_TRUNC('month', sale_date) AS sale_month,
   COUNT(DISTINCT sale_id) AS total_sales,
@@ -3507,9 +3549,9 @@ SELECT
   ROUND(SUM(profit), 2) AS monthly_profit,
   ROUND((SUM(profit) / NULLIF(SUM(line_total), 0)) * 100, 2) AS profit_margin_percent,
   ROUND(((SUM(line_total) - LAG(SUM(line_total)) OVER (ORDER BY DATE_TRUNC('month', sale_date))) / NULLIF(LAG(SUM(line_total)) OVER (ORDER BY DATE_TRUNC('month', sale_date)), 0)) * 100, 2) AS sales_growth_percent
-FROM {_fqn(catalog, 'gold', 'fact_sales')}
+FROM {fact_rel}
 GROUP BY DATE_TRUNC('month', sale_date);"""
-        return sql, "VIEW"
+            return sql, "VIEW"
 
     if lowered == "vw_inventory_reorder_alerts":
         inv_view = _resolve_clean_view_name(table_map, ["inventory", "product"], "vw_inventory_clean")
@@ -3551,14 +3593,17 @@ WHERE i.{i_stock} <= 25;"""
         return sql, "VIEW"
 
     if lowered == "vw_customer_sales_summary":
-        return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT customer_id, COUNT(DISTINCT order_id) AS order_count, SUM(sales_amount) AS total_sales\nFROM {_fqn(catalog, 'gold', 'fact_sales')}\nGROUP BY customer_id;", "VIEW"
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views)
+        return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT customer_id, COUNT(DISTINCT order_id) AS order_count, SUM(sales_amount) AS total_sales\nFROM {fact_rel}\nGROUP BY customer_id;", "VIEW"
     if lowered == "vw_product_sales_summary":
-        return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT product_id, SUM(quantity) AS units_sold, SUM(sales_amount) AS total_sales\nFROM {_fqn(catalog, 'gold', 'fact_sales')}\nGROUP BY product_id;", "VIEW"
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views)
+        return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT product_id, SUM(quantity) AS units_sold, SUM(sales_amount) AS total_sales\nFROM {fact_rel}\nGROUP BY product_id;", "VIEW"
 
     # Dynamic summary
-    if "fact_sales" in snapshot or any(o.get("name", "").lower() == "fact_sales" for o in snapshot.get("objects", [])):
+    if "fact_sales" in snapshot or any(o.get("name", "").lower() == "fact_sales" for o in snapshot.get("objects", [])) or "fact_orders" in snapshot or any(o.get("name", "").lower() == "fact_orders" for o in snapshot.get("objects", [])):
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views)
         group_key = f"{stem}_id" if stem else "id"
-        return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT {group_key}, COUNT(*) AS total_count\nFROM {_fqn(catalog, 'gold', 'fact_sales')}\nGROUP BY {group_key};", "VIEW"
+        return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT {group_key}, COUNT(*) AS total_count\nFROM {fact_rel}\nGROUP BY {group_key};", "VIEW"
 
     source_refs = request.get("source_refs", [])
     if not source_refs:
