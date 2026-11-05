@@ -18,12 +18,21 @@ _is_running: bool = False
 def compute_next_run_at(frequency: str, scheduled_time: str, timezone_offset: int = 0) -> datetime:
     """
     Computes the next run datetime in UTC based on frequency, HH:MM string, and client timezone_offset (in minutes, e.g. +330 for IST).
+    Guarantees that the returned target is always strictly in the future (> now_utc).
     """
     now_utc = datetime.utcnow()
     try:
-        parts = scheduled_time.strip().split(":")
+        cleaned = str(scheduled_time or "02:00").strip().upper()
+        is_pm = "PM" in cleaned
+        is_am = "AM" in cleaned
+        cleaned = cleaned.replace("AM", "").replace("PM", "").strip()
+        parts = cleaned.split(":")
         hour = int(parts[0])
         minute = int(parts[1]) if len(parts) > 1 else 0
+        if is_pm and hour < 12:
+            hour += 12
+        elif is_am and hour == 12:
+            hour = 0
     except Exception:
         hour, minute = 2, 0
 
@@ -33,16 +42,14 @@ def compute_next_run_at(frequency: str, scheduled_time: str, timezone_offset: in
         # Calculate UTC minute corresponding to user's local minute
         utc_minute = (minute - (timezone_offset % 60)) % 60
         target = now_utc.replace(minute=utc_minute, second=0, microsecond=0)
-        if target <= now_utc:
+        while target <= now_utc:
             target += timedelta(hours=1)
         return target
     else:  # DAILY
-        # Local time now in client's timezone:
         now_local = now_utc + timedelta(minutes=timezone_offset)
         target_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if target_local <= now_local:
+        while target_local <= now_local:
             target_local += timedelta(days=1)
-        # Convert local target back to UTC for scheduling
         target_utc = target_local - timedelta(minutes=timezone_offset)
         return target_utc
 
@@ -58,6 +65,7 @@ def _check_and_claim_due_schedules() -> list[str]:
                     MigrationSchedule.is_enabled == True,
                     MigrationSchedule.next_run_at != None,
                     MigrationSchedule.next_run_at <= now,
+                    (MigrationSchedule.last_run_status != "RUNNING") | (MigrationSchedule.last_run_status == None),
                 )
                 .all()
             )
@@ -67,6 +75,8 @@ def _check_and_claim_due_schedules() -> list[str]:
                     f"Triggering scheduled incremental sync for project {schedule.project_id} (scheduled for {schedule.next_run_at})"
                 )
                 schedule.last_run_status = "RUNNING"
+                # Immediately advance next_run_at so fast polling loop doesn't double-claim
+                schedule.next_run_at = compute_next_run_at(schedule.frequency, schedule.scheduled_time, schedule.timezone_offset or 0)
                 claimed.append(schedule.project_id)
             if claimed:
                 db.commit()
