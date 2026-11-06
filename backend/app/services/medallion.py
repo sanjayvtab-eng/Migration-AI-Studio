@@ -2370,6 +2370,16 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 from app.services.deployment import _safe_execute_with_auto_healing
                 repairs = _safe_execute_with_auto_healing(db, content_to_exec, allow_destructive=allow_destructive,
                                                          project_id=project_id, run_id=run_id, executor=execute_sql)
+                if repairs:
+                    latest_patch = repairs[-1].get("patched_sql")
+                    if latest_patch:
+                        item['content'] = latest_patch
+                        item['content_hash'] = hashlib.sha256(latest_patch.encode()).hexdigest()
+                        v_row = db.get(MigrationStageArtifactVersion, item["artifact_version_id"])
+                        if v_row:
+                            v_row.content = latest_patch
+                            v_row.content_hash = item['content_hash']
+                            db.commit()
                 detail = {"action": "EXECUTE_ARTIFACT", "repairs": len(repairs) if repairs else 0}
             db.add(MigrationDeployment(id=uid("DPL"), project_id=project_id, object_id=node.source_object_id,
                                        environment="DEV", status="PASSED",

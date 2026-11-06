@@ -304,6 +304,11 @@ SYNONYM_PAIRS = {
     ("order_id", "orders_id"), ("orders_id", "order_id"),
     ("cust_id", "customer_id"), ("customer_id", "cust_id"),
     ("prod_id", "product_id"), ("product_id", "prod_id"),
+    ("client_id", "customer_id"), ("customer_id", "client_id"),
+    ("clientid", "customerid"), ("customerid", "clientid"),
+    ("shipment_id", "delivery_id"), ("delivery_id", "shipment_id"),
+    ("shipmentid", "deliveryid"), ("deliveryid", "shipmentid"),
+    ("charge_id", "payment_id"), ("payment_id", "charge_id"),
 }
 
 def compiler_identifier_repair(sql: str, error: str) -> tuple[str, dict] | None:

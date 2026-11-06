@@ -2313,7 +2313,7 @@ def _fqn(catalog: str, layer: str, name: str) -> str:
 
 
 def _source_object(snapshot: dict[str, Any], name: str) -> dict[str, Any]:
-    matches = [item for item in snapshot.get("objects", []) if item.get("type") == "TABLE" and item.get("name", "").lower() == name.lower()]
+    matches = [item for item in snapshot.get("objects", []) if (item.get("type") == "TABLE" or item.get("object_type") == "TABLE") and item.get("name", "").lower() == name.lower()]
     if len(matches) != 1:
         raise ValueError(f"Grounded source table {name} is unavailable in the bound snapshot")
     return matches[0]
@@ -3233,11 +3233,23 @@ def _generate_generic_fact_sql(
 
     req_name_low = request.get("name", "").lower()
     norm_refs = {s.lower().replace("_", "") for s in source_refs} | {s.split(".")[-1].lower().replace("_", "") for s in source_refs}
+    primary_ref = source_refs[0].lower().replace("_", "") if source_refs else _stem(req_name_low).replace("_", "")
+    stem_norm = _stem(req_name_low).lower().replace("_", "")
 
-    # Identify domain entity
-    is_payment = "payment" in req_name_low or any("payment" in r for r in norm_refs)
-    is_shipment = "shipment" in req_name_low or any("shipment" in r for r in norm_refs)
-    is_return = "return" in req_name_low or any("return" in r for r in norm_refs)
+    def _has_physical_col(tbl: dict[str, Any] | None, col_name: str | None) -> bool:
+        if not tbl or not col_name:
+            return False
+        norm = col_name.lower().replace("_", "")
+        return any(
+            c.get("target_name", "").lower().replace("_", "") == norm or
+            c.get("name", "").lower().replace("_", "") == norm
+            for c in tbl.get("columns", [])
+        )
+
+    # Identify domain entity - strictly bounded to fact entity name or primary source entity
+    is_payment = ("payment" in req_name_low or primary_ref in ("payment", "payments") or stem_norm in ("payment", "payments")) and not any(k in req_name_low for k in ("order", "sale", "delivery", "event"))
+    is_shipment = ("shipment" in req_name_low or primary_ref in ("shipment", "shipments") or stem_norm in ("shipment", "shipments")) and not any(k in req_name_low for k in ("order", "sale", "delivery", "event", "charge"))
+    is_return = ("return" in req_name_low or primary_ref in ("return", "returns") or stem_norm in ("return", "returns")) and not any(k in req_name_low for k in ("order", "sale", "delivery", "event"))
     is_sales_explicit = any(k in req_name_low for k in ("sale", "order_item", "orderitem", "order_sale", "ordersale")) or req_name_low in ("fact_orders", "fact_sales", "fact_order_items")
     is_non_sales = is_payment or is_shipment or is_return or any(k in req_name_low for k in ("inventory", "stock", "customer", "category", "product"))
 
@@ -3245,18 +3257,22 @@ def _generate_generic_fact_sql(
     if is_payment and not is_sales_explicit:
         pay_view = _resolve_clean_view_name(table_map, ["payments", "payment"], "vw_payments_clean")
         ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
-        has_orders = any("order" in k for k in table_map)
+        pay_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("payments", "payment")), None) or _source_object(snapshot, source_refs[0])
+        ord_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("orders", "order")), None)
 
-        p_pid = _resolve_col_name(table_map, "payments", ["payment_id", "paymentid", "id"], "payment_id")
-        p_oid = _resolve_col_name(table_map, "payments", ["sale_id", "saleid", "sales_id", "salesid", "order_id", "orderid", "payment_id", "id"], "sale_id" if any("sale" in k for k in table_map) else "order_id")
-        p_date = _resolve_col_name(table_map, "payments", ["payment_date", "paymentdate", "date"], "payment_date")
-        p_method = _resolve_col_name(table_map, "payments", ["payment_method", "paymentmethod", "method"], "payment_method")
-        p_amount = _resolve_col_name(table_map, "payments", ["payment_amount", "paymentamount", "amount"], "payment_amount")
-        p_status = _resolve_col_name(table_map, "payments", ["payment_status", "paymentstatus", "status"], "payment_status")
+        p_oid = _resolve_col_name(table_map, "payments", ["order_id", "orderid", "sale_id", "saleid"], "order_id")
+        has_p_oid = _has_physical_col(pay_tbl, p_oid)
+        has_ord = ord_tbl is not None
+        o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id") if has_ord else None
+        has_o_oid = _has_physical_col(ord_tbl, o_oid) if has_ord else False
 
-        if has_orders:
-            o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+        if has_ord and has_p_oid and has_o_oid:
+            p_pid = _resolve_col_name(table_map, "payments", ["payment_id", "paymentid", "id"], "payment_id")
             o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+            p_date = _resolve_col_name(table_map, "payments", ["payment_date", "paymentdate", "date"], "payment_date")
+            p_method = _resolve_col_name(table_map, "payments", ["payment_method", "paymentmethod", "method"], "payment_method")
+            p_amount = _resolve_col_name(table_map, "payments", ["payment_amount", "paymentamount", "amount"], "payment_amount")
+            p_status = _resolve_col_name(table_map, "payments", ["payment_status", "paymentstatus", "status"], "payment_status")
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
   p.{p_pid} AS payment_id,
@@ -3269,14 +3285,10 @@ SELECT
 FROM {_resolve_relation(catalog, pay_view, clean_views, table_map)} p
 LEFT JOIN {_resolve_relation(catalog, ord_view, clean_views, table_map)} o ON p.{p_oid} = o.{o_oid};"""
         else:
+            cols = [f"p.{qident(c['target_name'])}" for c in pay_tbl.get("columns", []) if not c["target_name"].startswith("_")]
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
-  p.{p_pid} AS payment_id,
-  p.{p_oid} AS order_id,
-  CAST(p.{p_date} AS DATE) AS payment_date,
-  p.{p_method} AS payment_method,
-  CAST(p.{p_amount} AS DECIMAL(18,2)) AS payment_amount,
-  p.{p_status} AS payment_status
+  {',\n  '.join(cols)}
 FROM {_resolve_relation(catalog, pay_view, clean_views, table_map)} p;"""
         return sql, "SEMANTIC_MODEL"
 
@@ -3284,18 +3296,22 @@ FROM {_resolve_relation(catalog, pay_view, clean_views, table_map)} p;"""
     elif is_shipment and not is_sales_explicit:
         ship_view = _resolve_clean_view_name(table_map, ["shipments", "shipment"], "vw_shipments_clean")
         ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
-        has_orders = any("order" in k for k in table_map)
+        ship_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("shipments", "shipment")), None) or _source_object(snapshot, source_refs[0])
+        ord_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("orders", "order")), None)
 
         s_sid = _resolve_col_name(table_map, "shipments", ["shipment_id", "shipmentid", "id"], "shipment_id")
         s_oid = _resolve_col_name(table_map, "shipments", ["order_id", "orderid"], "order_id")
-        s_date = _resolve_col_name(table_map, "shipments", ["shipment_date", "shipmentdate", "date"], "shipment_date")
-        s_carrier = _resolve_col_name(table_map, "shipments", ["carrier"], "carrier")
-        s_track = _resolve_col_name(table_map, "shipments", ["tracking_number", "trackingnumber", "tracking_no"], "tracking_number")
-        s_status = _resolve_col_name(table_map, "shipments", ["status", "shipment_status", "shipmentstatus"], "status")
+        has_s_oid = _has_physical_col(ship_tbl, s_oid)
+        has_ord = ord_tbl is not None
+        o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id") if has_ord else None
+        has_o_oid = _has_physical_col(ord_tbl, o_oid) if has_ord else False
 
-        if has_orders:
-            o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+        if has_ord and has_s_oid and has_o_oid:
             o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+            s_date = _resolve_col_name(table_map, "shipments", ["shipment_date", "shipmentdate", "date"], "shipment_date")
+            s_carrier = _resolve_col_name(table_map, "shipments", ["carrier"], "carrier")
+            s_track = _resolve_col_name(table_map, "shipments", ["tracking_number", "trackingnumber", "tracking_no"], "tracking_number")
+            s_status = _resolve_col_name(table_map, "shipments", ["status", "shipment_status", "shipmentstatus"], "status")
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
   s.{s_sid} AS shipment_id,
@@ -3308,14 +3324,10 @@ SELECT
 FROM {_resolve_relation(catalog, ship_view, clean_views, table_map)} s
 LEFT JOIN {_resolve_relation(catalog, ord_view, clean_views, table_map)} o ON s.{s_oid} = o.{o_oid};"""
         else:
+            cols = [f"s.{qident(c['target_name'])}" for c in ship_tbl.get("columns", []) if not c["target_name"].startswith("_")]
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
-  s.{s_sid} AS shipment_id,
-  s.{s_oid} AS order_id,
-  CAST(s.{s_date} AS DATE) AS shipment_date,
-  s.{s_carrier} AS carrier,
-  s.{s_track} AS tracking_number,
-  s.{s_status} AS status
+  {',\n  '.join(cols)}
 FROM {_resolve_relation(catalog, ship_view, clean_views, table_map)} s;"""
         return sql, "SEMANTIC_MODEL"
 
@@ -3323,18 +3335,22 @@ FROM {_resolve_relation(catalog, ship_view, clean_views, table_map)} s;"""
     elif is_return and not is_sales_explicit:
         ret_view = _resolve_clean_view_name(table_map, ["returns", "return"], "vw_returns_clean")
         ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
-        has_orders = any("order" in k for k in table_map)
+        ret_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("returns", "return")), None) or _source_object(snapshot, source_refs[0])
+        ord_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("orders", "order")), None)
 
-        r_rid = _resolve_col_name(table_map, "returns", ["return_id", "returnid", "id"], "return_id")
         r_oid = _resolve_col_name(table_map, "returns", ["order_id", "orderid"], "order_id")
-        r_pid = _resolve_col_name(table_map, "returns", ["product_id", "productid"], "product_id")
-        r_date = _resolve_col_name(table_map, "returns", ["return_date", "returndate", "date"], "return_date")
-        r_reason = _resolve_col_name(table_map, "returns", ["return_reason", "returnreason", "reason"], "return_reason")
-        r_refund = _resolve_col_name(table_map, "returns", ["refund_amount", "refundamount", "amount"], "refund_amount")
+        has_r_oid = _has_physical_col(ret_tbl, r_oid)
+        has_ord = ord_tbl is not None
+        o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id") if has_ord else None
+        has_o_oid = _has_physical_col(ord_tbl, o_oid) if has_ord else False
 
-        if has_orders:
-            o_oid = _resolve_col_name(table_map, "orders", ["order_id", "orderid"], "order_id")
+        if has_ord and has_r_oid and has_o_oid:
+            r_rid = _resolve_col_name(table_map, "returns", ["return_id", "returnid", "id"], "return_id")
+            r_pid = _resolve_col_name(table_map, "returns", ["product_id", "productid"], "product_id")
             o_cid = _resolve_col_name(table_map, "orders", ["customer_id", "customerid"], "customer_id")
+            r_date = _resolve_col_name(table_map, "returns", ["return_date", "returndate", "date"], "return_date")
+            r_reason = _resolve_col_name(table_map, "returns", ["return_reason", "returnreason", "reason"], "return_reason")
+            r_refund = _resolve_col_name(table_map, "returns", ["refund_amount", "refundamount", "amount"], "refund_amount")
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
   r.{r_rid} AS return_id,
@@ -3347,14 +3363,10 @@ SELECT
 FROM {_resolve_relation(catalog, ret_view, clean_views, table_map)} r
 LEFT JOIN {_resolve_relation(catalog, ord_view, clean_views, table_map)} o ON r.{r_oid} = o.{o_oid};"""
         else:
+            cols = [f"r.{qident(c['target_name'])}" for c in ret_tbl.get("columns", []) if not c["target_name"].startswith("_")]
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
-  r.{r_rid} AS return_id,
-  r.{r_oid} AS order_id,
-  r.{r_pid} AS product_id,
-  CAST(r.{r_date} AS DATE) AS return_date,
-  r.{r_reason} AS return_reason,
-  CAST(r.{r_refund} AS DECIMAL(18,2)) AS refund_amount
+  {',\n  '.join(cols)}
 FROM {_resolve_relation(catalog, ret_view, clean_views, table_map)} r;"""
         return sql, "SEMANTIC_MODEL"
 

@@ -258,3 +258,72 @@ def test_disabled_incremental_sync_rejects_schedules_and_work_before_source_acce
     import asyncio
     with pytest.raises(ValueError,match='disabled'):
         asyncio.run(watermark_service.run_incremental_sync_for_project(db,'P'))
+
+
+def test_fact_delivery_events_uses_delivery_events_and_does_not_invent_order_id():
+    from app.services import prompt_specification
+    snapshot = {
+        'catalog': 'logicssale_dev',
+        'objects': [
+            {
+                'name': 'DeliveryEvents',
+                'target_name': 'delivery_events',
+                'type': 'TABLE',
+                'object_type': 'TABLE',
+                'columns': [
+                    {'name': 'EventID', 'target_name': 'event_id', 'data_type': 'int'},
+                    {'name': 'ShipmentID', 'target_name': 'shipment_id', 'data_type': 'int'},
+                    {'name': 'EventType', 'target_name': 'event_type', 'data_type': 'varchar'},
+                    {'name': 'EventTimestamp', 'target_name': 'event_timestamp', 'data_type': 'datetime'},
+                ],
+            },
+            {
+                'name': 'Shipments',
+                'target_name': 'shipments',
+                'type': 'TABLE',
+                'object_type': 'TABLE',
+                'columns': [
+                    {'name': 'ShipmentID', 'target_name': 'shipment_id', 'data_type': 'int'},
+                    {'name': 'DriverID', 'target_name': 'driver_id', 'data_type': 'int'},
+                    {'name': 'ClientID', 'target_name': 'client_id', 'data_type': 'int'},
+                    {'name': 'WarehouseID', 'target_name': 'warehouse_id', 'data_type': 'int'},
+                    {'name': 'WeightKG', 'target_name': 'weight_kg', 'data_type': 'decimal'},
+                ],
+            },
+        ],
+    }
+    request = {
+        'name': 'fact_delivery_events',
+        'type': 'FACT',
+        'layer': 'GOLD',
+        'source_refs': ['DeliveryEvents', 'Shipments'],
+    }
+    clean_views = {'vw_delivery_events_clean', 'vw_shipments_clean'}
+    sql, model_type = prompt_specification._generate_generic_fact_sql('logicssale_dev', request, snapshot, {}, clean_views)
+    assert 'order_id' not in sql.lower()
+    assert 'vw_delivery_events_clean' in sql
+    assert 'event_id' in sql
+    assert 'shipment_id' in sql
+
+
+def test_auto_healing_resolves_unresolved_column(db):
+    executed_statements = []
+    def mock_executor(stmt, safe_retry=False):
+        executed_statements.append(stmt)
+        if 's.order_id' in stmt:
+            raise RuntimeError(
+                "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name 's'.'order_id' cannot be resolved. "
+                "Did you mean one of the following? ['s'.'driver_id', 's'.'client_id', 's'.'shipment_id', 's'.'warehouse_id', 's'.'weight_kg']. SQLSTATE: 42703; line 4 pos 2"
+            )
+
+    test_sql = (
+        "CREATE OR REPLACE VIEW `logicssale_dev`.`gold`.`fact_delivery_events` AS "
+        "SELECT s.shipment_id AS shipment_id, s.order_id AS order_id FROM `logicssale_dev`.`silver`.`vw_shipments_clean` s;"
+    )
+
+    repairs = deployment._safe_execute_with_auto_healing(db, test_sql, executor=mock_executor)
+    assert len(repairs) >= 1
+    assert any(r.get("type") == "UNRESOLVED_COLUMN_HEALING" for r in repairs)
+    assert any("order_id" in r.get("reason", "") for r in repairs)
+    assert any("CAST(NULL AS STRING) AS order_id" in stmt for stmt in executed_statements)
+

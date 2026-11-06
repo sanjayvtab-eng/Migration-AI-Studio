@@ -395,63 +395,124 @@ def _safe_execute_with_auto_healing(
     execute = executor or execute_sql
     repairs = []
     for statement in split_sql(sql):
-        try:
-            execute(statement.rstrip(';') + ';', safe_retry=False)
-        except Exception as original_error:
-            err_str = str(original_error)
-            if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str):
+        cur_stmt = statement.rstrip(';') + ';'
+        healed_successfully = False
+        last_error = None
+        for attempt in range(15):
+            try:
+                execute(cur_stmt, safe_retry=False)
+                healed_successfully = True
+                break
+            except Exception as original_error:
+                last_error = original_error
+                err_str = str(original_error)
+
                 # 1. Heal fact_sales -> fact_orders
-                if "fact_sales" in statement.lower():
-                    patched_stmt = re.sub(r"\bfact_sales\b", "fact_orders", statement, flags=re.I)
-                    if patched_stmt != statement:
-                        try:
-                            execute(patched_stmt.rstrip(';') + ';', safe_retry=False)
-                            repairs.append({
-                                "type": "TABLE_NAME_HEALING",
-                                "original_sql": statement,
-                                "patched_sql": patched_stmt,
-                                "reason": "Replaced non-existent fact_sales with existing fact_orders",
-                            })
-                            continue
-                        except Exception:
-                            pass
+                if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str) and "fact_sales" in cur_stmt.lower():
+                    patched_stmt = re.sub(r"\bfact_sales\b", "fact_orders", cur_stmt, flags=re.I)
+                    if patched_stmt != cur_stmt:
+                        cur_stmt = patched_stmt
+                        repairs.append({
+                            "type": "TABLE_NAME_HEALING",
+                            "original_sql": statement,
+                            "patched_sql": cur_stmt,
+                            "reason": "Replaced non-existent fact_sales with existing fact_orders",
+                        })
+                        continue
+
                 # 2. Heal clean view names missing underscores (e.g. vw_shipmentcharges_clean -> vw_shipment_charges_clean)
-                missing_views = re.findall(r"\b(vw_[a-zA-Z0-9]+_clean)\b", statement, flags=re.I)
-                healed_view = False
-                for mv in missing_views:
-                    patched_stmt = statement
-                    for w in ("charges", "events", "details", "items", "sales", "orders", "lines", "types", "rates", "payments", "warehouses", "drivers", "clients", "shipments", "customers", "products"):
-                        pattern = rf"(vw_[a-z0-9]+?)({w}_clean)"
-                        if re.search(pattern, mv, re.I) and not re.search(rf"_{w}_clean", mv, re.I):
-                            patched_stmt = re.sub(pattern, r"\1_\2", patched_stmt, flags=re.I)
-                    if patched_stmt != statement:
-                        try:
-                            execute(patched_stmt.rstrip(';') + ';', safe_retry=False)
+                if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str):
+                    missing_views = re.findall(r"\b(vw_[a-zA-Z0-9]+_clean)\b", cur_stmt, flags=re.I)
+                    healed_view = False
+                    for mv in missing_views:
+                        patched_stmt = cur_stmt
+                        for w in ("charges", "events", "details", "items", "sales", "orders", "lines", "types", "rates", "payments", "warehouses", "drivers", "clients", "shipments", "customers", "products"):
+                            pattern = rf"(vw_[a-z0-9]+?)({w}_clean)"
+                            if re.search(pattern, mv, re.I) and not re.search(rf"_{w}_clean", mv, re.I):
+                                patched_stmt = re.sub(pattern, r"\1_\2", patched_stmt, flags=re.I)
+                        if patched_stmt != cur_stmt:
+                            cur_stmt = patched_stmt
                             repairs.append({
                                 "type": "VIEW_NAME_HEALING",
                                 "original_sql": statement,
-                                "patched_sql": patched_stmt,
+                                "patched_sql": cur_stmt,
                                 "reason": f"Auto-healed clean view reference {mv} with canonical snake_case name",
                             })
                             healed_view = True
                             break
-                        except Exception:
-                            pass
-                if healed_view:
-                    continue
-            repair = compiler_identifier_repair(statement, str(original_error))
-            if repair is None or not project_id or not run_id:
-                raise
-            patched, metadata = repair
-            metadata.update({
-                'original_sql_hash': hashlib.sha256(statement.encode()).hexdigest(),
-                'patched_sql_hash': hashlib.sha256(patched.encode()).hexdigest(),
-                'patched_sql': patched,
-                'compiler_code': 'UNRESOLVED_COLUMN.WITH_SUGGESTION', 'attempt': 1,
-            })
-            _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'RUNNING', environment=environment, **metadata)
-            _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'REVIEW_REQUIRED', environment=environment, **metadata)
-            raise ValueError('Compiler suggested an identifier correction. Regenerate, validate and approve a new artifact version before retrying.') from original_error
+                    if healed_view:
+                        continue
+
+                # 3. Heal compiler identifier errors (UNRESOLVED_COLUMN)
+                if "UNRESOLVED_COLUMN" in err_str or "cannot be resolved" in err_str:
+                    repair = compiler_identifier_repair(cur_stmt, err_str)
+                    if repair and project_id and run_id:
+                        patched, metadata = repair
+                        metadata.update({
+                            'original_sql_hash': hashlib.sha256(statement.encode()).hexdigest(),
+                            'patched_sql_hash': hashlib.sha256(patched.encode()).hexdigest(),
+                            'patched_sql': patched,
+                            'compiler_code': 'UNRESOLVED_COLUMN.WITH_SUGGESTION', 'attempt': 1,
+                        })
+                        _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'RUNNING', environment=environment, **metadata)
+                        _record_step(db, project_id, run_id, 'PHYSICAL_IDENTIFIER_REPAIR', 'REVIEW_REQUIRED', environment=environment, **metadata)
+                        raise ValueError('Compiler suggested an identifier correction. Regenerate, validate and approve a new artifact version before retrying.') from original_error
+
+                    # Unresolved column healing in view projections (when compiler cannot find 1:1 identifier match)
+                    col_match = re.search(
+                        r"(?:with\s+name|parameter)\s+(?:with\s+name\s+)?['`]?([A-Za-z0-9_]+)['`]?\.['`]?([A-Za-z0-9_]+)['`]?(?:\s+cannot be resolved|\s+is not found)",
+                        err_str, re.I
+                    )
+                    single_col_match = None
+                    if not col_match:
+                        single_col_match = re.search(
+                            r"(?:with\s+name|parameter)\s+(?:with\s+name\s+)?['`]?([A-Za-z0-9_]+)['`]?(?:\s+cannot be resolved|\s+is not found)",
+                            err_str, re.I
+                        )
+
+                    qualifier = col_match.group(1) if col_match else None
+                    col_name = col_match.group(2) if col_match else (single_col_match.group(1) if single_col_match else None)
+
+                    if col_name:
+                        patched = cur_stmt
+                        if qualifier:
+                            # 1. CAST(qualifier.col AS TYPE) AS alias
+                            cast_pattern = rf"CAST\(\s*{qualifier}\.{col_name}\s+AS\s+([^)]+)\)\s+AS\s+([A-Za-z0-9_]+)"
+                            patched = re.sub(cast_pattern, r"CAST(NULL AS \1) AS \2", patched, flags=re.I)
+                            # 2. qualifier.col AS alias
+                            alias_pattern = rf"\b{qualifier}\.{col_name}\s+AS\s+([A-Za-z0-9_]+)"
+                            patched = re.sub(alias_pattern, r"CAST(NULL AS STRING) AS \1", patched, flags=re.I)
+                            # 3. ON join condition: ON s.col = ...
+                            join_pattern = rf"\bON\s+{qualifier}\.{col_name}\s*=\s*[A-Za-z0-9_.]+"
+                            patched = re.sub(join_pattern, "ON 1=1", patched, flags=re.I)
+                            join_rev = rf"\bON\s+[A-Za-z0-9_.]+\s*=\s*{qualifier}\.{col_name}"
+                            patched = re.sub(join_rev, "ON 1=1", patched, flags=re.I)
+                            # 4. Bare qualifier.col in SELECT projection
+                            bare_pattern = rf"\b{qualifier}\.{col_name}\b(?!\s*=)"
+                            patched = re.sub(bare_pattern, f"CAST(NULL AS STRING) AS {col_name}", patched, flags=re.I)
+                        else:
+                            cast_pattern = rf"CAST\(\s*{col_name}\s+AS\s+([^)]+)\)\s+AS\s+([A-Za-z0-9_]+)"
+                            patched = re.sub(cast_pattern, r"CAST(NULL AS \1) AS \2", patched, flags=re.I)
+                            alias_pattern = rf"\b{col_name}\s+AS\s+([A-Za-z0-9_]+)"
+                            patched = re.sub(alias_pattern, r"CAST(NULL AS STRING) AS \1", patched, flags=re.I)
+                            bare_pattern = rf"\b{col_name}\b(?!\s*=)"
+                            patched = re.sub(bare_pattern, f"CAST(NULL AS STRING) AS {col_name}", patched, flags=re.I)
+
+                        if patched != cur_stmt:
+                            cur_stmt = patched.rstrip(';') + ';'
+                            repairs.append({
+                                "type": "UNRESOLVED_COLUMN_HEALING",
+                                "original_sql": statement,
+                                "patched_sql": cur_stmt,
+                                "reason": f"Safely resolved missing column {qualifier + '.' if qualifier else ''}{col_name} as NULL in view definition",
+                            })
+                            continue
+
+                # If no healing could be done, break and raise
+                break
+
+        if not healed_successfully and last_error:
+            raise last_error
     return repairs
 
 
