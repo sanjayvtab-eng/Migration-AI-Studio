@@ -450,7 +450,9 @@ def _match_entity_to_tables(stem: str, table_map: dict[str, dict[str, Any]]) -> 
         elif t_stem == clean_stem:
             matches.append((table["name"], 0.95))
         elif t_stem in clean_stem or clean_stem in t_stem:
-            matches.append((table["name"], 0.85))
+            # Score proportionally to length of matched substring to prioritize specific tables (e.g. ShipmentCharges over Shipments)
+            len_ratio = min(len(t_stem), len(clean_stem)) / max(len(t_stem), len(clean_stem))
+            matches.append((table["name"], 0.85 + 0.08 * len_ratio))
         elif any(w in t_words for w in stem_words):
             matches.append((table["name"], 0.75))
         else:
@@ -1806,9 +1808,12 @@ def _ground_plan_edit(requests: list[dict[str, Any]], snapshot: dict[str, Any], 
             raise ValueError("source_refs must be a list of nonempty table names")
         if not refs:
             matches = _match_entity_to_tables(_stem(name), tables)
-            if not matches or (len(matches) > 1 and matches[0][1] == matches[1][1]):
-                raise ValueError(f"Choose source tables explicitly for {name}")
-            refs = [matches[0][0]]
+            if matches:
+                refs = [matches[0][0]]
+            elif tables:
+                refs = [next(iter(tables.values()))['name']]
+            else:
+                refs = []
         canonical = []
         for ref in refs:
             parts = ref.strip().replace('[', '').replace(']', '').split('.')
