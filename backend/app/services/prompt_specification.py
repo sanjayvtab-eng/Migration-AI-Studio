@@ -2400,7 +2400,8 @@ def _resolve_relation(
     if clean_views is not None:
         for cv in clean_views:
             if cv.lower() != curr_low and (cv.lower() == cand_view.lower() or cv.lower().replace('_', '') == cand_norm):
-                return _fqn(catalog, 'silver', cv)
+                # Always return canonical cand_view with standardized snake_case underscores
+                return _fqn(catalog, 'silver', cand_view)
 
     if table_map:
         for k, tbl in table_map.items():
@@ -3857,7 +3858,7 @@ def generate(db: Session, project_id: str, specification_id: str, actor: str) ->
     by_id = {item["request_id"]: item for item in requests}
     catalog = _catalog(db, project_id)
     clean_views = {
-        r["name"].lower()
+        _snake(r["name"])
         for r in requests
         if r["layer"] == "SILVER"
         and (

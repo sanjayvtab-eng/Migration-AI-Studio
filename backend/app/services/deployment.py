@@ -399,20 +399,46 @@ def _safe_execute_with_auto_healing(
             execute(statement.rstrip(';') + ';', safe_retry=False)
         except Exception as original_error:
             err_str = str(original_error)
-            if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str) and "fact_sales" in statement.lower():
-                patched_stmt = re.sub(r"\bfact_sales\b", "fact_orders", statement, flags=re.I)
-                if patched_stmt != statement:
-                    try:
-                        execute(patched_stmt.rstrip(';') + ';', safe_retry=False)
-                        repairs.append({
-                            "type": "TABLE_NAME_HEALING",
-                            "original_sql": statement,
-                            "patched_sql": patched_stmt,
-                            "reason": "Replaced non-existent fact_sales with existing fact_orders",
-                        })
-                        continue
-                    except Exception:
-                        pass
+            if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str):
+                # 1. Heal fact_sales -> fact_orders
+                if "fact_sales" in statement.lower():
+                    patched_stmt = re.sub(r"\bfact_sales\b", "fact_orders", statement, flags=re.I)
+                    if patched_stmt != statement:
+                        try:
+                            execute(patched_stmt.rstrip(';') + ';', safe_retry=False)
+                            repairs.append({
+                                "type": "TABLE_NAME_HEALING",
+                                "original_sql": statement,
+                                "patched_sql": patched_stmt,
+                                "reason": "Replaced non-existent fact_sales with existing fact_orders",
+                            })
+                            continue
+                        except Exception:
+                            pass
+                # 2. Heal clean view names missing underscores (e.g. vw_shipmentcharges_clean -> vw_shipment_charges_clean)
+                missing_views = re.findall(r"\b(vw_[a-zA-Z0-9]+_clean)\b", statement, flags=re.I)
+                healed_view = False
+                for mv in missing_views:
+                    patched_stmt = statement
+                    for w in ("charges", "events", "details", "items", "sales", "orders", "lines", "types", "rates", "payments", "warehouses", "drivers", "clients", "shipments", "customers", "products"):
+                        pattern = rf"(vw_[a-z0-9]+?)({w}_clean)"
+                        if re.search(pattern, mv, re.I) and not re.search(rf"_{w}_clean", mv, re.I):
+                            patched_stmt = re.sub(pattern, r"\1_\2", patched_stmt, flags=re.I)
+                    if patched_stmt != statement:
+                        try:
+                            execute(patched_stmt.rstrip(';') + ';', safe_retry=False)
+                            repairs.append({
+                                "type": "VIEW_NAME_HEALING",
+                                "original_sql": statement,
+                                "patched_sql": patched_stmt,
+                                "reason": f"Auto-healed clean view reference {mv} with canonical snake_case name",
+                            })
+                            healed_view = True
+                            break
+                        except Exception:
+                            pass
+                if healed_view:
+                    continue
             repair = compiler_identifier_repair(statement, str(original_error))
             if repair is None or not project_id or not run_id:
                 raise
