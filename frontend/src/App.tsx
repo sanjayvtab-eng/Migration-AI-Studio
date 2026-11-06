@@ -3368,25 +3368,7 @@ export default function App() {
       page: "Waves",
       action: "Authorize the accepted UAT release for PROD",
       complete: environmentPassed("PROD"),
-      evidence: environmentPassed("PROD") ? "PROD quality gate passed" : "PROD promotion pending",
-    },
-    {
-      phase: "CLOSE",
-      title: "Complete production cutover",
-      description: "Record consumer switch-over and production acceptance.",
-      page: "Cutover",
-      action: "Record production cutover and consumer acceptance",
-      complete: operationalRecordComplete(workflowOps.cutover || []),
-      evidence: operationalRecordComplete(workflowOps.cutover || []) ? "Cutover completed" : "Cutover record pending",
-    },
-    {
-      phase: "CLOSE",
-      title: "Approve source decommission",
-      description: "Retire the legacy source only after cutover approval and monitoring.",
-      page: "Decommission",
-      action: "Approve retirement of the legacy source",
-      complete: operationalRecordComplete(workflowOps.decommission || []),
-      evidence: operationalRecordComplete(workflowOps.decommission || []) ? "Migration formally closed" : "Decommission approval pending",
+      evidence: environmentPassed("PROD") ? "PROD quality gate passed & verified" : "PROD promotion pending",
     },
   ];
   const nextWorkflowIndex = workflowSteps.findIndex((step) => !step.complete);
@@ -4433,9 +4415,9 @@ export default function App() {
                         <button
                           className="primary-action"
                           style={{ background: "linear-gradient(135deg, #10b981, #059669)", border: "none" }}
-                          onClick={() => setPage("Cutover")}
+                          onClick={() => setPage("Projects")}
                         >
-                          <CheckCircle2 size={15} /> Proceed to Cutover (Step 11) <ChevronRight size={14} />
+                          <CheckCircle2 size={15} /> Migration Completed — View Projects <ChevronRight size={14} />
                         </button>
                       )}
                       {!autoPromotionStatus.run && autoPromotionStatus.preflight.eligible && (
@@ -4946,7 +4928,7 @@ export default function App() {
                   </div>
                   <div className="projects-kpi-value">{projectMetrics.completed}</div>
                   <div className="projects-kpi-label">Completed</div>
-                  <div className="projects-kpi-sub">Production cutover ready</div>
+                  <div className="projects-kpi-sub">Production live &amp; sync active</div>
                 </div>
               </div>
 
@@ -5038,7 +5020,7 @@ export default function App() {
                           const statusLabel = isCompleted ? "Completed" : isReview ? "Awaiting Review" : isBlocked ? "Blocked" : "Active";
                           const statusClass = isCompleted ? "completed" : isReview ? "review" : isBlocked ? "blocked" : "active";
 
-                          const stageLabel = isCompleted ? "Production Cutover" : isReview ? "Gate Reviews" : isActive ? "Migration Workflow" : "Discovery";
+                          const stageLabel = isCompleted ? "Production Live" : isReview ? "Gate Reviews" : isActive ? "Migration Workflow" : "Discovery";
 
                           const formattedDate = p.created_at
                             ? formatDateOnly(p.created_at)
@@ -9176,7 +9158,7 @@ export default function App() {
                     <div className="wf-breadcrumbs">
                       <span>Stage 8 of 9</span>
                       <span className="wf-breadcrumbs-sep">/</span>
-                      <span>Phase 3: Deploy &amp; Cutover</span>
+                      <span>Phase 3: Deploy &amp; Lifecycle</span>
                       <span className="wf-breadcrumbs-sep">|</span>
                       <b>DEV Deployment Execution &amp; Validation</b>
                     </div>
@@ -10333,11 +10315,11 @@ export default function App() {
                   <div className="business-next">
                     <div>
                       <span>BUSINESS OUTCOME</span>
-                      <b>Production release validated</b>
-                      <p>The migration is technically complete and ready for consumer switch-over.</p>
+                      <b>Production release validated &amp; operational</b>
+                      <p>The migration is technically complete. All Medallion layers are live on Databricks with automated Delta sync active.</p>
                     </div>
-                    <button className="primary-action" onClick={() => setPage("Cutover")}>
-                      Record production cutover and acceptance <ChevronRight size={15} />
+                    <button className="primary-action" onClick={() => setPage("Projects")}>
+                      View Projects Overview <ChevronRight size={15} />
                     </button>
                   </div>
                 )}
@@ -11535,13 +11517,13 @@ export default function App() {
             },
             9: {
               title: "Stage 9 of 9: Lifecycle & Waves",
-              context: "Multi-Environment Promotion Chain",
+              context: "Multi-Environment Promotion Chain & Delta Sync",
               backText: "← Back to Deployment",
               backTarget: "Deployments",
               backDisabled: false,
-              forwardText: "Complete Migration & Decommission →",
-              forwardTarget: "Cutover",
-              forwardDisabled: false,
+              forwardText: environmentPassed("PROD") ? "🎉 Migration Completed (View Projects) →" : "PROD Promotion Pending",
+              forwardTarget: "Projects",
+              forwardDisabled: !environmentPassed("PROD"),
             },
           };
 

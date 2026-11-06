@@ -105,7 +105,7 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
           <div className="connector-bar" />
         </div>
 
-        {/* Phase 3: Deploy & Cutover */}
+        {/* Phase 3: Deploy & Promotion Lifecycle */}
         <div
           className={`workspace-phase-card ${phase3Active ? "active" : ""} ${phase3Completed ? "completed" : ""} ${phase3Locked ? "locked" : ""}`}
           onClick={() => {
@@ -116,7 +116,7 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
           title={
             phase3Locked
               ? "Phase 3 is locked until Stage 7 artifacts are generated and approved"
-              : "Phase 3: Deploy & Cutover (Stages 8–9: Deployment, Lifecycle)"
+              : "Phase 3: Deploy & Promotion Lifecycle (Stages 8–9: Deployment, Lifecycle)"
           }
         >
           <div className="phase-card-left">
@@ -132,15 +132,15 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
               )}
             </div>
             <div className="workspace-phase-meta">
-              <div className="phase-eyebrow">PHASE 3 · DEPLOY &amp; CUTOVER</div>
+              <div className="phase-eyebrow">PHASE 3 · DEPLOY &amp; LIFECYCLE</div>
               <div className="phase-primary-title">
                 {phase3Completed
-                  ? "Production Cutover Ready"
+                  ? "Production Live & Sync Active"
                   : phase3Active
                   ? `Stage ${currentStage}: ${stageConfig[currentStage]?.label || "Deployments"}`
                   : phase3Locked
-                  ? "Deploy & Cutover (Locked)"
-                  : "Deploy & Cutover"}
+                  ? "Deploy & Lifecycle (Locked)"
+                  : "Deploy & Lifecycle"}
               </div>
               <div className="phase-scope-desc">
                 {phase3Locked ? "🔒 Requires Studio Artifact Approval" : "Stages 8–9 · Deployments & Lifecycle"}
