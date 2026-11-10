@@ -2116,9 +2116,25 @@ def _analysis_result(prompt, snapshot, requests, questions):
     warnings.extend(f'Clarification required: {q["question"]}' for q in questions)
     warnings.extend(f'No source tables resolved for {i["name"]}.' for i in requests if not i['source_refs'])
     warnings.extend(f'Source inference for {i["name"]} needs review; no entity match or explicit source was found.' for i in requests if i['request_id'] in weak)
-    clean_sources = {ref.lower() for i in requests if i.get('requirements', i.get('structured', {})).get('view_kind') == 'CLEAN' for ref in i['source_refs']}
+    clean_sources = {
+        ref.lower()
+        for i in requests
+        if i.get('layer') == 'SILVER'
+        and (
+            i.get('requirements', i.get('structured', {})).get('view_kind') == 'CLEAN'
+            or (i.get('name', '').lower().startswith('vw_') and i.get('name', '').lower().endswith('_clean'))
+        )
+        for ref in i['source_refs']
+    }
+    bronze_sources = {
+        ref.lower()
+        for i in requests
+        if i.get('layer') == 'BRONZE' or i.get('type') == 'TABLE_COPY'
+        for ref in i['source_refs']
+    }
     used = {ref for i in requests if i['type'] != 'TABLE_COPY' for ref in i['source_refs']}
-    warnings.extend(f'{ref} has no clean view; the Bronze fallback will be used.' for ref in sorted(used) if ref.lower() not in clean_sources)
+    warnings.extend(f'{ref} has no clean view in Silver; the Bronze fallback will be used.' for ref in sorted(used) if ref.lower() not in clean_sources)
+    warnings.extend(f'{ref} has no Bronze TABLE_COPY ingestion in this plan; downstream Silver/Gold views referencing it may fail if Bronze is missing.' for ref in sorted(used) if ref.lower() not in bronze_sources)
     score = round(100 * max(len(requests) - len(blockers), 0) / max(len(requests) + len(missing) + len(questions), 1), 1)
     return {'accuracy_score': score, 'score_basis': 'Metadata grounding and explicit artifact coverage; not a semantic correctness guarantee',
             'coverage_percent': round(100 * len(grounded) / max(len(tables), 1), 1),
@@ -2398,10 +2414,13 @@ def _resolve_relation(
     cand_view = f'vw_{_snake(name_clean)}_clean'
     cand_norm = f"vw{name_clean.lower().replace('_', '')}clean"
     if clean_views is not None:
-        for cv in clean_views:
-            if cv.lower() != curr_low and (cv.lower() == cand_view.lower() or cv.lower().replace('_', '') == cand_norm):
-                # Always return canonical cand_view with standardized snake_case underscores
-                return _fqn(catalog, 'silver', cand_view)
+        # Prefer exact match first, then underscore-insensitive match returning the ACTUAL clean view name `cv`
+        for cv in sorted(clean_views):
+            if cv.lower() != curr_low and cv.lower() == cand_view.lower():
+                return _fqn(catalog, 'silver', cv)
+        for cv in sorted(clean_views):
+            if cv.lower() != curr_low and cv.lower().replace('_', '') == cand_norm:
+                return _fqn(catalog, 'silver', cv)
 
     if table_map:
         for k, tbl in table_map.items():
@@ -2437,11 +2456,12 @@ def _col_name_for_rel(rel_fqn: str, table_info: dict[str, Any], col_identifier: 
     return col_identifier.strip("`")
 
 
-def _physical_schemas(catalog: str, snapshot: dict[str, Any]) -> dict:
+def _physical_schemas(catalog: str, snapshot: dict[str, Any], *, include_silver_clean: bool = True) -> dict:
     schemas = {}
     for table in _tables(snapshot).values():
         schemas[relation_key(_fqn(catalog, 'bronze', table['name']))] = [c['name'] for c in table.get('columns', [])] + ['_migration_ingested_at', '_migration_source_system']
-        schemas[relation_key(_fqn(catalog, 'silver', f"vw_{_snake(table['name'])}_clean"))] = [c['target_name'] for c in table.get('columns', [])]
+        if include_silver_clean:
+            schemas[relation_key(_fqn(catalog, 'silver', f"vw_{_snake(table['name'])}_clean"))] = [c['target_name'] for c in table.get('columns', [])]
     return schemas
 
 
@@ -2469,12 +2489,21 @@ def _physical_generator(generator):
             content = content[:start] + replacement + content[end:]
         schemas = _physical_schemas(catalog, snapshot)
         table_map = _tables(snapshot)
+        for table in table_map.values():
+            clean_cols = [c['target_name'] for c in table.get('columns', [])]
+            if clean_views:
+                actual_cv = _resolve_relation(catalog, table['name'], clean_views, table_map, request['name'])
+                if relation_key(actual_cv) not in schemas and '.`silver`.' in actual_cv.lower():
+                    schemas[relation_key(actual_cv)] = clean_cols
         def physical(scope, column, fallback, selected_alias):
             source = next((source for alias, source in scope.sources.items() if alias.casefold() == selected_alias), None)
             if source is not None and hasattr(source, 'parts'):
                 key = relation_key(source)
                 for table in table_map.values():
-                    if key in {relation_key(_fqn(catalog, 'bronze', table['name'])), relation_key(_fqn(catalog, 'silver', f"vw_{_snake(table['name'])}_clean"))}:
+                    allowed_keys = {relation_key(_fqn(catalog, 'bronze', table['name'])), relation_key(_fqn(catalog, 'silver', f"vw_{_snake(table['name'])}_clean"))}
+                    if clean_views:
+                        allowed_keys.add(relation_key(_resolve_relation(catalog, table['name'], clean_views, table_map, request['name'])))
+                    if key in allowed_keys:
                         return _col_name_for_rel('.'.join(qident(part) for part in key), table, fallback)
             return fallback
         content = bind_physical_columns(content, schemas, resolver=physical)
@@ -3477,8 +3506,18 @@ JOIN {_fqn(catalog, 'silver', sd_view)} sd ON sd.{sd_sid} = s.{s_sid};"""
     return sql, "SEMANTIC_MODEL"
 
 
-def _resolve_sales_fact_name(table_map: dict[str, Any], snapshot: dict[str, Any] | None = None) -> str:
-    """Resolve whether the sales fact table is fact_sales or fact_orders based on available source entities."""
+def _resolve_sales_fact_name(
+    table_map: dict[str, Any],
+    snapshot: dict[str, Any] | None = None,
+    planned_targets: set[str] | None = None,
+) -> str:
+    """Resolve whether the sales fact table is fact_sales or fact_orders based on the approved plan and source entities."""
+    if planned_targets:
+        low_targets = {t.lower() for t in planned_targets}
+        if "fact_sales" in low_targets:
+            return "fact_sales"
+        if "fact_orders" in low_targets:
+            return "fact_orders"
     # 1. If explicit sales entity exists in source
     if any(k in table_map for k in ("sales", "sales_details", "salesdetails")):
         return "fact_sales"
@@ -3499,8 +3538,9 @@ def _resolve_sales_fact_relation(
     snapshot: dict[str, Any],
     table_map: dict[str, Any],
     clean_views: set[str] | None = None,
+    planned_targets: set[str] | None = None,
 ) -> str:
-    fact_name = _resolve_sales_fact_name(table_map, snapshot)
+    fact_name = _resolve_sales_fact_name(table_map, snapshot, planned_targets=planned_targets)
     return _fqn(catalog, "gold", fact_name)
 
 
@@ -3510,6 +3550,7 @@ def _generate_generic_summary_view_sql(
     request: dict[str, Any],
     snapshot: dict[str, Any],
     clean_views: set[str] | None = None,
+    planned_targets: set[str] | None = None,
 ) -> tuple[str, str]:
     stem = _stem(request["name"])
     lowered = request["name"].lower()
@@ -3544,7 +3585,7 @@ GROUP BY DATE_TRUNC('month', o.{o_date});"""
             return sql, "VIEW"
 
     if lowered == "vw_monthly_sales_trend":
-        fact_name = _resolve_sales_fact_name(table_map, snapshot)
+        fact_name = _resolve_sales_fact_name(table_map, snapshot, planned_targets=planned_targets)
         fact_rel = _fqn(catalog, 'gold', fact_name)
         if fact_name == "fact_orders":
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
@@ -3611,15 +3652,15 @@ WHERE i.{i_stock} <= 25;"""
         return sql, "VIEW"
 
     if lowered == "vw_customer_sales_summary":
-        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views)
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views, planned_targets=planned_targets)
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT customer_id, COUNT(DISTINCT order_id) AS order_count, SUM(sales_amount) AS total_sales\nFROM {fact_rel}\nGROUP BY customer_id;", "VIEW"
     if lowered == "vw_product_sales_summary":
-        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views)
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views, planned_targets=planned_targets)
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT product_id, SUM(quantity) AS units_sold, SUM(sales_amount) AS total_sales\nFROM {fact_rel}\nGROUP BY product_id;", "VIEW"
 
     # Dynamic summary
     if "fact_sales" in snapshot or any(o.get("name", "").lower() == "fact_sales" for o in snapshot.get("objects", [])) or "fact_orders" in snapshot or any(o.get("name", "").lower() == "fact_orders" for o in snapshot.get("objects", [])):
-        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views)
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views, planned_targets=planned_targets)
         group_key = f"{stem}_id" if stem else "id"
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT {group_key}, COUNT(*) AS total_count\nFROM {fact_rel}\nGROUP BY {group_key};", "VIEW"
 
@@ -3646,6 +3687,7 @@ def _sql_for(
     snapshot: dict[str, Any],
     answers: dict[str, Any],
     clean_views: set[str] | None = None,
+    planned_targets: set[str] | None = None,
 ) -> tuple[str, str]:
     name = request["name"]
     rtype = request["type"]
@@ -3674,7 +3716,7 @@ def _sql_for(
         return _generate_generic_fact_sql(catalog, request, snapshot, answers, clean_views)
 
     if rtype == "SUMMARY_VIEW":
-        return _generate_generic_summary_view_sql(catalog, request, snapshot, clean_views)
+        return _generate_generic_summary_view_sql(catalog, request, snapshot, clean_views, planned_targets=planned_targets)
 
     if rtype == "VIEW":
         return _generate_generic_view_sql(catalog, request, snapshot, answers, clean_views), "VIEW"
@@ -3878,9 +3920,6 @@ def generate(db: Session, project_id: str, specification_id: str, actor: str) ->
             or (r["name"].lower().startswith("vw_") and r["name"].lower().endswith("_clean"))
         )
     }
-    for request in requests:
-        if request.get("requirements", {}).get("view_kind") == "CLEAN" and request.get("source_refs"):
-            clean_views.add(f"vw_{_snake(request['source_refs'][0])}_clean")
     target_overrides = {}
     for request in requests:
         requirements = request['requirements']
@@ -3889,9 +3928,14 @@ def generate(db: Session, project_id: str, specification_id: str, actor: str) ->
         target_overrides[_fqn(catalog, native_layer, request['name'])] = target
         for alias in requirements.get('previous_targets', []):
             target_overrides[_fqn(catalog, alias['layer'], alias['name'])] = target
-        if requirements.get('view_kind') == 'CLEAN':
+        is_clean_req = request['layer'] == 'SILVER' and (
+            requirements.get('view_kind') == 'CLEAN'
+            or (request['name'].lower().startswith('vw_') and request['name'].lower().endswith('_clean'))
+        )
+        if is_clean_req and request.get('source_refs'):
             target_overrides[_fqn(catalog, 'SILVER', f"vw_{_snake(request['source_refs'][0])}_clean")] = target
-    physical_schemas = _physical_schemas(catalog, snapshot)
+    planned_targets = {_snake(r["name"]) for r in requests}
+    physical_schemas = _physical_schemas(catalog, snapshot, include_silver_clean=False)
     spec.current_status = "GENERATING_ARTIFACTS"
     db.commit()
     generated = []
@@ -3899,7 +3943,7 @@ def generate(db: Session, project_id: str, specification_id: str, actor: str) ->
     try:
         for request_id in ordered_ids:
             request = by_id[request_id]
-            content, node_type = _sql_for(request, catalog, snapshot, answers, clean_views)
+            content, node_type = _sql_for(request, catalog, snapshot, answers, clean_views, planned_targets=planned_targets)
             # Rewrite qualified identifiers in SQL code only, keeping literals and comments intact.
             from app.services.engine import _sql_code
             code = _sql_code(content)

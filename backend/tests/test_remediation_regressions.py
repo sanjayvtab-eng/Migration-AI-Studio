@@ -327,3 +327,50 @@ def test_auto_healing_resolves_unresolved_column(db):
     assert any("order_id" in r.get("reason", "") for r in repairs)
     assert any("CAST(NULL AS STRING) AS order_id" in stmt for stmt in executed_statements)
 
+
+def test_resolve_relation_preserves_actual_clean_view_name():
+    from app.services import prompt_specification
+    rel = prompt_specification._resolve_relation(
+        'travels_dev', 'BookingItems', {'vw_bookingitems_clean'}, None
+    )
+    assert rel == '`travels_dev`.`silver`.`vw_bookingitems_clean`'
+
+
+def test_auto_healing_discovers_renamed_or_bronze_fallback_relation(db):
+    # Scenario A: Silver view exists under vw_bookingitems_clean instead of vw_booking_items_clean
+    executed_a = []
+    def mock_exec_a(stmt, safe_retry=False):
+        if stmt.upper().startswith("SHOW TABLES IN `TRAVELS_DEV`.`SILVER`"):
+            return [("silver", "vw_bookingitems_clean", False)]
+        executed_a.append(stmt)
+        if "`vw_booking_items_clean`" in stmt:
+            raise RuntimeError(
+                "[TABLE_OR_VIEW_NOT_FOUND] The table or view `travels_dev`.`silver`.`vw_booking_items_clean` cannot be found."
+            )
+
+    sql_a = (
+        "CREATE OR REPLACE VIEW `travels_dev`.`silver`.`vw_booking_revenue_analytics` AS "
+        "SELECT bi.booking_id FROM `travels_dev`.`silver`.`vw_booking_items_clean` bi;"
+    )
+    repairs_a = deployment._safe_execute_with_auto_healing(db, sql_a, executor=mock_exec_a)
+    assert any(r.get("type") == "RELATION_DISCOVERY_HEALING" for r in repairs_a)
+    assert any("`vw_bookingitems_clean`" in stmt for stmt in executed_a)
+
+    # Scenario B: Clean view missing from Silver entirely, falls back to Bronze table
+    executed_b = []
+    def mock_exec_b(stmt, safe_retry=False):
+        if stmt.upper().startswith("SHOW TABLES IN `TRAVELS_DEV`.`SILVER`"):
+            return [("silver", "vw_bookings_clean", False)]
+        if stmt.upper().startswith("SHOW TABLES IN `TRAVELS_DEV`.`BRONZE`"):
+            return [("bronze", "booking_items", False)]
+        executed_b.append(stmt)
+        if "`silver`.`vw_booking_items_clean`" in stmt:
+            raise RuntimeError(
+                "[TABLE_OR_VIEW_NOT_FOUND] The table or view `travels_dev`.`silver`.`vw_booking_items_clean` cannot be found."
+            )
+
+    repairs_b = deployment._safe_execute_with_auto_healing(db, sql_a, executor=mock_exec_b)
+    assert any(r.get("type") == "RELATION_DISCOVERY_HEALING" for r in repairs_b)
+    assert any("`travels_dev`.`bronze`.`booking_items`" in stmt for stmt in executed_b)
+
+

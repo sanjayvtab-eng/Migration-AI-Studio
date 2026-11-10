@@ -422,7 +422,7 @@ def _safe_execute_with_auto_healing(
 
                 # 2. Heal clean view names missing underscores (e.g. vw_shipmentcharges_clean -> vw_shipment_charges_clean)
                 if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str):
-                    missing_views = re.findall(r"\b(vw_[a-zA-Z0-9]+_clean)\b", cur_stmt, flags=re.I)
+                    missing_views = re.findall(r"\b(vw_[a-zA-Z0-9_]+_clean)\b", cur_stmt, flags=re.I)
                     healed_view = False
                     for mv in missing_views:
                         patched_stmt = cur_stmt
@@ -442,6 +442,64 @@ def _safe_execute_with_auto_healing(
                             break
                     if healed_view:
                         continue
+
+                # 2b. Live Databricks catalog relation healing for Silver/Gold TABLE_OR_VIEW_NOT_FOUND
+                # Handles underscore differences (vw_booking_items_clean <-> vw_bookingitems_clean),
+                # singular/plural mismatches (dim_customer <-> dim_customers), and missing Silver clean
+                # views that exist as raw tables in Bronze.
+                if "TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str:
+                    rel_match = re.search(
+                        r"table or view\s+[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s*\.\s*[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s*\.\s*[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s+cannot be found",
+                        err_str,
+                        flags=re.I,
+                    )
+                    if rel_match:
+                        m_cat, m_sch, m_tbl = rel_match.group(1), rel_match.group(2), rel_match.group(3)
+                        norm_id = lambda s: re.sub(r"[_\s]+", "", s or "").lower()
+                        stem_id = lambda s: re.sub(r"s$", "", norm_id(s))
+                        healed_rel = None
+                        try:
+                            rows = execute(f"SHOW TABLES IN `{m_cat}`.`{m_sch}`", safe_retry=True) or []
+                            existing = [str(r[1]) for r in rows if len(r) >= 2 and r[1]]
+                            exact_norm = [ex for ex in existing if norm_id(ex) == norm_id(m_tbl) and ex.lower() != m_tbl.lower()]
+                            if len(exact_norm) == 1:
+                                healed_rel = (m_sch, exact_norm[0], f"Matched existing {m_sch}.{exact_norm[0]} for missing {m_sch}.{m_tbl}")
+                            elif not exact_norm:
+                                stem_matches = [ex for ex in existing if stem_id(ex) == stem_id(m_tbl) and ex.lower() != m_tbl.lower()]
+                                if len(stem_matches) == 1:
+                                    healed_rel = (m_sch, stem_matches[0], f"Matched singular/plural relation {m_sch}.{stem_matches[0]} for missing {m_sch}.{m_tbl}")
+                        except Exception:
+                            pass
+
+                        # Fallback: if missing Silver clean view (vw_<entity>_clean) isn't in Silver, check Bronze table
+                        if not healed_rel and m_sch.lower() == "silver" and m_tbl.lower().startswith("vw_"):
+                            base_ent = re.sub(r"^vw_", "", m_tbl, flags=re.I)
+                            base_ent = re.sub(r"_clean$", "", base_ent, flags=re.I)
+                            try:
+                                b_rows = execute(f"SHOW TABLES IN `{m_cat}`.`bronze`", safe_retry=True) or []
+                                b_existing = [str(r[1]) for r in b_rows if len(r) >= 2 and r[1]]
+                                b_norm = [ex for ex in b_existing if norm_id(ex) == norm_id(base_ent)]
+                                if not b_norm:
+                                    b_norm = [ex for ex in b_existing if stem_id(ex) == stem_id(base_ent)]
+                                if len(b_norm) == 1:
+                                    healed_rel = ("bronze", b_norm[0], f"Clean view silver.{m_tbl} not found; fell back to bronze.{b_norm[0]}")
+                            except Exception:
+                                pass
+
+                        if healed_rel:
+                            new_sch, new_tbl, heal_reason = healed_rel
+                            rel_pat = rf"[`'\"]?{re.escape(m_cat)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_sch)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_tbl)}[`'\"]?"
+                            replacement_fqn = f"`{m_cat}`.`{new_sch}`.`{new_tbl}`"
+                            patched_stmt = re.sub(rel_pat, replacement_fqn, cur_stmt, flags=re.I)
+                            if patched_stmt != cur_stmt:
+                                cur_stmt = patched_stmt
+                                repairs.append({
+                                    "type": "RELATION_DISCOVERY_HEALING",
+                                    "original_sql": statement,
+                                    "patched_sql": cur_stmt,
+                                    "reason": heal_reason,
+                                })
+                                continue
 
                 # 3. Heal compiler identifier errors (UNRESOLVED_COLUMN)
                 if "UNRESOLVED_COLUMN" in err_str or "cannot be resolved" in err_str:
