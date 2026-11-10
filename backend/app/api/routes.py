@@ -499,27 +499,43 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
     identifier = data.username.strip()
     user = db.scalar(select(User).where((User.username == identifier) | (User.email == identifier.lower())))
     if not user:
+        # User not in local DB — check Supabase remote registry
         from app.services.supabase_auth_service import authenticate_app_user
         remote = authenticate_app_user(identifier, data.password)
         if remote and remote.get('is_verified'):
             role = str(remote.get('role') or 'VIEWER').upper()
             if role not in {'ADMIN','LEAD','ENGINEER','VIEWER'}: role = 'VIEWER'
-            email = remote.get('email',identifier).lower()
-            user = User(id=uid('USR'),username=email,email=email,password_hash=remote['password_hash'],role=role,is_verified=True)
-            db.add(user);db.flush()
+            email = remote.get('email', identifier).lower()
+            user = User(id=uid('USR'), username=email, email=email, password_hash=remote['password_hash'], role=role, is_verified=True)
+            db.add(user); db.flush()
+    elif user and not user.locked:
+        # User exists locally — if password check will fail, try re-syncing hash from Supabase
+        # This covers cases where the password was reset in Supabase but local DB still has old hash
+        if not verify_password(data.password, user.password_hash):
+            from app.services.supabase_auth_service import authenticate_app_user
+            remote = authenticate_app_user(identifier, data.password)
+            if remote and remote.get('is_verified') and remote.get('password_hash'):
+                # Re-sync local password hash from Supabase (password was reset remotely)
+                user.password_hash = remote['password_hash']
+                user.failed_attempts = 0
+                user.locked = False
+                if user.role == 'VIEWER' or not user.role:
+                    user.role = str(remote.get('role') or 'ADMIN').upper()
+                    if user.role not in {'ADMIN','LEAD','ENGINEER','VIEWER'}: user.role = 'ADMIN'
+                db.flush()
     if not user or user.locked or not verify_password(data.password, user.password_hash):
         if user and not user.locked:
             user.failed_attempts += 1
-            if user.failed_attempts >= 5: user.locked=True
+            if user.failed_attempts >= 10: user.locked = True  # increased from 5 to 10 to avoid accidental lockout
             db.commit()
-        raise HTTPException(401,'Invalid credentials or account locked')
-    user.failed_attempts=0
+        raise HTTPException(401, 'Invalid credentials or account locked')
+    user.failed_attempts = 0
     if user.role == 'VIEWER' or not user.role:
         user.role = 'ADMIN'
     db.commit()
     subject = user.email if (user.email and '@' in user.email) else user.username
-    return {'access_token':create_access_token(subject,user.role,user.session_version),
-            'token_type':'bearer','role':user.role,'username':subject,'email':user.email or subject}
+    return {'access_token': create_access_token(subject, user.role, user.session_version),
+            'token_type': 'bearer', 'role': user.role, 'username': subject, 'email': user.email or subject}
 
 
 @router.post("/projects")
