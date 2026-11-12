@@ -445,22 +445,121 @@ def _safe_execute_with_auto_healing(
 
                 # 2b. Live Databricks catalog relation healing for Silver/Gold TABLE_OR_VIEW_NOT_FOUND
                 # Handles underscore differences (vw_booking_items_clean <-> vw_bookingitems_clean),
-                # singular/plural mismatches (dim_customer <-> dim_customers), and missing Silver clean
-                # views that exist as raw tables in Bronze.
+                # singular/plural mismatches (dim_customer <-> dim_customers), missing prerequisite
+                # artifacts that need on-demand deployment, and missing Silver clean views that exist
+                # as raw tables in Bronze or as standard tables in Silver.
                 if "TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str:
                     rel_match = re.search(
                         r"table or view\s+[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s*\.\s*[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s*\.\s*[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s+cannot be found",
                         err_str,
                         flags=re.I,
                     )
-                    if rel_match:
-                        m_cat, m_sch, m_tbl = rel_match.group(1), rel_match.group(2), rel_match.group(3)
+                    two_match = None
+                    if not rel_match:
+                        two_match = re.search(
+                            r"table or view\s+[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s*\.\s*[`'\"]?([A-Za-z0-9_]+)[`'\"]?\s+cannot be found",
+                            err_str,
+                            flags=re.I,
+                        )
+
+                    if rel_match or two_match:
+                        if rel_match:
+                            m_cat, m_sch, m_tbl = rel_match.group(1), rel_match.group(2), rel_match.group(3)
+                        else:
+                            m_cat = None
+                            m_sch, m_tbl = two_match.group(1), two_match.group(2)
+
                         norm_id = lambda s: re.sub(r"[_\s]+", "", s or "").lower()
                         stem_id = lambda s: re.sub(r"s$", "", norm_id(s))
+
+                        # Step 1: On-demand prerequisite artifact deployment
+                        # If m_tbl is an approved artifact generated in Studio (e.g. vw_orders_clean)
+                        # but was skipped during resume because of stale deployment history, deploy it now.
+                        healed_prereq = False
+                        if db and project_id:
+                            try:
+                                from app.models.entities import (
+                                    MigrationMedallionNode,
+                                    MigrationStageArtifact,
+                                    MigrationStageArtifactVersion,
+                                )
+                                from sqlalchemy import select
+
+                                cand_nodes = list(
+                                    db.scalars(
+                                        select(MigrationMedallionNode).where(
+                                            MigrationMedallionNode.project_id == project_id,
+                                            MigrationMedallionNode.environment == environment,
+                                        )
+                                    ).all()
+                                )
+                                m_node = next(
+                                    (
+                                        n
+                                        for n in cand_nodes
+                                        if norm_id(n.target_name) == norm_id(m_tbl)
+                                        or (
+                                            n.target_fqn
+                                            and norm_id(n.target_fqn.split(".")[-1]) == norm_id(m_tbl)
+                                        )
+                                    ),
+                                    None,
+                                )
+                                if m_node:
+                                    art = db.scalar(
+                                        select(MigrationStageArtifact).where(
+                                            MigrationStageArtifact.project_id == project_id,
+                                            MigrationStageArtifact.node_id == m_node.id,
+                                        )
+                                    )
+                                    if art:
+                                        ver = db.scalar(
+                                            select(MigrationStageArtifactVersion).where(
+                                                MigrationStageArtifactVersion.project_id == project_id,
+                                                MigrationStageArtifactVersion.artifact_id == art.id,
+                                                MigrationStageArtifactVersion.version == art.current_version,
+                                            )
+                                        )
+                                        if ver and ver.content and ver.review_status == "APPROVED":
+                                            execute(ver.content, safe_retry=False)
+                                            repairs.append({
+                                                "type": "PREREQUISITE_ARTIFACT_DEPLOYMENT",
+                                                "original_sql": statement,
+                                                "patched_sql": cur_stmt,
+                                                "reason": f"Deployed approved prerequisite artifact {m_node.target_fqn} on-demand",
+                                            })
+                                            healed_prereq = True
+                            except Exception:
+                                pass
+                        if healed_prereq:
+                            continue
+
+                        # Step 2: Live Databricks relation discovery healing
                         healed_rel = None
+
+                        def _extract_tbl_names(raw_rows):
+                            names = []
+                            for r in (raw_rows or []):
+                                name = None
+                                if hasattr(r, "tableName") and r.tableName:
+                                    name = str(r.tableName)
+                                elif isinstance(r, dict) and "tableName" in r:
+                                    name = str(r["tableName"])
+                                elif hasattr(r, "__getitem__") and not isinstance(r, (str, bytes)) and len(r) >= 2 and r[1]:
+                                    name = str(r[1])
+                                elif hasattr(r, "__getitem__") and not isinstance(r, (str, bytes)) and len(r) >= 1 and r[0]:
+                                    name = str(r[0])
+                                if name:
+                                    names.append(name)
+                            return names
+
+                        base_ent = re.sub(r"^vw_", "", m_tbl, flags=re.I)
+                        base_ent = re.sub(r"_clean$", "", base_ent, flags=re.I)
+                        cat_prefix = f"`{m_cat}`." if m_cat else ""
+
                         try:
-                            rows = execute(f"SHOW TABLES IN `{m_cat}`.`{m_sch}`", safe_retry=True) or []
-                            existing = [str(r[1]) for r in rows if len(r) >= 2 and r[1]]
+                            rows = execute(f"SHOW TABLES IN {cat_prefix}`{m_sch}`", safe_retry=True) or []
+                            existing = _extract_tbl_names(rows)
                             exact_norm = [ex for ex in existing if norm_id(ex) == norm_id(m_tbl) and ex.lower() != m_tbl.lower()]
                             if len(exact_norm) == 1:
                                 healed_rel = (m_sch, exact_norm[0], f"Matched existing {m_sch}.{exact_norm[0]} for missing {m_sch}.{m_tbl}")
@@ -468,16 +567,18 @@ def _safe_execute_with_auto_healing(
                                 stem_matches = [ex for ex in existing if stem_id(ex) == stem_id(m_tbl) and ex.lower() != m_tbl.lower()]
                                 if len(stem_matches) == 1:
                                     healed_rel = (m_sch, stem_matches[0], f"Matched singular/plural relation {m_sch}.{stem_matches[0]} for missing {m_sch}.{m_tbl}")
+                                elif m_sch.lower() == "silver" and m_tbl.lower().startswith("vw_"):
+                                    s_base_matches = [ex for ex in existing if norm_id(ex) == norm_id(base_ent) or stem_id(ex) == stem_id(base_ent)]
+                                    if len(s_base_matches) == 1:
+                                        healed_rel = (m_sch, s_base_matches[0], f"Clean view silver.{m_tbl} not found; mapped to existing silver.{s_base_matches[0]}")
                         except Exception:
                             pass
 
                         # Fallback: if missing Silver clean view (vw_<entity>_clean) isn't in Silver, check Bronze table
                         if not healed_rel and m_sch.lower() == "silver" and m_tbl.lower().startswith("vw_"):
-                            base_ent = re.sub(r"^vw_", "", m_tbl, flags=re.I)
-                            base_ent = re.sub(r"_clean$", "", base_ent, flags=re.I)
                             try:
-                                b_rows = execute(f"SHOW TABLES IN `{m_cat}`.`bronze`", safe_retry=True) or []
-                                b_existing = [str(r[1]) for r in b_rows if len(r) >= 2 and r[1]]
+                                b_rows = execute(f"SHOW TABLES IN {cat_prefix}`bronze`", safe_retry=True) or []
+                                b_existing = _extract_tbl_names(b_rows)
                                 b_norm = [ex for ex in b_existing if norm_id(ex) == norm_id(base_ent)]
                                 if not b_norm:
                                     b_norm = [ex for ex in b_existing if stem_id(ex) == stem_id(base_ent)]
@@ -488,8 +589,12 @@ def _safe_execute_with_auto_healing(
 
                         if healed_rel:
                             new_sch, new_tbl, heal_reason = healed_rel
-                            rel_pat = rf"[`'\"]?{re.escape(m_cat)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_sch)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_tbl)}[`'\"]?"
-                            replacement_fqn = f"`{m_cat}`.`{new_sch}`.`{new_tbl}`"
+                            if m_cat:
+                                rel_pat = rf"[`'\"]?{re.escape(m_cat)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_sch)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_tbl)}[`'\"]?"
+                                replacement_fqn = f"`{m_cat}`.`{new_sch}`.`{new_tbl}`"
+                            else:
+                                rel_pat = rf"[`'\"]?{re.escape(m_sch)}[`'\"]?\s*\.\s*[`'\"]?{re.escape(m_tbl)}[`'\"]?"
+                                replacement_fqn = f"`{new_sch}`.`{new_tbl}`"
                             patched_stmt = re.sub(rel_pat, replacement_fqn, cur_stmt, flags=re.I)
                             if patched_stmt != cur_stmt:
                                 cur_stmt = patched_stmt

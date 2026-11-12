@@ -422,4 +422,90 @@ def test_monthly_sales_summary_omits_discount_when_column_not_in_source():
     assert "ROUND(SUM(oi.quantity * oi.unit_price), 2) AS monthly_revenue" in sql
 
 
+def test_table_or_view_not_found_deploys_prerequisite_artifact_on_demand(db):
+    from app.services import deployment
+    from app.models.entities import MigrationMedallionNode, MigrationStageArtifact, MigrationStageArtifactVersion
+
+    project_id = "PRJ_PREREQ_TEST"
+    node = MigrationMedallionNode(
+        id="MDN_ORDERS_CLEAN",
+        project_id=project_id,
+        environment="DEV",
+        layer="SILVER",
+        target_name="vw_orders_clean",
+        target_fqn="`mysqltest_dev`.`silver`.`vw_orders_clean`",
+        generation_strategy="PROMPT_NATIVE",
+        node_type="VIEW",
+        status="APPROVED",
+    )
+    art = MigrationStageArtifact(
+        id="MSA_ORDERS_CLEAN",
+        project_id=project_id,
+        node_id=node.id,
+        artifact_type="VIEW",
+        current_version=1,
+    )
+    ver = MigrationStageArtifactVersion(
+        id="MSV_ORDERS_CLEAN",
+        project_id=project_id,
+        artifact_id=art.id,
+        node_id=node.id,
+        version=1,
+        content="CREATE OR REPLACE VIEW `mysqltest_dev`.`silver`.`vw_orders_clean` AS SELECT * FROM `mysqltest_dev`.`bronze`.`orders`;",
+        content_hash="hash_orders_clean",
+        executable=True,
+        validation_status="PASSED",
+        review_status="APPROVED",
+    )
+    db.add_all([node, art, ver])
+    db.commit()
+
+    executed = []
+    def mock_executor(stmt, safe_retry=False):
+        executed.append(stmt)
+        if "`vw_orders_clean`" in stmt and "vw_payment_status_summary" in stmt:
+            if not any("CREATE OR REPLACE VIEW `mysqltest_dev`.`silver`.`vw_orders_clean`" in s for s in executed[:-1]):
+                raise RuntimeError(
+                    "[TABLE_OR_VIEW_NOT_FOUND] The table or view 'mysqltest_dev'.'silver'.'vw_orders_clean' cannot be found. SQLSTATE: 42P01"
+                )
+
+    test_sql = (
+        "CREATE OR REPLACE VIEW `mysqltest_dev`.`gold`.`vw_payment_status_summary` AS "
+        "SELECT order_id, total_amount FROM `mysqltest_dev`.`silver`.`vw_orders_clean`;"
+    )
+
+    repairs = deployment._safe_execute_with_auto_healing(
+        db, test_sql, project_id=project_id, environment="DEV", executor=mock_executor
+    )
+    assert any(r.get("type") == "PREREQUISITE_ARTIFACT_DEPLOYMENT" for r in repairs)
+    # Prerequisite view was deployed on demand
+    assert any("CREATE OR REPLACE VIEW `mysqltest_dev`.`silver`.`vw_orders_clean`" in s for s in executed)
+    # Downstream view succeeded
+    assert any("vw_payment_status_summary" in s for s in executed)
+
+
+def test_table_or_view_not_found_heals_to_silver_base_table_when_clean_view_missing(db):
+    from app.services import deployment
+
+    executed = []
+    def mock_executor(stmt, safe_retry=False):
+        if stmt.upper().startswith("SHOW TABLES IN `MYSQLTEST_DEV`.`SILVER`"):
+            return [("silver", "orders", False)]
+        executed.append(stmt)
+        if "`silver`.`vw_orders_clean`" in stmt:
+            raise RuntimeError(
+                "[TABLE_OR_VIEW_NOT_FOUND] The table or view 'mysqltest_dev'.'silver'.'vw_orders_clean' cannot be found. SQLSTATE: 42P01"
+            )
+
+    test_sql = (
+        "CREATE OR REPLACE VIEW `mysqltest_dev`.`gold`.`vw_payment_status_summary` AS "
+        "SELECT order_id, total_amount FROM `mysqltest_dev`.`silver`.`vw_orders_clean`;"
+    )
+
+    repairs = deployment._safe_execute_with_auto_healing(db, test_sql, executor=mock_executor)
+    assert any(r.get("type") == "RELATION_DISCOVERY_HEALING" for r in repairs)
+    assert any("`mysqltest_dev`.`silver`.`orders`" in s for s in executed)
+
+
+
 

@@ -2270,6 +2270,15 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
         is_already_passed = passed_info is not None
 
         if is_already_passed:
+            # For views, routines, and workflows, verify that the relation actually exists in Databricks.
+            # If the object was dropped or not actually present in Databricks, deploy it rather than skipping.
+            if node.node_type in {"VIEW", "WORKFLOW_SQL", "SQL_FUNCTION"} or node.layer in {"SILVER", "GOLD"}:
+                try:
+                    execute_sql(f"DESCRIBE TABLE EXTENDED {node.target_fqn}", safe_retry=True)
+                except Exception:
+                    is_already_passed = False
+
+        if is_already_passed:
             detail = {
                 "action": "SKIPPED_ALREADY_PASSED",
                 "checkpoint_reused": True,
