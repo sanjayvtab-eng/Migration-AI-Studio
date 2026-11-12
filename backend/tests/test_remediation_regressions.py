@@ -374,3 +374,52 @@ def test_auto_healing_discovers_renamed_or_bronze_fallback_relation(db):
     assert any("`travels_dev`.`bronze`.`booking_items`" in stmt for stmt in executed_b)
 
 
+def test_unresolved_column_in_arithmetic_heals_without_syntax_error(db):
+    executed = []
+    def mock_executor(stmt, safe_retry=False):
+        executed.append(stmt)
+        if "oi.discount_percent" in stmt:
+            raise RuntimeError(
+                "[UNRESOLVED_COLUMN.WITHOUT_SUGGESTION] A column, variable, or function parameter with name 'oi.discount_percent' cannot be resolved."
+            )
+
+    test_sql = (
+        "CREATE OR REPLACE VIEW `mysqltest_dev`.`gold`.`vw_monthly_sales_summary` AS "
+        "SELECT DATE_TRUNC('month', o.order_date) AS revenue_month, COUNT(DISTINCT o.order_id) AS total_orders, "
+        "ROUND(SUM(oi.quantity * oi.unit_price * (1 - oi.discount_percent / 100)), 2) AS monthly_revenue "
+        "FROM `mysqltest_dev`.`silver`.`vw_orders_clean` o JOIN `mysqltest_dev`.`silver`.`vw_order_items_clean` oi ON oi.order_id = o.order_id "
+        "GROUP BY DATE_TRUNC('month', o.order_date);"
+    )
+
+    repairs = deployment._safe_execute_with_auto_healing(db, test_sql, executor=mock_executor)
+    assert len(repairs) >= 1
+    # Ensure it didn't inject AS alias inside arithmetic
+    assert not any("AS discount_percent /" in stmt for stmt in executed)
+    # Ensure it cleanly replaced with 0 in the math expression
+    assert any("(1 - 0 / 100)" in stmt for stmt in executed)
+
+
+def test_monthly_sales_summary_omits_discount_when_column_not_in_source():
+    from app.services import prompt_specification
+    snapshot = {
+        "objects": [
+            {
+                "name": "Orders",
+                "type": "TABLE",
+                "columns": [{"name": "order_id", "target_name": "order_id"}, {"name": "order_date", "target_name": "order_date"}],
+            },
+            {
+                "name": "OrderItems",
+                "type": "TABLE",
+                "columns": [{"name": "order_id", "target_name": "order_id"}, {"name": "quantity", "target_name": "quantity"}, {"name": "unit_price", "target_name": "unit_price"}],
+            },
+        ]
+    }
+    request = {"name": "vw_monthly_sales_summary", "layer": "GOLD"}
+    sql, _ = prompt_specification._generate_generic_summary_view_sql("mysqltest_dev", request, snapshot, clean_views=set(), planned_targets=set())
+    # Should not mention discount_percent because the column does not exist in order_items
+    assert "discount_percent" not in sql
+    assert "ROUND(SUM(oi.quantity * oi.unit_price), 2) AS monthly_revenue" in sql
+
+
+

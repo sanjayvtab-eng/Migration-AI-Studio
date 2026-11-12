@@ -296,10 +296,11 @@ def _resolve_col_name(table_map: dict[str, Any], table_name: str, aliases: list[
                 return col["target_name"]
 
     # 4. Check if fallback exists in table
-    f_norm = fallback.lower().replace("_", "")
-    for col in cols:
-        if col.get("name", "").lower().replace("_", "") == f_norm or col.get("target_name", "").lower().replace("_", "") == f_norm:
-            return col["target_name"]
+    if fallback:
+        f_norm = fallback.lower().replace("_", "")
+        for col in cols:
+            if col.get("name", "").lower().replace("_", "") == f_norm or col.get("target_name", "").lower().replace("_", "") == f_norm:
+                return col["target_name"]
 
     return fallback
 
@@ -1292,9 +1293,12 @@ def _build_requests(
                     refs = [source_table_ref] if source_table_ref.lower() in table_map else refs
                     oi_qty = _resolve_col_name(table_map, source_table_ref, ["quantity"], "quantity")
                     oi_price = _resolve_col_name(table_map, source_table_ref, ["unit_price", "unitprice"], "unit_price")
-                    oi_disc = _resolve_col_name(table_map, source_table_ref, ["discount_percent", "discountpercent"], "discount_percent")
+                    oi_disc = _resolve_col_name(table_map, source_table_ref, ["discount_percent", "discountpercent", "discount"], None)
                     oi_oid = _resolve_col_name(table_map, source_table_ref, ["order_id", "orderid"], "order_id")
-                    calc = f"SUM({oi_qty} * {oi_price} * (1 - {oi_disc} / 100))"
+                    if oi_disc:
+                        calc = f"SUM({oi_qty} * {oi_price} * (1 - COALESCE({oi_disc}, 0) / 100))"
+                    else:
+                        calc = f"SUM({oi_qty} * {oi_price})"
                     filt = f"{oi_oid} = {params[0]['name']}"
                 elif is_net_sales and any(k.replace("_", "") in ("salesdetails", "sales_details", "sales", "orderitems", "order_items") for k in table_map):
                     source_table_ref = None
@@ -1308,10 +1312,13 @@ def _build_requests(
                     refs = [source_table_ref] if source_table_ref.lower() in table_map else refs
                     sd_qty = _resolve_col_name(table_map, source_table_ref, ["quantity"], "quantity")
                     sd_price = _resolve_col_name(table_map, source_table_ref, ["unit_price", "unitprice"], "unit_price")
-                    sd_disc = _resolve_col_name(table_map, source_table_ref, ["discount_percent", "discountpercent"], "discount_percent")
+                    sd_disc = _resolve_col_name(table_map, source_table_ref, ["discount_percent", "discountpercent", "discount"], None)
                     sd_sid = _resolve_col_name(table_map, source_table_ref, ["sale_id", "saleid", "order_id", "orderid"], "sale_id")
                     params = [{"name": f"p_{sd_sid}", "type": "INT"}]
-                    calc = f"SUM({sd_qty} * {sd_price} * (1 - COALESCE({sd_disc}, 0) / 100))"
+                    if sd_disc:
+                        calc = f"SUM({sd_qty} * {sd_price} * (1 - COALESCE({sd_disc}, 0) / 100))"
+                    else:
+                        calc = f"SUM({sd_qty} * {sd_price})"
                     filt = f"{sd_sid} = {params[0]['name']}"
                 else:
                     primary_ref = next(
@@ -3457,8 +3464,10 @@ JOIN {_resolve_relation(catalog, oi_view, clean_views, table_map)} oi ON oi.{oi_
         sd_pid = _resolve_col_name(table_map, "salesdetails", ["product_id", "productid"], "product_id")
         sd_qty = _resolve_col_name(table_map, "salesdetails", ["quantity"], "quantity")
         sd_price = _resolve_col_name(table_map, "salesdetails", ["unit_price", "unitprice"], "unit_price")
-        sd_disc = _resolve_col_name(table_map, "salesdetails", ["discount_percent", "discountpercent"], "discount_percent")
+        sd_disc = _resolve_col_name(table_map, "salesdetails", ["discount_percent", "discountpercent", "discount"], None)
         has_inventory = any(k.replace("_", "") in ("inventory", "products") for k in table_map)
+        disc_col = f"COALESCE(sd.{sd_disc}, 0) AS discount_percent," if sd_disc else "CAST(0 AS DECIMAL(5,2)) AS discount_percent,"
+        line_calc = f"sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100)" if sd_disc else f"sd.{sd_qty} * sd.{sd_price}"
         if has_inventory:
             inv_table = next(tbl["name"] for k, tbl in table_map.items() if k.replace("_", "") in ("inventory", "products"))
             inv_view = f"vw_{_snake(inv_table)}_clean"
@@ -3473,10 +3482,10 @@ SELECT
   CAST(s.{s_date} AS DATE) AS sale_date,
   sd.{sd_qty} AS quantity,
   sd.{sd_price} AS unit_price,
-  COALESCE(sd.{sd_disc}, 0) AS discount_percent,
-  CAST(sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100) AS DECIMAL(18,2)) AS line_total,
+  {disc_col}
+  CAST({line_calc} AS DECIMAL(18,2)) AS line_total,
   CAST(sd.{sd_qty} * COALESCE(inv.{inv_cost}, sd.{sd_price} * 0.7) AS DECIMAL(18,2)) AS total_cost,
-  CAST((sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100)) - (sd.{sd_qty} * COALESCE(inv.{inv_cost}, sd.{sd_price} * 0.7)) AS DECIMAL(18,2)) AS profit
+  CAST(({line_calc}) - (sd.{sd_qty} * COALESCE(inv.{inv_cost}, sd.{sd_price} * 0.7)) AS DECIMAL(18,2)) AS profit
 FROM {_fqn(catalog, 'silver', sales_view)} s
 JOIN {_fqn(catalog, 'silver', sd_view)} sd ON sd.{sd_sid} = s.{s_sid}
 LEFT JOIN {_fqn(catalog, 'silver', inv_view)} inv ON sd.{sd_pid} = inv.{inv_pid};"""
@@ -3490,8 +3499,8 @@ SELECT
   CAST(s.{s_date} AS DATE) AS sale_date,
   sd.{sd_qty} AS quantity,
   sd.{sd_price} AS unit_price,
-  COALESCE(sd.{sd_disc}, 0) AS discount_percent,
-  CAST(sd.{sd_qty} * sd.{sd_price} * (1 - COALESCE(sd.{sd_disc}, 0) / 100) AS DECIMAL(18,2)) AS line_total,
+  {disc_col}
+  CAST({line_calc} AS DECIMAL(18,2)) AS line_total,
   CAST(sd.{sd_qty} * sd.{sd_price} * 0.7 AS DECIMAL(18,2)) AS total_cost,
   CAST(sd.{sd_qty} * sd.{sd_price} * 0.3 AS DECIMAL(18,2)) AS profit
 FROM {_fqn(catalog, 'silver', sales_view)} s
@@ -3573,12 +3582,16 @@ def _generate_generic_summary_view_sql(
             oi_oid = _resolve_col_name(table_map, oi_tbl, ["order_id", "orderid"], "order_id")
             oi_qty = _resolve_col_name(table_map, oi_tbl, ["quantity"], "quantity")
             oi_price = _resolve_col_name(table_map, oi_tbl, ["unit_price", "unitprice"], "unit_price")
-            oi_disc = _resolve_col_name(table_map, oi_tbl, ["discount_percent", "discountpercent"], "discount_percent")
+            oi_disc = _resolve_col_name(table_map, oi_tbl, ["discount_percent", "discountpercent", "discount"], None)
+            if oi_disc:
+                monthly_rev = f"ROUND(SUM(oi.{oi_qty} * oi.{oi_price} * (1 - COALESCE(oi.{oi_disc}, 0) / 100)), 2)"
+            else:
+                monthly_rev = f"ROUND(SUM(oi.{oi_qty} * oi.{oi_price}), 2)"
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
   DATE_TRUNC('month', o.{o_date}) AS revenue_month,
   COUNT(DISTINCT o.{o_oid}) AS total_orders,
-  ROUND(SUM(oi.{oi_qty} * oi.{oi_price} * (1 - oi.{oi_disc} / 100)), 2) AS monthly_revenue
+  {monthly_rev} AS monthly_revenue
 FROM {ord_rel} o
 JOIN {oi_rel} oi ON oi.{oi_oid} = o.{o_oid}
 GROUP BY DATE_TRUNC('month', o.{o_date});"""

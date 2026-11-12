@@ -545,7 +545,14 @@ def _safe_execute_with_auto_healing(
                             patched = re.sub(join_pattern, "ON 1=1", patched, flags=re.I)
                             join_rev = rf"\bON\s+[A-Za-z0-9_.]+\s*=\s*{qualifier}\.{col_name}"
                             patched = re.sub(join_rev, "ON 1=1", patched, flags=re.I)
-                            # 4. Bare qualifier.col in SELECT projection
+                            # 4. Arithmetic/Expression context: preceded or followed by math operators (+, -, *, /, %) or COALESCE
+                            coalesce_pattern = rf"\bCOALESCE\(\s*{qualifier}\.{col_name}\s*,\s*([^)]+)\)"
+                            patched = re.sub(coalesce_pattern, r"\1", patched, flags=re.I)
+                            arith_pattern1 = rf"([+\-*/%]\s*)\b{qualifier}\.{col_name}\b"
+                            patched = re.sub(arith_pattern1, r"\g<1>0", patched, flags=re.I)
+                            arith_pattern2 = rf"\b{qualifier}\.{col_name}\b(\s*[+\-*/%])"
+                            patched = re.sub(arith_pattern2, r"0\g<1>", patched, flags=re.I)
+                            # 5. Bare qualifier.col in SELECT projection
                             bare_pattern = rf"\b{qualifier}\.{col_name}\b(?!\s*=)"
                             patched = re.sub(bare_pattern, f"CAST(NULL AS STRING) AS {col_name}", patched, flags=re.I)
                         else:
@@ -553,6 +560,12 @@ def _safe_execute_with_auto_healing(
                             patched = re.sub(cast_pattern, r"CAST(NULL AS \1) AS \2", patched, flags=re.I)
                             alias_pattern = rf"\b{col_name}\s+AS\s+([A-Za-z0-9_]+)"
                             patched = re.sub(alias_pattern, r"CAST(NULL AS STRING) AS \1", patched, flags=re.I)
+                            coalesce_pattern = rf"\bCOALESCE\(\s*{col_name}\s*,\s*([^)]+)\)"
+                            patched = re.sub(coalesce_pattern, r"\1", patched, flags=re.I)
+                            arith_pattern1 = rf"([+\-*/%]\s*)\b{col_name}\b"
+                            patched = re.sub(arith_pattern1, r"\g<1>0", patched, flags=re.I)
+                            arith_pattern2 = rf"\b{col_name}\b(\s*[+\-*/%])"
+                            patched = re.sub(arith_pattern2, r"0\g<1>", patched, flags=re.I)
                             bare_pattern = rf"\b{col_name}\b(?!\s*=)"
                             patched = re.sub(bare_pattern, f"CAST(NULL AS STRING) AS {col_name}", patched, flags=re.I)
 
