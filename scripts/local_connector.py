@@ -1080,6 +1080,7 @@ class UniversalLocalAgent:
         self.server = server
         self.port = port or {"SQLSERVER": 1433, "MYSQL": 3306, "POSTGRESQL": 5432, "ORACLE": 1521}.get(self.engine, 3306)
         self.database = database
+        self.configured_database = database
         self.schema = schema or ("public" if self.engine == "POSTGRESQL" else database if self.engine == "MYSQL" else "")
         self.username = username
         self.password = password
@@ -1224,9 +1225,16 @@ class UniversalLocalAgent:
         data = task.get("payload", {})
         if op not in {"test", "discover", "count", "open", "fetch", "close", "stage_and_upload"}:
             raise ValueError("Unsupported operation")
+        configured_db = getattr(self, "configured_database", self.database)
+        db_match = (
+            not task.get("database")
+            or task["database"].casefold() == self.database.casefold()
+            or task["database"].casefold() == (configured_db or "").casefold()
+            or (self.engine == "ORACLE")
+        )
         if (task.get("source_id") != self.source_id
                 or (task.get("server") and task["server"].casefold() != self.server.casefold())
-                or (task.get("database") and task["database"].casefold() != self.database.casefold())
+                or not db_match
                 or (task.get("engine") and normalize_engine(task["engine"]) != self.engine)):
             raise ValueError("Connector source identity mismatch; reconfigure the agent explicitly")
         self.cleanup()
@@ -2045,6 +2053,8 @@ def main():
                     task = response.json().get("task")
                     backoff.reset()
                     cloud_ready.set()
+                    if AGENT_TELEMETRY.get("status") != "ONLINE & STREAMING":
+                        AGENT_TELEMETRY["status"] = "ONLINE & STREAMING"
                     if task:
                         try:
                             result = agent.handle(task)

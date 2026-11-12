@@ -260,9 +260,15 @@ def poll(x_connector_instance: str = Header(default=""), db: Session = Depends(g
                               ConnectorTask.status == "QUEUED").values(status="RUNNING", lease=lease))
         if changed.rowcount:
             src = db.get(MigrationSource, connector.source_id)
+            try:
+                options = json.loads(src.options_json) if getattr(src, "options_json", None) else {}
+            except Exception:
+                options = {}
+            db_name = (options.get("service_name") or options.get("sid")) if src.engine == "ORACLE" else src.database_name
+            db_name = db_name or src.database_name
             result = {"id": task.id, "lease": lease, "operation": task.operation,
                       "payload": json.loads(task.payload), "source_id": src.id,
-                      "server": src.server_name, "database": src.database_name,
+                      "server": src.server_name, "database": db_name,
                       "engine": src.engine, "port": src.port, "schema": src.schema_name}
     db.commit()
     return {"task": result}
