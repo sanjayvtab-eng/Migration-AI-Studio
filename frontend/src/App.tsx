@@ -70,6 +70,7 @@ import SourceConnectorControl from "./SourceConnectorControl";
 import LandingPage from "./LandingPage";
 import WorkspacePhaseStepper from "./WorkspacePhaseStepper";
 import { ApiStatusPanel } from "./ApiStatusPanel";
+import { TourProvider, useTour } from "./tour/TourProvider";
 
 type Project = {
   id: string;
@@ -981,6 +982,59 @@ export default function App() {
   }, [currentUserInfo, isEmbedMode]);
   const [showLogin, setShowLogin] = useState(false);
   const [page, setPage] = useState(getInitialStage);
+  const [promptSpec, setPromptSpec] = useState<any>(null);
+  const [isDevPassedState, setIsDevPassedState] = useState(false);
+  const [hasProjectState, setHasProjectState] = useState(false);
+
+  return (
+    <TourProvider
+      currentStage={page}
+      stageContext={{
+        isDemoAccount,
+        promptSpec,
+        isDevAlreadyPassed: isDevPassedState,
+        hasProject: hasProjectState,
+      }}
+    >
+      <AppInner
+        isEmbedMode={isEmbedMode}
+        ready={ready}
+        setReady={setReady}
+        autoLoggingIn={autoLoggingIn}
+        setAutoLoggingIn={setAutoLoggingIn}
+        currentUserInfo={currentUserInfo}
+        isDemoAccount={isDemoAccount}
+        showLogin={showLogin}
+        setShowLogin={setShowLogin}
+        page={page}
+        setPage={setPage}
+        promptSpec={promptSpec}
+        setPromptSpec={setPromptSpec}
+        setIsDevPassedState={setIsDevPassedState}
+        setHasProjectState={setHasProjectState}
+      />
+    </TourProvider>
+  );
+}
+
+function AppInner({
+  isEmbedMode,
+  ready,
+  setReady,
+  autoLoggingIn,
+  setAutoLoggingIn,
+  currentUserInfo,
+  isDemoAccount,
+  showLogin,
+  setShowLogin,
+  page,
+  setPage,
+  promptSpec,
+  setPromptSpec,
+  setIsDevPassedState,
+  setHasProjectState,
+}: any) {
+  const tour = useTour();
 
   useEffect(() => {
     if (isEmbedMode) {
@@ -1252,7 +1306,6 @@ export default function App() {
       : buildMasterMedallionTemplate()
   );
   const [promptSourceId, setPromptSourceId] = useState<string>("");
-  const [promptSpec, setPromptSpec] = useState<any>(null);
   const [artifactEditor, setArtifactEditor] = useState<any>(null);
   const [artifactEditorError, setArtifactEditorError] = useState("");
   const [planRefinement, setPlanRefinement] = useState("");
@@ -1372,6 +1425,7 @@ export default function App() {
     try {
       const ps = await loadProjects();
       checkScope();
+      if (setHasProjectState) setHasProjectState(ps.length > 0);
       const activeProj = ps.find(x => x.id === pid) || ps[0];
       const id = activeProj?.id;
       if (id !== pid) setPid(id || "");
@@ -1944,6 +1998,7 @@ export default function App() {
       });
       if (res && res.id) {
         setPid(res.id);
+        tour.notify("project-created", res);
       }
       return res;
     });
@@ -2058,6 +2113,7 @@ export default function App() {
     setAutoAuthLoading(true);
     setAutoPromotionStatus(null);
     setShowAutoAuthModal(true);
+    tour.notify("deploy:modal-opened");
     try {
       const status: any = await api(`/projects/${pid}/master-orchestration/current`);
       if (activeProjectId.current === projectId) setAutoPromotionStatus(status);
@@ -2255,6 +2311,7 @@ export default function App() {
       const doneText = result.status === "NEEDS_USER_INPUT" ? "Prompt parsed. Clarification questions ready." : "Prompt specification grounded & ready for plan review.";
       setMsg(doneText);
       finishOperationOverlay(doneText);
+      tour.notify("studio:prompt-parsed", { promptSpec: result });
     } catch (e: any) {
       setMsg(e.message);
       finishOperationOverlay(e.message, true);
@@ -2375,6 +2432,7 @@ export default function App() {
       });
       await loadPromptSpecification(promptSpec.id);
       setMsg("The exact prompt plan version is approved. Artifact generation is now available.");
+      tour.notify("studio:plan-approved", { promptSpec: { ...promptSpec, status: "PLAN_APPROVED" } });
     } catch (e: any) {
       setMsg(e.message);
     } finally {
@@ -2397,6 +2455,7 @@ export default function App() {
       const doneText = "20 Medallion artifacts generated successfully.";
       setMsg(doneText);
       finishOperationOverlay(doneText);
+      tour.notify("studio:artifacts-generated", { promptSpec: { ...promptSpec, status: "VALIDATING" } });
     } catch (e: any) {
       setMsg(e.message);
       finishOperationOverlay(e.message, true);
@@ -2422,6 +2481,9 @@ export default function App() {
       const doneText = result.status === "PENDING_ARTIFACT_REVIEW" ? "Target validation passed. Review each current artifact version." : "Target validation found blocking errors.";
       setMsg(doneText);
       finishOperationOverlay(doneText, result.status !== "PENDING_ARTIFACT_REVIEW");
+      if (result.status === "PENDING_ARTIFACT_REVIEW") {
+        tour.notify("studio:artifacts-validated", { promptSpec: result });
+      }
     } catch (e: any) {
       setMsg(e.message);
       finishOperationOverlay(e.message, true);
@@ -2452,6 +2514,7 @@ export default function App() {
       const doneText = "All current validated artifact versions are approved for DEV deployment.";
       setMsg(doneText);
       finishOperationOverlay(doneText);
+      tour.notify("studio:artifacts-approved", { promptSpec: { ...promptSpec, status: "ARTIFACTS_APPROVED" } });
     } catch (e: any) {
       setMsg(e.message);
       finishOperationOverlay(e.message, true);
@@ -2479,6 +2542,9 @@ export default function App() {
       const doneText = result.status === "DEV_GATE_PASSED" ? "Prompt-native DEV deployment and reconciliation passed." : `DEV workflow status: ${result.status}.`;
       setMsg(doneText);
       finishOperationOverlay(doneText, result.status !== "DEV_GATE_PASSED");
+      if (result.status === "DEV_GATE_PASSED") {
+        tour.notify("studio:dev-deployed", { promptSpec: result, isDevAlreadyPassed: true });
+      }
     } catch (e: any) {
       setMsg(e.message);
       finishOperationOverlay(e.message, true);
@@ -3412,13 +3478,15 @@ export default function App() {
 
   const environmentPassed = (environment: string): boolean => {
     if (environment === "DEV") {
-      return Boolean(
+      const isPassed = Boolean(
         medDeployment?.status === "PASSED" ||
         reconResult?.status === "PASSED" ||
         deployment?.status === "PASSED" ||
         (Array.isArray(attemptItems) && attemptItems.length > 0 && attemptItems.every((i: any) => i?.status === "PASSED")) ||
         (Array.isArray(life) && life.find((x: any) => x?.environment === "DEV")?.status === "PASSED")
       );
+      if (setIsDevPassedState) setIsDevPassedState(isPassed);
+      return isPassed;
     }
     return Boolean(Array.isArray(life) && life.find((x: any) => x?.environment === environment)?.status === "PASSED");
   };
@@ -3953,6 +4021,16 @@ export default function App() {
                     <div
                       className="profile-dropdown-item"
                       onClick={() => {
+                        tour.restartTour();
+                        setProfileMenuOpen(false);
+                      }}
+                    >
+                      <Sparkles size={14} />
+                      <span>Take a tour</span>
+                    </div>
+                    <div
+                      className="profile-dropdown-item"
+                      onClick={() => {
                         setPage("Environment Setup");
                         setProfileMenuOpen(false);
                       }}
@@ -4144,6 +4222,7 @@ export default function App() {
                             const doneText = "Demo Studio reset to Step 1: Ready to start freshly.";
                             setMsg(doneText);
                             finishOperationOverlay(doneText);
+                            tour.notify("studio:reset-demo");
                           } catch (e: any) {
                             setMsg(e.message);
                             finishOperationOverlay(e.message, true);
@@ -4255,6 +4334,7 @@ export default function App() {
                     </select>
                     <button
                       className="btn-primary-blue"
+                      data-tour="studio-parse-btn"
                       disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()}
                       onClick={() => {
                         submitPromptSpecification();
@@ -4284,6 +4364,7 @@ export default function App() {
                   </div>
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <div data-tour="studio-primary-action" style={{ display: "inline-flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     {/* Step 1: Approve Exact Plan */}
                     {promptSpec?.status === "PENDING_PLAN_APPROVAL" && (
                       <button className="btn-primary-blue" disabled={busy} onClick={approvePromptSpecification}>
@@ -4368,6 +4449,7 @@ export default function App() {
                         </button>
                       );
                     })()}
+                    </div>
                     <button
                       className="btn-secondary"
                       onClick={() => setPage("Deployments")}
@@ -4871,6 +4953,7 @@ export default function App() {
                           className="primary-action"
                           style={{ background: "linear-gradient(135deg, #2563eb, #1d4ed8)", border: "none" }}
                           disabled={busy || autoRunning}
+                          data-tour="authorize-promotion-btn"
                           onClick={openPromotionAuthorization}
                         >
                           <Play size={15} /> Authorize Automated Promotion to PROD
@@ -4984,7 +5067,7 @@ export default function App() {
 
                 {/* Right 40% Panel: Inline Reviews */}
                 {medArts.length > 0 && (
-                  <aside className="studio-inline-reviews">
+                  <aside className="studio-inline-reviews" data-tour="studio-inline-reviews">
                     <div className="studio-reviews-header">
                       <div className="studio-reviews-title">
                         <ShieldCheck size={18} color="#2563eb" />
@@ -5321,6 +5404,7 @@ export default function App() {
                 </div>
                 <button
                   className="btn-primary-blue"
+                  data-tour="new-project-btn"
                   onClick={() => {
                     setNewProjectName("");
                     setNewProjectModalOpen(true);
@@ -5872,6 +5956,7 @@ export default function App() {
                               <div className="source-actions-cluster">
                                 <button
                                   className="btn-secondary"
+                                  data-tour="test-connection-btn"
                                   onClick={() =>
                                     action(async () => {
                                       setTestedSource(s);
@@ -5881,6 +5966,7 @@ export default function App() {
                                         { method: "POST" },
                                       );
                                       setDiscoveryResult(r);
+                                      tour.notify("test-connection-completed", r);
                                       return r;
                                     })
                                   }
@@ -5969,7 +6055,7 @@ export default function App() {
                   testTimestamp || new Date().toTimeString().split(" ")[0] + " UTC";
 
                 return (
-                  <div className="test-results-card">
+                  <div className="test-results-card" data-tour="test-results-panel">
                     {/* Top Status Bar */}
                     <div className="test-results-header">
                       <div className="test-results-title">
@@ -6477,6 +6563,7 @@ export default function App() {
                                   const r: any = await api(`/projects/${pid}/discovery/live/${s.id}`, { method: "POST" });
                                   setDiscoveryResult(r);
                                   await refresh();
+                                  tour.notify("discovery-completed", r);
                                   return r;
                                 } finally {
                                   clearTimeout(t1);
@@ -6487,6 +6574,7 @@ export default function App() {
                                 }
                               });
                             }}
+                            data-tour="run-discovery-btn"
                           >
                             <Play size={14} />
                             {isScanning ? "Scanning Source..." : "Run Schema Discovery"}
@@ -11247,6 +11335,7 @@ export default function App() {
                           boxShadow: "0 2px 4px rgba(37, 99, 235, 0.3)",
                         }}
                         onClick={openPromotionAuthorization}
+                        data-tour="authorize-promotion-btn"
                       >
                         <Play size={14} /> Authorize Automated Promotion (TEST → UAT → PROD)
                       </button>
@@ -12296,6 +12385,15 @@ export default function App() {
                   className="action-rail-btn-forward"
                   disabled={stageInfo.forwardDisabled || busy}
                   title={stageInfo.forwardTooltip || stageInfo.forwardText}
+                  data-tour={
+                    currentStage === 1
+                      ? "proceed-sources-btn"
+                      : currentStage === 3
+                      ? "proceed-discovery-btn"
+                      : currentStage === 4
+                      ? "proceed-studio-btn"
+                      : undefined
+                  }
                   onClick={() => setPage(stageInfo.forwardTarget)}
                 >
                   <span>{stageInfo.forwardText}</span>
@@ -12488,7 +12586,7 @@ export default function App() {
               {/* One-Time Authorization Modal */}
               {showAutoAuthModal && (
                 <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, backdropFilter: "blur(4px)" }}>
-                  <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 24, maxWidth: 640, width: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.7)" }}>
+                  <div data-tour="promotion-modal" style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 24, maxWidth: 640, width: "90%", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.7)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
                       <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8, fontSize: 18, color: "#f8fafc" }}>
                         <ShieldCheck size={22} color="#3b82f6" /> Authorize Automated Promotion to PROD
@@ -12530,6 +12628,7 @@ export default function App() {
                         />
                         <button
                           type="button"
+                          data-tour="promotion-confirm-btn"
                           onClick={() => setAutoAuthText("PROMOTE TO PROD")}
                           style={{ padding: "8px 12px", background: "#334155", border: "none", borderRadius: 6, color: "#93c5fd", cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
                         >
@@ -12556,6 +12655,7 @@ export default function App() {
                         }
                         onClick={() => {
                           setShowAutoAuthModal(false);
+                          tour.notify("deploy:promotion-confirmed");
                           if (isDemoAccount) {
                             setShowDemoSalesModal(true);
                             setMsg("Demo Version: Automated promotion to PROD is restricted. Contact contactsales@vtabsquare.com for enterprise access.");
