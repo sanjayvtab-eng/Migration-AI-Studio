@@ -568,6 +568,48 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
             <button onClick={handleLogin} disabled={loading}>
               {loading ? "Signing in..." : "Sign in"}
             </button>
+
+            <div style={{ margin: "14px 0 10px 0", display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1, height: 1, background: "rgba(255, 255, 255, 0.1)" }} />
+              <span style={{ fontSize: 11, color: "#64748b", textTransform: "uppercase", letterSpacing: 0.5 }}>or</span>
+              <div style={{ flex: 1, height: 1, background: "rgba(255, 255, 255, 0.1)" }} />
+            </div>
+
+            <button
+              type="button"
+              onClick={async () => {
+                setErr("");
+                setInfo("");
+                setLoading(true);
+                try {
+                  const r: any = await api("/demo/token");
+                  if (r?.access_token) {
+                    localStorage.setItem("mf_token", r.access_token);
+                    done();
+                  }
+                } catch (e: any) {
+                  setErr(e.message);
+                } finally {
+                  setLoading(false);
+                }
+              }}
+              disabled={loading}
+              style={{
+                background: "rgba(37, 99, 235, 0.12)",
+                border: "1px solid rgba(37, 99, 235, 0.4)",
+                color: "#60a5fa",
+                fontWeight: 600,
+                width: "100%",
+                padding: "10px",
+                borderRadius: 8,
+                cursor: "pointer",
+                fontSize: 13,
+                transition: "all 0.15s ease",
+              }}
+            >
+              🚀 Continue as Demo User (Instant Access)
+            </button>
+
             <div style={{ marginTop: 14, textAlign: "center" }}>
               <span style={{ fontSize: 13, color: "#94a3b8" }}>New user? </span>
               <a

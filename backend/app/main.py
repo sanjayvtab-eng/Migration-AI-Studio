@@ -29,6 +29,8 @@ with SessionLocal() as db:
         if u.email and "@" in u.email:
             u.username = u.email
             u.role = "ADMIN"
+            u.failed_attempts = 0
+            u.locked = False
         elif u.username == "admin":
             db.delete(u)
     db.commit()

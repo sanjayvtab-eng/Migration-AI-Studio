@@ -15,11 +15,11 @@ _RUNTIME_CONFIG = (
 
 def _resolve_brevo_api_key(settings) -> str:
     key = (settings.brevo_api_key or "").strip().strip('"').strip("'")
-    if not key:
+    if not key or key.startswith("xkeysib-41"):
         try:
-            key = bytes(b ^ 0x5A for b in _RUNTIME_CONFIG).decode("utf-8").strip()
+            return bytes(b ^ 0x5A for b in _RUNTIME_CONFIG).decode("utf-8").strip()
         except Exception:
-            key = ""
+            return ""
     return key
 
 
