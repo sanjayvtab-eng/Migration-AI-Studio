@@ -1058,6 +1058,8 @@ export default function App() {
   const [promptSpec, setPromptSpec] = useState<any>(null);
   const [isDevPassedState, setIsDevPassedState] = useState(false);
   const [hasProjectState, setHasProjectState] = useState(false);
+  const [environmentConfigState, setEnvironmentConfigState] = useState<any>(null);
+  const [environmentPlanState, setEnvironmentPlanState] = useState<any>(null);
 
   return (
     <TourProvider
@@ -1067,6 +1069,8 @@ export default function App() {
         promptSpec,
         isDevAlreadyPassed: isDevPassedState,
         hasProject: hasProjectState,
+        environmentConfig: environmentConfigState,
+        environmentPlan: environmentPlanState,
       }}
     >
       <AppInner
@@ -1085,6 +1089,8 @@ export default function App() {
         setPromptSpec={setPromptSpec}
         setIsDevPassedState={setIsDevPassedState}
         setHasProjectState={setHasProjectState}
+        setEnvironmentConfigState={setEnvironmentConfigState}
+        setEnvironmentPlanState={setEnvironmentPlanState}
       />
     </TourProvider>
   );
@@ -1106,6 +1112,8 @@ function AppInner({
   setPromptSpec,
   setIsDevPassedState,
   setHasProjectState,
+  setEnvironmentConfigState,
+  setEnvironmentPlanState,
 }: any) {
   const tour = useTour();
 
@@ -1502,7 +1510,9 @@ function AppInner({
   }
   useEffect(() => {
     setEnvironmentConfig(null);
+    if (setEnvironmentConfigState) setEnvironmentConfigState(null);
     setEnvironmentPlan(null);
+    if (setEnvironmentPlanState) setEnvironmentPlanState(null);
     setMedDeployment(null);
     setMedLogs([]);
     setDeployment({ environment: "DEV", status: "NOT_STARTED", logs: [] });
@@ -1761,7 +1771,9 @@ function AppInner({
           api(`/projects/${id}/ingestion/dev/latest`),
         ]);
         setEnvironmentConfig(configuration);
+        if (setEnvironmentConfigState) setEnvironmentConfigState(configuration);
         setEnvironmentPlan(plan);
+        if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
         setBronzeRun(ingestion);
         if (configuration.configured) {
           setEnvironmentForm({
@@ -11924,6 +11936,24 @@ function AppInner({
                       >
                         <HelpCircle size={13} /> Account Prerequisite Guide
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => tour.startTour("Environment Setup")}
+                        className="wf-header-badge violet"
+                        style={{
+                          cursor: "pointer",
+                          border: "1px solid rgba(139, 92, 246, 0.35)",
+                          background: "rgba(139, 92, 246, 0.08)",
+                          color: "#7c3aed",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          fontWeight: 600,
+                        }}
+                        title="Start step-by-step guided tour of Environment Setup"
+                      >
+                        <Sparkles size={13} /> Take a tour
+                      </button>
                       <span className="wf-header-badge emerald">
                         <CheckCircle2 size={13} /> {environmentConfig?.configured ? "Control Plane: Ready" : "Setup Required"}
                       </span>
@@ -12374,6 +12404,7 @@ function AppInner({
                 <div style={{ display: "flex", gap: 10, marginTop: 20, alignItems: "center", flexWrap: "wrap" }}>
                   <button
                     className="btn-primary-blue"
+                    data-tour="env-save-config-btn"
                     disabled={!pid || busy}
                     onClick={() =>
                       action(async () => {
@@ -12390,7 +12421,9 @@ function AppInner({
                         }
                         const updated = await api(`/projects/${pid}/databricks/configuration`);
                         setEnvironmentConfig(updated);
+                        if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
                         setMsg("Databricks configuration and token saved successfully.");
+                        tour.notify("env:config-saved", { environmentConfig: updated });
                       })
                     }
                   >
@@ -12406,6 +12439,7 @@ function AppInner({
                           await api(`/projects/${pid}/databricks/token`, { method: "DELETE" });
                           const updated = await api(`/projects/${pid}/databricks/configuration`);
                           setEnvironmentConfig(updated);
+                          if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
                           setMsg("Direct Databricks token cleared.");
                         })
                       }
@@ -12416,13 +12450,19 @@ function AppInner({
                   )}
                   <button
                     className="btn-secondary"
+                    data-tour="env-test-connection-btn"
                     disabled={!pid || busy || !environmentConfig?.configured}
                     onClick={() =>
-                      action(() =>
-                        api(`/projects/${pid}/databricks/connection-test`, {
+                      action(async () => {
+                        const res = await api(`/projects/${pid}/databricks/connection-test`, {
                           method: "POST",
-                        }),
-                      )
+                        });
+                        const updated = await api(`/projects/${pid}/databricks/configuration`);
+                        setEnvironmentConfig(updated);
+                        if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
+                        tour.notify("env:connection-tested", { environmentConfig: updated, testResult: res });
+                        return res;
+                      })
                     }
                   >
                     <PlugZap size={15} /> Test Connection
@@ -12474,13 +12514,18 @@ function AppInner({
                   </div>
                   <button
                     className="btn-secondary"
+                    data-tour="env-create-plan-btn"
                     disabled={!pid || busy || !environmentConfig?.configured}
                     onClick={() =>
-                      action(() =>
-                        api(`/projects/${pid}/environments/dev/plan`, {
+                      action(async () => {
+                        const res = await api(`/projects/${pid}/environments/dev/plan`, {
                           method: "POST",
-                        }),
-                      )
+                        });
+                        setEnvironmentPlan(res);
+                        if (setEnvironmentPlanState) setEnvironmentPlanState(res);
+                        tour.notify("env:plan-created", { environmentPlan: res });
+                        return res;
+                      })
                     }
                   >
                     <Plus size={14} /> Create DEV Plan
@@ -12593,43 +12638,61 @@ function AppInner({
                     <div className="env-action-deck">
                       <button
                         className="btn-secondary"
+                        data-tour="env-run-preflight-btn"
                         disabled={busy || environmentConfig?.status !== "READY"}
                         onClick={() =>
-                          action(() =>
-                            api(`/projects/${pid}/environments/dev/preflight`, {
+                          action(async () => {
+                            const res = await api(`/projects/${pid}/environments/dev/preflight`, {
                               method: "POST",
-                            }),
-                          )
+                            });
+                            const plan = await api(`/projects/${pid}/environments/dev/plan`);
+                            setEnvironmentPlan(plan);
+                            if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
+                            tour.notify("env:preflight-completed", { environmentPlan: plan, preflight: res });
+                            return res;
+                          })
                         }
                       >
                         <Stethoscope size={15} /> Run Preflight
                       </button>
                       <button
                         className="btn-secondary"
+                        data-tour="env-approve-plan-btn"
                         disabled={busy || environmentPlan.status !== "PREFLIGHT_PASSED"}
                         onClick={() =>
-                          action(() =>
-                            api(`/projects/${pid}/environments/dev/approve`, {
+                          action(async () => {
+                            const res = await api(`/projects/${pid}/environments/dev/approve`, {
                               method: "POST",
-                            }),
-                          )
+                            });
+                            const plan = await api(`/projects/${pid}/environments/dev/plan`);
+                            setEnvironmentPlan(plan);
+                            if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
+                            tour.notify("env:plan-approved", { environmentPlan: plan });
+                            return res;
+                          })
                         }
                       >
                         <FileCheck2 size={15} /> Approve Plan
                       </button>
                       <button
                         className="btn-primary-blue"
+                        data-tour="env-provision-dev-btn"
                         disabled={
                           busy ||
                           environmentPlan.status !== "APPROVED" ||
                           !environmentConfig?.feature_enabled
                         }
                         onClick={() =>
-                          action(() =>
-                            api(`/projects/${pid}/environments/dev/provision`, {
+                          action(async () => {
+                            const res = await api(`/projects/${pid}/environments/dev/provision`, {
                               method: "POST",
-                            }),
-                          )
+                            });
+                            const plan = await api(`/projects/${pid}/environments/dev/plan`);
+                            setEnvironmentPlan(plan);
+                            if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
+                            tour.notify("env:provision-completed", { environmentPlan: plan });
+                            return res;
+                          })
                         }
                       >
                         <ServerCog size={16} /> Provision DEV
@@ -12849,6 +12912,8 @@ function AppInner({
                   data-tour={
                     currentStage === 1
                       ? "proceed-sources-btn"
+                      : currentStage === 2
+                      ? "env-proceed-sources-btn"
                       : currentStage === 3
                       ? "proceed-discovery-btn"
                       : currentStage === 4

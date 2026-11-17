@@ -73,6 +73,138 @@ export const TOUR_STEPS: TourStep[] = [
     condition: (context: any) => Boolean(context.hasProject || context.isDemoAccount),
   },
 
+  // Stage 2: Environment Setup (Steps 1 to 7 - Active for Non-Demo Users)
+  {
+    id: "env-save-config",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 1,
+    totalSteps: 7,
+    element: '[data-tour="env-save-config-btn"]',
+    popover: {
+      title: "Save Databricks Configuration",
+      description: "Enter your Workspace Host, SQL Warehouse Path, and Personal Access Token (PAT) above, then click Save Configuration to encrypt credentials.",
+      side: "top",
+      align: "start",
+    },
+    actionType: "click",
+    advanceOnEvent: "env:config-saved",
+    disableBack: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "env-test-connection",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 2,
+    totalSteps: 7,
+    element: '[data-tour="env-test-connection-btn"]',
+    popover: {
+      title: "Test Databricks Connection",
+      description: "Click Test Connection to verify live reachability to Databricks SQL Warehouse and Unity Catalog.",
+      side: "top",
+      align: "start",
+    },
+    actionType: "click",
+    advanceOnEvent: "env:connection-tested",
+    disableBack: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "env-create-plan",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 3,
+    totalSteps: 7,
+    element: '[data-tour="env-create-plan-btn"]',
+    popover: {
+      title: "Create DEV Plan",
+      description: "Click Create DEV Plan to generate the governed deployment plan and target medallion schemas (Bronze, Silver, Gold).",
+      side: "bottom",
+      align: "end",
+    },
+    actionType: "click",
+    advanceOnEvent: "env:plan-created",
+    disableBack: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "env-run-preflight",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 4,
+    totalSteps: 7,
+    element: '[data-tour="env-run-preflight-btn"]',
+    popover: {
+      title: "Run Preflight Validation",
+      description: "Click Run Preflight to validate catalog privileges, SQL warehouse readiness, and verify zero destructive operations.",
+      side: "top",
+      align: "end",
+    },
+    actionType: "click",
+    advanceOnEvent: "env:preflight-completed",
+    disableBack: true,
+    waitForElement: true,
+    scrollIntoView: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "env-approve-plan",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 5,
+    totalSteps: 7,
+    element: '[data-tour="env-approve-plan-btn"]',
+    popover: {
+      title: "Approve Environment Plan",
+      description: "Review and approve the validated DEV execution plan to authorize deploying the schemas into Databricks.",
+      side: "top",
+      align: "end",
+    },
+    actionType: "click",
+    advanceOnEvent: "env:plan-approved",
+    disableBack: true,
+    scrollIntoView: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "env-provision-dev",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 6,
+    totalSteps: 7,
+    element: '[data-tour="env-provision-dev-btn"]',
+    popover: {
+      title: "Provision to DEV",
+      description: "Click Provision DEV to deploy and instantiate the live managed schemas into Databricks Unity Catalog.",
+      side: "top",
+      align: "end",
+    },
+    actionType: "click",
+    advanceOnEvent: "env:provision-completed",
+    disableBack: true,
+    scrollIntoView: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "env-proceed-sources",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 7,
+    totalSteps: 7,
+    element: '[data-tour="env-proceed-sources-btn"]',
+    popover: {
+      title: "Proceed to Sources",
+      description: "DEV environment is provisioned and ready! Click Proceed to Sources to connect your database profiles.",
+      side: "top",
+      align: "end",
+    },
+    actionType: "click",
+    disableBack: true,
+    scrollIntoView: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+
   // Stage 3: Sources (Steps 3, 4, 5)
   {
     id: "step-3-test-connection",
@@ -320,6 +452,31 @@ export const TOUR_STEPS: TourStep[] = [
     scrollIntoView: true,
   },
 ];
+
+/**
+ * State-derived map for Stage 2 (Environment Setup)
+ */
+export const deriveEnvStepId = (environmentConfig: any, environmentPlan: any): string => {
+  if (environmentPlan?.status === "PROVISIONED") {
+    return "env-proceed-sources";
+  }
+  if (environmentPlan?.status === "APPROVED") {
+    return "env-provision-dev";
+  }
+  if (environmentPlan?.status === "PREFLIGHT_PASSED") {
+    return "env-approve-plan";
+  }
+  if (environmentPlan?.exists) {
+    return "env-run-preflight";
+  }
+  if (environmentConfig?.status === "READY") {
+    return "env-create-plan";
+  }
+  if (environmentConfig?.configured) {
+    return "env-test-connection";
+  }
+  return "env-save-config";
+};
 
 /**
  * State-derived map for Stage 7 (Migration Studio)

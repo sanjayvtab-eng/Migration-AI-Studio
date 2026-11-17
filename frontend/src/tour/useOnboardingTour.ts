@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { driver, Driver } from "driver.js";
 import "driver.js/dist/driver.css";
 import "./tour.css";
-import { TOUR_STEPS, getStepsForStage, deriveStudioStepId, TourStep } from "./tourConfig";
+import { TOUR_STEPS, getStepsForStage, deriveEnvStepId, deriveStudioStepId, TourStep } from "./tourConfig";
 import { getTourState, saveTourState, resetTourState } from "./tourStorage";
 
 /**
@@ -283,6 +283,19 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       setTourActive(true);
       saveTourState({ hasSeenTour: true, skipped: false, completed: false });
 
+      if (stageToStart === "Environment Setup") {
+        if (contextRef.current.isDemoAccount) return;
+        const derivedId = deriveEnvStepId(
+          contextRef.current.environmentConfig,
+          contextRef.current.environmentPlan
+        );
+        const step = TOUR_STEPS.find((s) => s.id === derivedId);
+        if (step) {
+          highlightStep(step);
+          return;
+        }
+      }
+
       if (stageToStart === "Migration Workflow") {
         const derivedId = deriveStudioStepId(
           contextRef.current.promptSpec,
@@ -325,6 +338,55 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
             saveTourState({ currentStepIndex: 1, currentStage: "Projects" });
             highlightStep(step2);
           }
+        }, 400);
+        return;
+      }
+
+      // 1b. Environment Setup stage (Stage 2) action progression
+      if (event === "env:config-saved") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-test-connection");
+          if (step) highlightStep(step);
+        }, 400);
+        return;
+      }
+
+      if (event === "env:connection-tested") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-create-plan");
+          if (step) highlightStep(step);
+        }, 400);
+        return;
+      }
+
+      if (event === "env:plan-created") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-run-preflight");
+          if (step) highlightStep(step);
+        }, 500);
+        return;
+      }
+
+      if (event === "env:preflight-completed") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-approve-plan");
+          if (step) highlightStep(step);
+        }, 400);
+        return;
+      }
+
+      if (event === "env:plan-approved") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-provision-dev");
+          if (step) highlightStep(step);
+        }, 400);
+        return;
+      }
+
+      if (event === "env:provision-completed") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-proceed-sources");
+          if (step) highlightStep(step);
         }, 400);
         return;
       }
@@ -424,6 +486,17 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
           }
         }, 500);
         return () => clearTimeout(timer);
+      } else if (currentStage === "Environment Setup") {
+        if (stageContext.isDemoAccount) return;
+        const timer = setTimeout(() => {
+          const derivedId = deriveEnvStepId(
+            stageContext.environmentConfig,
+            stageContext.environmentPlan
+          );
+          const step = TOUR_STEPS.find((s) => s.id === derivedId);
+          if (step) highlightStep(step);
+        }, 500);
+        return () => clearTimeout(timer);
       } else if (currentStage === "Sources") {
         const timer = setTimeout(() => {
           const step = TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
@@ -454,7 +527,7 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return () => clearTimeout(timer);
       }
     }
-  }, [currentStage, highlightStep, stageContext.promptSpec, stageContext.isDevAlreadyPassed, stageContext.hasProject]);
+  }, [currentStage, highlightStep, stageContext.promptSpec, stageContext.isDevAlreadyPassed, stageContext.hasProject, stageContext.environmentConfig, stageContext.environmentPlan, stageContext.isDemoAccount]);
 
   return {
     tourActive,
