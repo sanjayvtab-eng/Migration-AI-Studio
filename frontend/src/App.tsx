@@ -44,6 +44,7 @@ import {
   MoreVertical,
   ArrowRight,
   ArrowLeft,
+  ArrowDown,
   X,
   Copy,
   ExternalLink,
@@ -1137,6 +1138,22 @@ function AppInner({
     [directDatabricksToken, setDirectDatabricksToken] = useState(""),
     [showDirectDatabricksToken, setShowDirectDatabricksToken] = useState(false),
     [artifactSearchQuery, setArtifactSearchQuery] = useState<Record<string, string>>({});
+  const [envAccountOption, setEnvAccountOption] = useState<"have_account" | "need_account">("have_account");
+
+  const handleFocusConfigForm = () => {
+    const formElement = document.getElementById("databricks-config-form");
+    if (formElement) {
+      formElement.scrollIntoView({ behavior: "smooth", block: "start" });
+      formElement.classList.add("env-form-highlight-pulse");
+      setTimeout(() => {
+        formElement.classList.remove("env-form-highlight-pulse");
+      }, 2800);
+      const hostInput = document.getElementById("env-workspace-host-input") as HTMLInputElement;
+      if (hostInput) {
+        setTimeout(() => hostInput.focus(), 350);
+      }
+    }
+  };
   const [bronzeLoadMode, setBronzeLoadMode] = useState("FULL_LOAD"),
     [bronzeBatchSize, setBronzeBatchSize] = useState(1000),
     [bronzeMaxRows, setBronzeMaxRows] = useState("");
@@ -11840,8 +11857,237 @@ function AppInner({
 
               {/* Cards Container (faded when demo account) */}
               <div className={isDemoAccount ? "demo-faded-content" : ""} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+              {/* Required Attention: Target Database Account Prerequisites (Only for Non-Demo Users) */}
+              {!isDemoAccount && (
+                <div className="env-attention-container">
+                  <div className="env-attention-header">
+                    <div>
+                      <div className="env-attention-badge-row">
+                        <span className="env-attention-badge">
+                          <AlertTriangle size={12} /> Required Attention
+                        </span>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                          Target Database Prerequisite
+                        </span>
+                      </div>
+                      <h3 className="env-attention-title">Target Databricks Account &amp; Workspace Setup</h3>
+                      <p className="env-attention-sub">
+                        Before deploying your migration pipeline, please confirm whether your enterprise already has an active Databricks workspace.
+                      </p>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button
+                        type="button"
+                        className={`filter-pill ${envAccountOption === "have_account" ? "active" : ""}`}
+                        onClick={() => {
+                          setEnvAccountOption("have_account");
+                          handleFocusConfigForm();
+                        }}
+                        style={{ fontSize: 12, padding: "6px 14px" }}
+                      >
+                        <CheckCircle2 size={13} /> I Have an Account
+                      </button>
+                      <button
+                        type="button"
+                        className={`filter-pill ${envAccountOption === "need_account" ? "active" : ""}`}
+                        onClick={() => setEnvAccountOption("need_account")}
+                        style={{ fontSize: 12, padding: "6px 14px" }}
+                      >
+                        <ExternalLink size={13} /> Need to Create Account
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="env-attention-body">
+                    {/* 2-Card Interactive Selector */}
+                    <div className="env-choice-grid">
+                      {/* Option 1: Already have account */}
+                      <div
+                        className={`env-choice-card ${envAccountOption === "have_account" ? "selected-have" : ""}`}
+                        onClick={() => {
+                          setEnvAccountOption("have_account");
+                          handleFocusConfigForm();
+                        }}
+                      >
+                        <div>
+                          <div className="env-choice-header">
+                            <div className="env-choice-icon green">
+                              <CheckCircle2 size={22} />
+                            </div>
+                            <span className="env-choice-tag green">Already Have Account</span>
+                          </div>
+                          <h4 className="env-choice-h3">I Have a Databricks Workspace</h4>
+                          <p className="env-choice-desc">
+                            Your workspace, SQL Warehouse, and Unity Catalog are ready. Click below to jump straight to the configuration form to enter your Workspace Host, SQL Warehouse Path, and Personal Access Token (PAT).
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="env-choice-btn success"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEnvAccountOption("have_account");
+                            handleFocusConfigForm();
+                          }}
+                        >
+                          <span>Configure My Credentials Below</span>
+                          <ArrowDown size={14} />
+                        </button>
+                      </div>
+
+                      {/* Option 2: Need account */}
+                      <div
+                        className={`env-choice-card ${envAccountOption === "need_account" ? "selected-need" : ""}`}
+                        onClick={() => setEnvAccountOption("need_account")}
+                      >
+                        <div>
+                          <div className="env-choice-header">
+                            <div className="env-choice-icon blue">
+                              <ExternalLink size={22} />
+                            </div>
+                            <span className="env-choice-tag blue">Action Required</span>
+                          </div>
+                          <h4 className="env-choice-h3">I Don't Have a Databricks Account</h4>
+                          <p className="env-choice-desc">
+                            A Databricks workspace is required to host your Medallion architecture (Bronze, Silver, Gold). Sign up for a 14-day Free Trial or deploy via your cloud provider, then bring back your credentials.
+                          </p>
+                        </div>
+                        <a
+                          href="https://www.databricks.com/try-databricks"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="env-choice-btn primary"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span>Create Databricks Account (Free Trial)</span>
+                          <ExternalLink size={14} />
+                        </a>
+                      </div>
+                    </div>
+
+                    {/* Step-by-Step Instructions (expanded when need_account is chosen) */}
+                    {envAccountOption === "need_account" && (
+                      <div className="env-creation-guide-box">
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                          <h5 className="env-creation-guide-title">
+                            <Sparkles size={16} color="#2563eb" />
+                            How to set up your Databricks workspace &amp; retrieve credentials:
+                          </h5>
+                          <a
+                            href="https://www.databricks.com/try-databricks"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: "#2563eb",
+                              textDecoration: "none"
+                            }}
+                          >
+                            <span>Open Databricks Signup Portal</span>
+                            <ExternalLink size={13} />
+                          </a>
+                        </div>
+
+                        <ul className="env-creation-steps-list">
+                          <li className="env-step-item">
+                            <div className="env-step-number">1</div>
+                            <div className="env-step-content">
+                              <div className="env-step-content-title">Sign Up &amp; Launch</div>
+                              <div className="env-step-content-desc">
+                                Create your account on Databricks or launch a workspace via your AWS, Azure, or GCP cloud console.
+                              </div>
+                            </div>
+                          </li>
+                          <li className="env-step-item">
+                            <div className="env-step-number">2</div>
+                            <div className="env-step-content">
+                              <div className="env-step-content-title">Get Host &amp; HTTP Path</div>
+                              <div className="env-step-content-desc">
+                                In your workspace, open <strong>SQL Warehouses</strong> &rarr; select warehouse &rarr; <strong>Connection Details</strong> &rarr; copy <strong>Server Hostname</strong> &amp; <strong>HTTP Path</strong>.
+                              </div>
+                            </div>
+                          </li>
+                          <li className="env-step-item">
+                            <div className="env-step-number">3</div>
+                            <div className="env-step-content">
+                              <div className="env-step-content-title">Generate Access Token</div>
+                              <div className="env-step-content-desc">
+                                Click your avatar &rarr; <strong>User Settings</strong> &rarr; <strong>Developer</strong> &rarr; <strong>Access Tokens</strong> &rarr; generate a new Personal Access Token (PAT).
+                              </div>
+                            </div>
+                          </li>
+                          <li className="env-step-item">
+                            <div className="env-step-number">4</div>
+                            <div className="env-step-content">
+                              <div className="env-step-content-title">Enter &amp; Test Below</div>
+                              <div className="env-step-content-desc">
+                                Return here, paste your credentials below, specify your <strong>Catalog Prefix</strong>, and click <strong>Test Connection</strong>.
+                              </div>
+                            </div>
+                          </li>
+                        </ul>
+
+                        <div className="env-cloud-options">
+                          <span style={{ fontSize: 11.5, fontWeight: 700, color: "#475569" }}>Launch on your cloud platform:</span>
+                          <a
+                            href="https://aws.amazon.com/marketplace/pp/prodview-u73f443b7lqiq"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="env-cloud-link-pill"
+                          >
+                            <Cloud size={13} color="#ea580c" /> AWS Marketplace
+                          </a>
+                          <a
+                            href="https://azure.microsoft.com/en-us/products/databricks"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="env-cloud-link-pill"
+                          >
+                            <Cloud size={13} color="#0284c7" /> Azure Databricks
+                          </a>
+                          <a
+                            href="https://cloud.google.com/databricks"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="env-cloud-link-pill"
+                          >
+                            <Cloud size={13} color="#16a34a" /> Google Cloud
+                          </a>
+                          <button
+                            type="button"
+                            onClick={handleFocusConfigForm}
+                            style={{
+                              marginLeft: "auto",
+                              background: "#0f172a",
+                              color: "#f8fafc",
+                              border: "none",
+                              padding: "6px 14px",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6
+                            }}
+                          >
+                            <span>Ready with Credentials? Enter Below</span>
+                            <ArrowDown size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Card 1: Configuration Card & Inputs */}
-              <div className="card" style={{ padding: "24px 26px" }}>
+              <div id="databricks-config-form" className="card" style={{ padding: "24px 26px" }}>
                 <div className="env-section-tag">
                   <ServerCog size={15} color="#2563eb" />
                   Databricks Control Plane Configuration
@@ -11871,6 +12117,7 @@ function AppInner({
                     <label className="env-field-label">Workspace Host *</label>
                     <div className="env-input-wrapper">
                       <input
+                        id="env-workspace-host-input"
                         className="env-text-input"
                         value={environmentForm.workspace_host}
                         placeholder="dbc-example.cloud.databricks.com"
