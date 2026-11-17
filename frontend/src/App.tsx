@@ -392,7 +392,11 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
         method: "POST",
         body: JSON.stringify({ email }),
       });
-      setInfo(r.message || "A 6-digit password reset code has been sent to your email.");
+      if (r?.not_found) {
+        setErr(r.message || "No registered account found with this email address. Please register first.");
+        return;
+      }
+      setInfo(r.message || "A 6-digit password reset code has been sent. Please check your Inbox and Spam/Junk folder.");
       setIsResetFlow(true);
       setMode("verify_otp");
     } catch (e: any) {
@@ -433,7 +437,11 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
         method: "POST",
         body: JSON.stringify({ email }),
       });
-      setInfo(r.message || "A 6-digit verification code has been sent to your email.");
+      if (r?.already_registered) {
+        setErr(r.message || "An account with this email already exists. Please log in or use Forgot Password.");
+        return;
+      }
+      setInfo(r.message || "A 6-digit verification code has been sent. Please check your Inbox and Spam/Junk folder.");
       setMode("verify_otp");
     } catch (e: any) {
       setErr(e.message);
@@ -651,6 +659,27 @@ function Login({ done, onBack }: { done: () => void; onBack?: () => void }) {
             <div style={{ marginBottom: 12, fontSize: 13, color: "#94a3b8", textAlign: "center" }}>
               A 6-digit code was sent to <strong style={{ color: "#38bdf8" }}>{email}</strong>
             </div>
+
+            <div
+              style={{
+                background: "rgba(245, 158, 11, 0.1)",
+                border: "1px solid rgba(245, 158, 11, 0.35)",
+                borderRadius: 8,
+                padding: "10px 12px",
+                marginBottom: 16,
+                fontSize: 12,
+                color: "#fef3c7",
+                lineHeight: 1.5,
+                textAlign: "left",
+              }}
+            >
+              <div style={{ fontWeight: 700, color: "#fbbf24", marginBottom: 3, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>📬</span>
+                <span>Check Spam / Junk Folder!</span>
+              </div>
+              Automated emails from Brevo may land in your <strong>Spam</strong> or <strong>Promotions</strong> folder. If you don't see the email within 1 minute, please check there.
+            </div>
+
             <input
               type="text"
               maxLength={6}

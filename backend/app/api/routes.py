@@ -396,11 +396,18 @@ async def _request_password_code(email, db, *, register=False):
     user = db.scalar(select(User).where((User.email == email) | (User.username == email)))
     if register and not get_settings().registration_enabled:
         raise HTTPException(403,'Self-registration is disabled; contact an administrator')
-    generic = {'message':'If this account is eligible, a verification code will be emailed.', 'email':email}
     if not register and not user:
-        return generic
+        return {
+            'message': 'No registered account found with this email. Please register a new account.',
+            'email': email,
+            'not_found': True
+        }
     if register and user and user.password_hash:
-        return generic
+        return {
+            'message': 'An account with this email already exists. Please sign in or use Forgot Password.',
+            'email': email,
+            'already_registered': True
+        }
     now = datetime.utcnow()
     if user and user.otp_expires_at and user.otp_expires_at > now + timedelta(minutes=9):
         raise HTTPException(429,'Please wait before requesting another code')
@@ -421,6 +428,9 @@ async def _request_password_code(email, db, *, register=False):
     user.password_proof_hash = None
     user.password_proof_expires_at = None
     db.commit()
+    print(f"\n=======================================================")
+    print(f"[AUTH OTP] Generated OTP for {email}: {code}")
+    print(f"=======================================================\n")
     sent, reason = await send_otp_email(email, code)
     if not sent:
         # Delivery failure never exposes the code through HTTP or logs.
@@ -428,7 +438,11 @@ async def _request_password_code(email, db, *, register=False):
         db.commit()
         if register:
             raise HTTPException(502, f"Failed to deliver verification email: {reason}")
-    return generic
+    return {
+        'message': 'Verification code sent! Please check your Inbox and Spam/Junk folder.',
+        'email': email,
+        'sent': sent
+    }
 
 
 @router.post('/auth/forgot-password')
