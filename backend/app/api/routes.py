@@ -2079,7 +2079,28 @@ def system_diagnostics(_=Depends(auth)):
         import pyodbc; drivers=pyodbc.drivers()
     except Exception: pass
     ai=provider_status()
-    return {"environment":cfg.environment,"database_url":"configured","sqlserver_driver":cfg.sqlserver_driver,"odbc_drivers":drivers,"sqlserver_auth_mode":"SQL_LOGIN" if cfg.sqlserver_username else "WINDOWS_TRUSTED","databricks_configured":bool(cfg.databricks_host and cfg.databricks_http_path and cfg.databricks_token),"llm_enabled":cfg.llm_enabled,"llm_configured":ai["configured"],"llm_ready_config":ai["ready"],"llm_provider":ai["provider"],"llm_base_url":ai["base_url"],"llm_model":ai["model"],"llm_api_key_required":ai["api_key_required"]}
+    from app.services.email_service import _resolve_brevo_api_key
+    k = _resolve_brevo_api_key(cfg)
+    k_preview = f"{k[:10]}...{k[-6:]}" if len(k) > 16 else (k or "NONE")
+    return {
+        "environment":cfg.environment,
+        "database_url":"configured",
+        "sqlserver_driver":cfg.sqlserver_driver,
+        "odbc_drivers":drivers,
+        "sqlserver_auth_mode":"SQL_LOGIN" if cfg.sqlserver_username else "WINDOWS_TRUSTED",
+        "databricks_configured":bool(cfg.databricks_host and cfg.databricks_http_path and cfg.databricks_token),
+        "brevo_key_preview": k_preview,
+        "brevo_sender_email": cfg.brevo_sender_email,
+        "brevo_sender_name": cfg.brevo_sender_name,
+        "brevo_configured_in_env": bool(cfg.brevo_api_key),
+        "llm_enabled":cfg.llm_enabled,
+        "llm_configured":ai["configured"],
+        "llm_ready_config":ai["ready"],
+        "llm_provider":ai["provider"],
+        "llm_base_url":ai["base_url"],
+        "llm_model":ai["model"],
+        "llm_api_key_required":ai["api_key_required"]
+    }
 
 
 @router.post("/system/databricks-test")
