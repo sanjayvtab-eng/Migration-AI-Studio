@@ -37,6 +37,25 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     advanceOnEvent: "project-created",
     disableBack: true,
+    condition: (context: any) => !context.isDemoAccount,
+  },
+  {
+    id: "step-1-demo-project",
+    stage: "Projects",
+    stageNumber: 1,
+    stepNumber: 1,
+    totalSteps: 9,
+    element: '[data-tour="project-row-demo"]',
+    popover: {
+      title: "Explore the pre-configured project",
+      description: "For this demo, we've pre-configured the 'Demo' project connected to a live SQL Server database. Click the Demo project row to select it.",
+      side: "bottom",
+      align: "start",
+    },
+    actionType: "click",
+    advanceOnEvent: "project-selected",
+    disableBack: true,
+    condition: (context: any) => Boolean(context.isDemoAccount),
   },
   {
     id: "step-2-proceed-sources",
@@ -47,7 +66,7 @@ export const TOUR_STEPS: TourStep[] = [
     element: '[data-tour="proceed-sources-btn"]',
     popover: {
       title: "Continue to Sources",
-      description: "Once your project is created, proceed to Sources to connect your database.",
+      description: "Once your project is selected, click Proceed to Sources to inspect your connected database.",
       side: "top",
       align: "end",
     },
@@ -330,6 +349,10 @@ export const deriveStudioStepId = (promptSpec: any, isDevAlreadyPassed: boolean)
   return "studio-parse-prompt";
 };
 
-export const getStepsForStage = (stage: string): TourStep[] => {
-  return TOUR_STEPS.filter((step) => step.stage === stage);
+export const getStepsForStage = (stage: string, context: any = {}): TourStep[] => {
+  return TOUR_STEPS.filter((step) => {
+    if (step.stage !== stage) return false;
+    if (step.condition && !step.condition(context)) return false;
+    return true;
+  });
 };

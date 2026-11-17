@@ -915,7 +915,7 @@ function getEmbedOrIframe(): boolean {
 }
 
 function getInitialStage(): string {
-  if (typeof window === "undefined") return "Sources";
+  if (typeof window === "undefined") return "Projects";
   try {
     const params = new URLSearchParams(window.location.search);
     const s = params.get("stage")?.toLowerCase();
@@ -926,7 +926,7 @@ function getInitialStage(): string {
     if (s === "sources" || s === "3") return "Sources";
     if (s === "projects" || s === "1") return "Projects";
   } catch {}
-  return isDemoUserLoggedIn() || getEmbedOrIframe() ? "Sources" : "Projects";
+  return "Projects";
 }
 
 function buildMasterMedallionTemplate(inv?: any[], src?: any[]) {
@@ -1048,6 +1048,7 @@ function AppInner({
               localStorage.setItem("mf_token", data.access_token);
               setReady(true);
               setShowLogin(false);
+              setPage("Projects");
             }
           })
           .catch((err) => {
@@ -1372,6 +1373,10 @@ function AppInner({
     return ps;
   }
   async function handleDeleteProject(p: Project) {
+    if (isDemoAccount) {
+      setMsg("Demo Version: Deleting projects is restricted. Please explore the pre-configured Demo project.");
+      return;
+    }
     if (
       !window.confirm(
         `Are you sure you want to permanently delete project "${p.name}" (${p.id})?\n\nThis will remove all associated sources, tables, metadata snapshots, and migration plans.`
@@ -1989,6 +1994,11 @@ function AppInner({
 
   async function handleCreateProject(e?: React.FormEvent) {
     if (e) e.preventDefault();
+    if (isDemoAccount) {
+      setMsg("Demo Version: Creating new projects is restricted. Please explore the pre-configured Demo project.");
+      setNewProjectModalOpen(false);
+      return;
+    }
     const trimmed = newProjectName.trim();
     if (!trimmed) return;
     await action(async () => {
@@ -3860,7 +3870,7 @@ function AppInner({
   }
 
   if (!ready && !showLogin) return <LandingPage onLaunch={() => setShowLogin(true)} />;
-  if (!ready && showLogin) return <Login onBack={() => setShowLogin(false)} done={() => setReady(true)} />;
+  if (!ready && showLogin) return <Login onBack={() => setShowLogin(false)} done={() => { setReady(true); setPage("Projects"); }} />;
 
   return (
     <div className="shell full-width">
@@ -5402,18 +5412,63 @@ function AppInner({
                   <h2>Projects</h2>
                   <p>Enterprise database migration pipelines across source systems and Databricks Unity Catalog.</p>
                 </div>
-                <button
-                  className="btn-primary-blue"
-                  data-tour="new-project-btn"
-                  onClick={() => {
-                    setNewProjectName("");
-                    setNewProjectModalOpen(true);
-                  }}
-                >
-                  <Plus size={16} />
-                  New Project
-                </button>
+                {isDemoAccount ? (
+                  <button
+                    className="demo-restricted-project-btn"
+                    onClick={() => {
+                      setMsg("Demo Version: Creating new projects is restricted. Please explore the pre-configured Demo project.");
+                    }}
+                    title="Demo Version: Creating new projects is locked. Please explore the pre-configured Demo project."
+                  >
+                    <Lock size={14} />
+                    <span>New Project</span>
+                    <span className="demo-locked-tag">Locked</span>
+                  </button>
+                ) : (
+                  <button
+                    className="btn-primary-blue"
+                    data-tour="new-project-btn"
+                    onClick={() => {
+                      setNewProjectName("");
+                      setNewProjectModalOpen(true);
+                    }}
+                  >
+                    <Plus size={16} />
+                    New Project
+                  </button>
+                )}
               </div>
+
+              {/* Guided Tour Callout Banner for Demo */}
+              {isDemoAccount && (
+                <div className="demo-tour-banner">
+                  <div className="demo-tour-banner-left">
+                    <div className="demo-tour-banner-icon">
+                      <Sparkles size={20} />
+                    </div>
+                    <div className="demo-tour-banner-content">
+                      <div className="demo-tour-badge-row">
+                        <span className="demo-tour-step-pill">Take a Tour · Step 1 of 9</span>
+                        <span className="demo-tour-step-title">Explore Pre-configured Demo Project</span>
+                      </div>
+                      <p className="demo-tour-desc">
+                        Welcome to Databricks Migration Factory! For this guided demo, the <strong>Demo</strong> project is pre-configured and connected to a live SQL Server database. Click the <strong>Demo</strong> project below or click <strong>Proceed to Sources →</strong> to begin exploring.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    className="btn-primary-blue demo-tour-pulse-btn"
+                    onClick={() => {
+                      if (filteredProjects[0]) setPid(filteredProjects[0].id);
+                      setPage("Sources");
+                    }}
+                    title="Continue guided tour to Stage 3: Sources"
+                  >
+                    <span>Proceed to Sources</span>
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+              )}
 
               {/* 4 KPI Summary Cards */}
               <div className="projects-kpi-grid">
@@ -5556,11 +5611,17 @@ function AppInner({
                             ? formatDateOnly(p.created_at)
                             : "Recently";
 
+                          const isDemoProject = isDemoAccount && (p.name.toLowerCase().includes("demo") || index === 0);
+
                           return (
                             <tr
                               key={p.id}
-                              className={`project-row ${isSelected ? "selected-row" : ""}`}
-                              onClick={() => setPid(p.id)}
+                              className={`project-row ${isSelected ? "selected-row" : ""} ${isDemoProject ? "demo-tour-highlight-row" : ""}`}
+                              data-tour={isDemoProject ? "project-row-demo" : undefined}
+                              onClick={() => {
+                                setPid(p.id);
+                                tour.notify("project-selected", p);
+                              }}
                               style={{
                                 position: "relative",
                                 zIndex: activeMenuProjectId === p.id ? 100 : 1,
@@ -5568,7 +5629,14 @@ function AppInner({
                             >
                               <td>
                                 <div className="project-name-cell">
-                                  <span className="project-title">{p.name}</span>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span className="project-title">{p.name}</span>
+                                    {isDemoProject && (
+                                      <span className="demo-tour-guide-badge" title="Pre-configured migration project for guided exploration">
+                                        <Sparkles size={11} /> Guided Tour
+                                      </span>
+                                    )}
+                                  </div>
                                   <span
                                     className="project-id-mono"
                                     title="Click to copy ID"
@@ -5715,16 +5783,18 @@ function AppInner({
                                         >
                                           <Copy size={13} /> Copy Project ID
                                         </button>
-                                        <button
-                                          className="delete-action"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setActiveMenuProjectId(null);
-                                            handleDeleteProject(p);
-                                          }}
-                                        >
-                                          <Trash2 size={13} /> Delete Project
-                                        </button>
+                                        {!isDemoAccount && (
+                                          <button
+                                            className="delete-action"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setActiveMenuProjectId(null);
+                                              handleDeleteProject(p);
+                                            }}
+                                          >
+                                            <Trash2 size={13} /> Delete Project
+                                          </button>
+                                        )}
                                       </div>
                                     )}
                                   </div>
@@ -5751,9 +5821,18 @@ function AppInner({
                       <button className="btn-secondary" onClick={() => setProjectSearch("")}>
                         Clear Search
                       </button>
+                    ) : isDemoAccount ? (
+                      <button
+                        className="demo-restricted-project-btn"
+                        onClick={() => setMsg("Demo Version: Creating new projects is restricted. Please explore the pre-configured Demo project.")}
+                        title="Demo Version: Locked"
+                      >
+                        <Lock size={14} /> Create Project (Locked)
+                      </button>
                     ) : (
                       <button
                         className="btn-primary-blue"
+                        data-tour="new-project-btn"
                         onClick={() => {
                           setNewProjectName("");
                           setNewProjectModalOpen(true);
@@ -12258,7 +12337,7 @@ function AppInner({
               backText: "",
               backTarget: "",
               backDisabled: true,
-              forwardText: isDemoAccount ? "Proceed to Sources (Demo Bypassed) →" : "Continue with Selected Project →",
+              forwardText: isDemoAccount ? "Proceed to Sources →" : "Continue with Selected Project →",
               forwardTarget: isDemoAccount ? "Sources" : "Environment Setup",
               forwardDisabled: !pid,
               forwardTooltip: !pid ? "Select a project to continue" : undefined,
@@ -12382,7 +12461,7 @@ function AppInner({
 
               <div>
                 <button
-                  className="action-rail-btn-forward"
+                  className={`action-rail-btn-forward ${isDemoAccount && page === "Projects" ? "tour-action-highlight" : ""}`}
                   disabled={stageInfo.forwardDisabled || busy}
                   title={stageInfo.forwardTooltip || stageInfo.forwardText}
                   data-tour={

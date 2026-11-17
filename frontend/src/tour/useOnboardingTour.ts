@@ -296,12 +296,12 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       // Find first step for the stage
-      const stageSteps = getStepsForStage(stageToStart);
+      const stageSteps = getStepsForStage(stageToStart, contextRef.current);
       if (stageSteps.length > 0) {
-        // If on Projects stage, always start with step 1 ("new-project-btn")
         highlightStep(stageSteps[0]);
       } else if (TOUR_STEPS.length > 0) {
-        highlightStep(TOUR_STEPS[0]);
+        const eligible = TOUR_STEPS.filter((s) => !s.condition || s.condition(contextRef.current));
+        highlightStep(eligible[0] || TOUR_STEPS[0]);
       }
     },
     [currentStage, highlightStep]
@@ -317,8 +317,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     (event: string, payload: any = {}) => {
       console.log(`[Tour] Event received: ${event}`, payload);
 
-      // 1. Projects stage: Project created successfully
-      if (event === "project-created") {
+      // 1. Projects stage: Project created or selected successfully
+      if (event === "project-created" || event === "project-selected") {
         setTimeout(() => {
           const step2 = TOUR_STEPS.find((s) => s.id === "step-2-proceed-sources");
           if (step2) {
@@ -410,11 +410,14 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     const state = getTourState();
     if (state.hasSeenTour && !state.completed && !state.skipped) {
       if (currentStage === "Projects") {
-        // Only show step 2 if projects already exist, otherwise step 1
+        // Only show step 2 if projects already exist and selected, otherwise step 1
         const timer = setTimeout(() => {
           if (state.currentStepIndex >= 1 && stageContext.hasProject) {
             const step2 = TOUR_STEPS.find((s) => s.id === "step-2-proceed-sources");
             if (step2) highlightStep(step2);
+          } else if (stageContext.isDemoAccount) {
+            const demoStep = TOUR_STEPS.find((s) => s.id === "step-1-demo-project");
+            if (demoStep) highlightStep(demoStep);
           } else {
             const step1 = TOUR_STEPS.find((s) => s.id === "step-1-new-project");
             if (step1) highlightStep(step1);
