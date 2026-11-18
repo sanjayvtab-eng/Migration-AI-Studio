@@ -6073,26 +6073,13 @@ function AppInner({
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   <button
-                    className="btn-secondary"
                     type="button"
+                    className="btn-tour-guide-highlight"
                     onClick={() => setShowConnectorTourModal(true)}
                     title="Local Connector Agent 6-Step Guided Tour"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      fontSize: 13,
-                      fontWeight: 600,
-                      padding: "7px 14px",
-                      borderRadius: 6,
-                      background: "#eff6ff",
-                      color: "#2563eb",
-                      border: "1px solid #bfdbfe",
-                      cursor: "pointer",
-                    }}
                   >
-                    <BookOpen size={14} />
-                    <span>Connector Agent Tour</span>
+                    <span style={{ fontSize: "1.05rem" }}>🧭</span>
+                    <span>6-Step Tour Guide</span>
                   </button>
                   <button
                     className="btn-secondary"

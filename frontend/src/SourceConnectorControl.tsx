@@ -146,26 +146,15 @@ export default function SourceConnectorControl({
           <h2 style={{ margin: 0 }}>Local {engine} Connector</h2>
           <button
             type="button"
+            className="btn-tour-guide-highlight"
             onClick={() => {
               setOpen(false);
               window.dispatchEvent(new CustomEvent("open-connector-tour"));
             }}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: "0.82rem",
-              fontWeight: 600,
-              padding: "5px 12px",
-              borderRadius: 6,
-              background: "#eff6ff",
-              color: "#2563eb",
-              border: "1px solid #bfdbfe",
-              cursor: "pointer",
-            }}
             title="Open step-by-step Local Connector Agent Guided Tour"
           >
-            <span>🧭 6-Step Tour Guide</span>
+            <span style={{ fontSize: "1.05rem" }}>🧭</span>
+            <span>6-Step Tour Guide</span>
           </button>
         </div>
         <p>
