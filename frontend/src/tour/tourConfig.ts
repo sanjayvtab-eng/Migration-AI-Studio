@@ -214,9 +214,9 @@ export const TOUR_STEPS: TourStep[] = [
     totalSteps: 9,
     element: '[data-tour="connector-agent-btn"]',
     popover: {
-      title: "Local Connector Setup",
+      title: "Local Connector Agent – Guided Tour",
       description:
-        "When you add a new data source, the first step is to register it with the Local Connector. After registration, download the Connector EXE file and the latest ENV file. If you already have the Local Connector installed, you don't need to reinstall the EXE. Simply delete the existing ENV file and replace it with the newly downloaded ENV file. This will update the connector configuration with the credentials of the newly added source. Once completed, you can proceed with Test Connection.",
+        "Step 1 – Open Connector Agent: Click the Connector Agent option to open registration.\nStep 2 – Generate Token: Click 'Generate a New Token' for a secure token.\nStep 3 – Download Connector: Download the EXE & ENV files.\nStep 4 – Register: Run the agent on your machine.\nStep 5 – Verify Sources: Check your sources at localhost:8585.\nStep 6 – Verify Connection: Confirm setup before testing.\n\nImportant: Whenever you add a new data source, download and apply the latest ENV configuration so the Local Connector receives the updated source credentials.",
       side: "bottom",
       align: "end",
     },
@@ -231,8 +231,9 @@ export const TOUR_STEPS: TourStep[] = [
     totalSteps: 9,
     element: '[data-tour="test-connection-btn"]',
     popover: {
-      title: "Test your connection",
-      description: "Verify that the source database is reachable before continuing.",
+      title: "Step 6 – Verify Connection & Test",
+      description:
+        "Confirm that the newly added sources and their configurations are available in the Local Connector before proceeding with Test Connection. Click the highlighted button to verify live reachability.",
       side: "bottom",
       align: "start",
     },

@@ -142,7 +142,32 @@ export default function SourceConnectorControl({
           whiteSpace: "normal",
         }}
       >
-        <h2>Local {engine} Connector</h2>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h2 style={{ margin: 0 }}>Local {engine} Connector</h2>
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new CustomEvent("open-connector-tour"));
+            }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: "0.82rem",
+              fontWeight: 600,
+              padding: "5px 12px",
+              borderRadius: 6,
+              background: "#eff6ff",
+              color: "#2563eb",
+              border: "1px solid #bfdbfe",
+              cursor: "pointer",
+            }}
+            title="Open step-by-step Local Connector Agent Guided Tour"
+          >
+            <span>🧭 6-Step Tour Guide</span>
+          </button>
+        </div>
         <p>
           Run the connector on your local machine to connect your local {engine} instance ({source.server_name} / {source.database_name}) with Migration AI Studio. It connects outward over HTTPS; your database credentials stay local on your computer.
         </p>
@@ -319,6 +344,19 @@ export default function SourceConnectorControl({
                 }}
               >
                 💡 <strong>Instructions:</strong> Save <code>agent.env</code> into the same folder as <code>migration-agent.exe</code> (or unzip the bundle), enter your local database username and password in <code>agent.env</code>, and run! When started, the Agent will automatically launch the local dashboard at <code>http://localhost:8585</code> to track real-time telemetry.
+              </p>
+              <p
+                style={{
+                  margin: "8px 0 0 0",
+                  fontSize: "0.84rem",
+                  color: "#b45309",
+                  background: "#fef3c7",
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #fde68a",
+                }}
+              >
+                ⚠️ <strong>Important:</strong> Whenever you add a new data source, download and apply the latest ENV configuration so the Local Connector receives the updated source credentials.
               </p>
             </div>
 

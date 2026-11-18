@@ -73,6 +73,7 @@ import LandingPage from "./LandingPage";
 import WorkspacePhaseStepper from "./WorkspacePhaseStepper";
 import { ApiStatusPanel } from "./ApiStatusPanel";
 import { TourProvider, useTour } from "./tour/TourProvider";
+import ConnectorTourModal from "./ConnectorTourModal";
 
 type Project = {
   id: string;
@@ -1217,6 +1218,13 @@ function AppInner({
   const [showDatabricksPrereqModal, setShowDatabricksPrereqModal] = useState(false);
   const [envPrereqShowGuide, setEnvPrereqShowGuide] = useState(false);
   const [isUsingManagedTrial, setIsUsingManagedTrial] = useState(false);
+  const [showConnectorTourModal, setShowConnectorTourModal] = useState(false);
+
+  useEffect(() => {
+    const handleOpenTour = () => setShowConnectorTourModal(true);
+    window.addEventListener("open-connector-tour", handleOpenTour);
+    return () => window.removeEventListener("open-connector-tour", handleOpenTour);
+  }, []);
 
   useEffect(() => {
     if (page === "Environment Setup" && !isDemoAccount) {
@@ -6064,6 +6072,28 @@ function AppInner({
                   <p>Registered SQL Server instances, local connector runtimes, and live database connection health.</p>
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    onClick={() => setShowConnectorTourModal(true)}
+                    title="Local Connector Agent 6-Step Guided Tour"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      padding: "7px 14px",
+                      borderRadius: 6,
+                      background: "#eff6ff",
+                      color: "#2563eb",
+                      border: "1px solid #bfdbfe",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <BookOpen size={14} />
+                    <span>Connector Agent Tour</span>
+                  </button>
                   <button
                     className="btn-secondary"
                     type="button"
@@ -13536,6 +13566,20 @@ function AppInner({
                   </div>
                 </div>
               )}
+
+              {/* Local Connector Agent 6-Step Guided Tour Modal */}
+              <ConnectorTourModal
+                isOpen={showConnectorTourModal}
+                onClose={() => setShowConnectorTourModal(false)}
+                onOpenConnectorAgent={() => {
+                  const agentBtn = document.querySelector<HTMLElement>('[data-tour="connector-agent-btn"]');
+                  if (agentBtn) agentBtn.click();
+                }}
+                onProceedTestConnection={() => {
+                  const testBtn = document.querySelector<HTMLElement>('[data-tour="test-connection-btn"]');
+                  if (testBtn) testBtn.click();
+                }}
+              />
 
               {/* Universal Global Operation Loading & Done Screen Overlay */}
               {operationOverlay && (
