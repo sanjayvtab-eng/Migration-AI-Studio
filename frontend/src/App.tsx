@@ -1183,6 +1183,10 @@ function AppInner({
   const [classificationLayerFilter, setClassificationLayerFilter] = useState<string>("ALL");
   const [classificationSearch, setClassificationSearch] = useState<string>("");
   const [activeLayerDropdownId, setActiveLayerDropdownId] = useState<string | null>(null);
+
+  const isDemoUser = useMemo(() => {
+    return (currentUserInfo?.username || "").trim().toLowerCase() === "vtabpublicuser@gmail.com";
+  }, [currentUserInfo]);
   const [dash, setDash] = useState<any>({}),
     [life, setLife] = useState<Life[]>([]),
     [classes, setClasses] = useState<ClassRow[]>([]),
@@ -4095,9 +4099,9 @@ function AppInner({
               </span>
             </div>
 
-            {isDemoAccount && (
-              <div className="demo-top-pill" title="Demo Presentation Mode Active">
-                <Lock size={11} /> Demo Version
+            {(isDemoUser || isDemoAccount) && (
+              <div className="demo-top-pill" title="Demo Version Account Active">
+                <Lock size={12} /> Demo Version
               </div>
             )}
 
@@ -6700,10 +6704,10 @@ function AppInner({
                   </button>
                   <button
                     className="btn-secondary"
-                    disabled={isDemoAccount}
-                    onClick={() => setPage("Sources")}
+                    disabled={isDemoUser || isDemoAccount}
+                    onClick={() => (!isDemoUser && !isDemoAccount) && setPage("Sources")}
                     style={
-                      isDemoAccount
+                      isDemoUser || isDemoAccount
                         ? {
                             opacity: 0.38,
                             cursor: "not-allowed",
@@ -6715,9 +6719,9 @@ function AppInner({
                           }
                         : { display: "inline-flex", alignItems: "center", gap: 6 }
                     }
-                    title={isDemoAccount ? "Demo Version: Source management is locked" : undefined}
+                    title={isDemoUser || isDemoAccount ? "Demo Version: Source management is locked" : undefined}
                   >
-                    {isDemoAccount ? <Lock size={14} /> : <Plus size={14} />}
+                    {isDemoUser || isDemoAccount ? <Lock size={14} /> : <Plus size={14} />}
                     Manage Sources
                   </button>
                 </div>
@@ -6947,9 +6951,9 @@ function AppInner({
                   <div className="discovery-toolbar-right">
                     <button
                       className="btn-secondary"
-                      disabled={isDemoAccount}
+                      disabled={isDemoUser || isDemoAccount}
                       style={
-                        isDemoAccount
+                        isDemoUser || isDemoAccount
                           ? {
                               opacity: 0.38,
                               cursor: "not-allowed",
@@ -6958,8 +6962,9 @@ function AppInner({
                             }
                           : undefined
                       }
-                      title={isDemoAccount ? "Demo Version: Export manifest is locked" : undefined}
+                      title={isDemoUser || isDemoAccount ? "Demo Version: Export manifest is locked" : undefined}
                       onClick={() => {
+                        if (isDemoUser || isDemoAccount) return;
                         const manifest = {
                           project_id: pid,
                           exported_at: new Date().toISOString(),
@@ -6981,9 +6986,9 @@ function AppInner({
                     </button>
                     <button
                       className="btn-secondary"
-                      disabled={isDemoAccount}
+                      disabled={isDemoUser || isDemoAccount}
                       style={
-                        isDemoAccount
+                        isDemoUser || isDemoAccount
                           ? {
                               opacity: 0.38,
                               cursor: "not-allowed",
@@ -6992,17 +6997,20 @@ function AppInner({
                             }
                           : undefined
                       }
-                      title={isDemoAccount ? "Demo Version: Raw diagnostic is locked" : undefined}
-                      onClick={() => setShowRawJson(!showRawJson)}
+                      title={isDemoUser || isDemoAccount ? "Demo Version: Raw diagnostic is locked" : undefined}
+                      onClick={() => {
+                        if (isDemoUser || isDemoAccount) return;
+                        setShowRawJson(!showRawJson);
+                      }}
                     >
                       <FileCode2 size={14} />
                       {showRawJson ? "Hide JSON" : "Raw Diagnostic"}
                     </button>
                     <button
                       className="btn-primary-blue"
-                      onClick={() => setPage(isDemoAccount ? "Migration Workflow" : "Inventory")}
+                      onClick={() => setPage("Migration Workflow")}
                     >
-                      {isDemoAccount ? "Proceed to Migration Studio →" : `Proceed to Inventory ${inventorySelectedIds.length > 0 ? `(${inventorySelectedIds.length} Objects)` : `(${inventory.length} Objects)`}`}
+                      Proceed to Migration Studio →
                       <ArrowRight size={14} />
                     </button>
                   </div>
