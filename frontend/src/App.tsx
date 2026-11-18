@@ -11931,7 +11931,7 @@ function AppInner({
                                 handleFocusConfigForm();
                               }}
                             >
-                              <span>I Have an Account · Proceed to Form</span>
+                              <span>I Have an Account</span>
                               <ArrowRight size={15} />
                             </button>
                             <div className="env-choice-subaction">
@@ -11966,7 +11966,7 @@ function AppInner({
                               rel="noopener noreferrer"
                               className="env-choice-btn primary"
                             >
-                              <span>Create Databricks Account (Free Trial)</span>
+                              <span>Create Databricks Account</span>
                               <ExternalLink size={15} />
                             </a>
                             <div className="env-choice-subaction">
