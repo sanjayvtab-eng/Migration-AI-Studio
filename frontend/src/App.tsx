@@ -972,12 +972,7 @@ export const MANAGED_DATABRICKS_TRIAL = {
 };
 
 function isDemoUserLoggedIn(): boolean {
-  try {
-    const user = getUserFromToken();
-    return (user?.username || "").trim().toLowerCase() === "vtabpublicuser@gmail.com";
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 function getEmbedOrIframe(): boolean {
@@ -1014,23 +1009,17 @@ function buildMasterMedallionTemplate(inv?: any[], src?: any[]) {
     .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
     .filter(Boolean);
 
-  const isLogistics = tableNames.includes("BRANCHES") || tableNames.includes("SHIPMENTS") || src?.[0]?.database_name === "LogisticsMiniDemo";
-
-  if (isLogistics) {
-    return DEMO_LOGISTICS_PROMPT;
-  }
-
   const tablesStr = tableNames.length > 0
     ? tableNames.slice(0, 15).join(", ")
-    : "CATEGORIES, CUSTOMERS, PRODUCTS, ORDERS, ORDER_ITEMS, PAYMENTS, SHIPMENTS and RETURNS";
+    : "all discovered source tables";
 
   const cleanViews = tableNames.length > 0
     ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
-    : "Categories, Customers, Products, Orders, OrderItems, Payments, Shipments and Returns";
+    : "discovered views";
 
-  const srcName = src?.[0]?.profile_name || "database";
+  const srcName = src?.[0]?.profile_name || src?.[0]?.database_name || "Source Database";
 
-  return `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}, each containing 100,000 source rows. Silver: create cleaned views for ${cleanViews}; calculate gross and discounted net order-item amounts; create vw_OrderPaymentReconciliation to reconcile order totals against successful payments while excluding failed and pending payments from paid totals; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_customer, dim_product, dim_category, fact_sales, fact_payments, fact_shipments, and monthly executive KPI aggregation marts.`;
+  return `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}. Silver: create cleaned views for ${cleanViews}; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dimensional and fact marts with executive KPI aggregations.`;
 }
 
 export default function App() {
@@ -1233,13 +1222,6 @@ function AppInner({
       setShowDatabricksPrereqModal(false);
     }
   }, [page, isDemoAccount]);
-
-  // Jump straight to Migration Studio whenever Discovery stage is entered
-  useEffect(() => {
-    if (page === "Discovery") {
-      setPage("Migration Workflow");
-    }
-  }, [page]);
 
   const handleFocusConfigForm = () => {
     const formElement = document.getElementById("databricks-config-form");
@@ -1657,7 +1639,7 @@ function AppInner({
           setPromptNativeText(DEMO_LOGISTICS_PROMPT);
           setMasterPrompt(DEMO_LOGISTICS_PROMPT);
           setPromptText(DEMO_LOGISTICS_PROMPT);
-        } else if (!promptNativeText || promptNativeText.includes("MigrationDemo") || promptNativeText.includes("database database")) {
+        } else if (!promptNativeText || promptNativeText.includes("MigrationDemo") || promptNativeText.includes("database database") || promptNativeText.includes("LogisticsMiniDemo")) {
           const tpl = buildMasterMedallionTemplate(i as Inv[], s as Source[]);
           setPromptNativeText(tpl);
           setMasterPrompt(tpl);
@@ -12831,8 +12813,8 @@ function AppInner({
               backText: isDemoAccount ? "← Back to Projects" : "← Back to Environment",
               backTarget: isDemoAccount ? "Projects" : "Environment Setup",
               backDisabled: false,
-              forwardText: "Proceed to Migration Studio →",
-              forwardTarget: "Migration Workflow",
+              forwardText: "Proceed to Discovery →",
+              forwardTarget: "Discovery",
               forwardDisabled: !pid,
             },
             4: {
@@ -12874,8 +12856,8 @@ function AppInner({
             7: {
               title: "Stage 7 of 9: Migration Studio",
               context: `${medArts.length || 14} Medallion Artifacts · ${medArts.filter((a: any) => a.review_status === "APPROVED").length} Approved`,
-              backText: "← Back to Sources",
-              backTarget: "Sources",
+              backText: "← Back to Discovery",
+              backTarget: "Discovery",
               backDisabled: false,
               forwardText: `Proceed to Deployment (${medArts.length || 14} Artifacts) →`,
               forwardTarget: "Deployments",
