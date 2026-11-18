@@ -17,9 +17,8 @@ def _snake(value: str) -> str:
 
 
 def is_demo_user(username_or_email: str | None) -> bool:
-    if not username_or_email:
-        return False
-    return username_or_email.strip().lower() == DEMO_MOCK_USER
+    # Mockups disabled: vtabpublicuser@gmail.com now runs full real logic just like all other accounts
+    return False
 
 
 def get_demo_mock_snapshot(database_name: str = "LogisticsMiniDemo") -> Dict[str, Any]:

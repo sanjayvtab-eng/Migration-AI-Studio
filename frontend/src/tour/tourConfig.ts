@@ -65,8 +65,8 @@ export const TOUR_STEPS: TourStep[] = [
     totalSteps: 9,
     element: '[data-tour="proceed-sources-btn"]',
     popover: {
-      title: "Continue to Sources",
-      description: "Once your project is selected, click Proceed to Sources to inspect your connected database.",
+      title: "Continue with Selected Project",
+      description: "Once your project is selected, click Continue to configure your target Databricks environment.",
       side: "top",
       align: "end",
     },

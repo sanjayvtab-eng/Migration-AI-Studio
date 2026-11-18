@@ -1003,10 +1003,6 @@ function getInitialStage(): string {
 }
 
 function buildMasterMedallionTemplate(inv?: any[], src?: any[]) {
-  if (isDemoUserLoggedIn()) {
-    return DEMO_LOGISTICS_PROMPT;
-  }
-
   const tableNames = (inv || [])
     .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
     .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
@@ -1051,8 +1047,9 @@ export default function App() {
   });
   const currentUserInfo = useMemo(() => getUserFromToken(), [ready]);
   const isDemoAccount = useMemo(() => {
-    return isEmbedMode || (currentUserInfo?.username || "").trim().toLowerCase() === "vtabpublicuser@gmail.com";
-  }, [currentUserInfo, isEmbedMode]);
+    // Mockups removed: vtabpublicuser now executes full live backend logic and UI workflow just like all accounts
+    return false;
+  }, []);
   const [showLogin, setShowLogin] = useState(false);
   const [page, setPage] = useState(getInitialStage);
   const [promptSpec, setPromptSpec] = useState<any>(null);
@@ -1398,6 +1395,57 @@ function AppInner({
   const [showAutoAuthModal, setShowAutoAuthModal] = useState(false);
   const [showDemoSalesModal, setShowDemoSalesModal] = useState(false);
   const [copiedSalesEmail, setCopiedSalesEmail] = useState(false);
+  const [copiedEnvConfig, setCopiedEnvConfig] = useState(false);
+  const [copiedPlanSql, setCopiedPlanSql] = useState(false);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  function copyTextToClipboard(text: string, onSuccess?: () => void) {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        if (onSuccess) onSuccess();
+      }).catch(() => {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          if (onSuccess) onSuccess();
+        } catch (e) {
+          console.error("Clipboard copy failed:", e);
+        }
+      });
+    } else {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (onSuccess) onSuccess();
+      } catch (e) {
+        console.error("Clipboard copy failed:", e);
+      }
+    }
+  }
+
+  function downloadFile(content: string, filename: string, mimeType: string = "text/plain") {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
   const hasAutoResetDemoRef = useRef(false);
   const [autoAuthLoading, setAutoAuthLoading] = useState(false);
   const refreshInFlight = useRef(new Set<string>());
@@ -12280,7 +12328,7 @@ function AppInner({
                 <div className="env-form-grid">
                   <div className="env-field-group">
                     <label className="env-field-label">Workspace Host *</label>
-                    <div className="env-input-wrapper">
+                    <div className="env-input-wrapper" style={{ position: "relative" }}>
                       <input
                         id="env-workspace-host-input"
                         className="env-text-input"
@@ -12292,13 +12340,41 @@ function AppInner({
                             workspace_host: e.target.value,
                           })
                         }
+                        style={{ paddingRight: 36 }}
                       />
+                      {environmentForm.workspace_host && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            copyTextToClipboard(environmentForm.workspace_host, () => {
+                              setCopiedField("host");
+                              setTimeout(() => setCopiedField(null), 2000);
+                            });
+                          }}
+                          style={{
+                            position: "absolute",
+                            right: 10,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            color: copiedField === "host" ? "#059669" : "#64748b",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: 0,
+                          }}
+                          title={copiedField === "host" ? "Host copied!" : "Copy Workspace Host"}
+                        >
+                          {copiedField === "host" ? <Check size={15} /> : <Copy size={15} />}
+                        </button>
+                      )}
                     </div>
                   </div>
 
                   <div className="env-field-group">
                     <label className="env-field-label">SQL Warehouse HTTP Path *</label>
-                    <div className="env-input-wrapper">
+                    <div className="env-input-wrapper" style={{ position: "relative" }}>
                       <input
                         className="env-text-input"
                         value={environmentForm.http_path}
@@ -12309,7 +12385,35 @@ function AppInner({
                             http_path: e.target.value,
                           })
                         }
+                        style={{ paddingRight: 36 }}
                       />
+                      {environmentForm.http_path && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            copyTextToClipboard(environmentForm.http_path, () => {
+                              setCopiedField("path");
+                              setTimeout(() => setCopiedField(null), 2000);
+                            });
+                          }}
+                          style={{
+                            position: "absolute",
+                            right: 10,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            color: copiedField === "path" ? "#059669" : "#64748b",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: 0,
+                          }}
+                          title={copiedField === "path" ? "Path copied!" : "Copy SQL Warehouse HTTP Path"}
+                        >
+                          {copiedField === "path" ? <Check size={15} /> : <Copy size={15} />}
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -12467,6 +12571,64 @@ function AppInner({
                   >
                     <PlugZap size={15} /> Test Connection
                   </button>
+
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={!environmentForm.workspace_host && !environmentConfig?.workspace_host}
+                    onClick={() => {
+                      const host = environmentForm.workspace_host || environmentConfig?.workspace_host || "";
+                      const path = environmentForm.http_path || environmentConfig?.http_path || "";
+                      const prefix = environmentForm.catalog_prefix || environmentConfig?.catalog_prefix || "";
+                      const configExport = {
+                        project_id: pid,
+                        workspace_host: host,
+                        http_path: path,
+                        catalog_prefix: prefix,
+                        token_env_key: environmentForm.token_env_key || environmentConfig?.token_env_key || "DATABRICKS_TOKEN",
+                        token_configured: Boolean(environmentConfig?.token_configured || directDatabricksToken),
+                        has_direct_token: Boolean(environmentConfig?.has_direct_token || directDatabricksToken),
+                        status: environmentConfig?.status || "NOT_TESTED",
+                        exported_at: new Date().toISOString(),
+                      };
+                      copyTextToClipboard(JSON.stringify(configExport, null, 2), () => {
+                        setCopiedEnvConfig(true);
+                        setMsg("Databricks configuration JSON copied to clipboard!");
+                        setTimeout(() => setCopiedEnvConfig(false), 2500);
+                      });
+                    }}
+                    title="Copy Databricks configuration parameters as JSON"
+                  >
+                    {copiedEnvConfig ? <Check size={14} color="#059669" /> : <Copy size={14} />}
+                    {copiedEnvConfig ? "Configuration Copied!" : "Copy Configuration"}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={!environmentForm.workspace_host && !environmentConfig?.workspace_host}
+                    onClick={() => {
+                      const host = environmentForm.workspace_host || environmentConfig?.workspace_host || "";
+                      const path = environmentForm.http_path || environmentConfig?.http_path || "";
+                      const prefix = environmentForm.catalog_prefix || environmentConfig?.catalog_prefix || "";
+                      const configExport = {
+                        project_id: pid,
+                        workspace_host: host,
+                        http_path: path,
+                        catalog_prefix: prefix,
+                        token_env_key: environmentForm.token_env_key || environmentConfig?.token_env_key || "DATABRICKS_TOKEN",
+                        token_configured: Boolean(environmentConfig?.token_configured || directDatabricksToken),
+                        has_direct_token: Boolean(environmentConfig?.has_direct_token || directDatabricksToken),
+                        status: environmentConfig?.status || "NOT_TESTED",
+                        exported_at: new Date().toISOString(),
+                      };
+                      downloadFile(JSON.stringify(configExport, null, 2), `databricks-config-${prefix || "dev"}.json`, "application/json");
+                      setMsg("Databricks configuration downloaded as JSON!");
+                    }}
+                    title="Download Databricks configuration as .json file"
+                  >
+                    <Download size={14} /> Download Config (.json)
+                  </button>
                 </div>
 
                 {/* Security Status Strip */}
@@ -12512,24 +12674,60 @@ function AppInner({
                     <Layers3 size={15} color="#2563eb" />
                     Governed DEV Environment Plan
                   </div>
-                  <button
-                    className="btn-secondary"
-                    data-tour="env-create-plan-btn"
-                    disabled={!pid || busy || !environmentConfig?.configured}
-                    onClick={() =>
-                      action(async () => {
-                        const res = await api(`/projects/${pid}/environments/dev/plan`, {
-                          method: "POST",
-                        });
-                        setEnvironmentPlan(res);
-                        if (setEnvironmentPlanState) setEnvironmentPlanState(res);
-                        tour.notify("env:plan-created", { environmentPlan: res });
-                        return res;
-                      })
-                    }
-                  >
-                    <Plus size={14} /> Create DEV Plan
-                  </button>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    {environmentPlan?.exists && (environmentPlan.operations || []).length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => {
+                            const sql = (environmentPlan.operations || []).map((op: string) => op.trim().endsWith(";") ? op.trim() : `${op.trim()};`).join("\n\n");
+                            const fullScript = `-- Databricks DEV Environment Provisioning Plan\n-- Target Environment: DEV\n-- Catalog Name: ${environmentPlan.catalog_name || "migration_dev"}\n-- Generated: ${new Date().toISOString()}\n\n${sql}\n`;
+                            copyTextToClipboard(fullScript, () => {
+                              setCopiedPlanSql(true);
+                              setMsg("Governed DEV plan SQL (DDL) copied to clipboard!");
+                              setTimeout(() => setCopiedPlanSql(false), 2500);
+                            });
+                          }}
+                          title="Copy all DDL statements to clipboard"
+                        >
+                          {copiedPlanSql ? <Check size={14} color="#059669" /> : <Copy size={14} />}
+                          {copiedPlanSql ? "SQL Copied!" : "Copy Plan SQL"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => {
+                            const sql = (environmentPlan.operations || []).map((op: string) => op.trim().endsWith(";") ? op.trim() : `${op.trim()};`).join("\n\n");
+                            const fullScript = `-- Databricks DEV Environment Provisioning Plan\n-- Target Environment: DEV\n-- Catalog Name: ${environmentPlan.catalog_name || "migration_dev"}\n-- Status: ${environmentPlan.status || "DRAFT"}\n-- Generated: ${new Date().toISOString()}\n\n${sql}\n`;
+                            downloadFile(fullScript, `dev-environment-plan-${environmentPlan.catalog_name || "dev"}.sql`, "text/sql");
+                            setMsg("DEV environment plan downloaded as .sql file!");
+                          }}
+                          title="Download complete DEV environment plan as .sql file"
+                        >
+                          <Download size={14} /> Download Plan (.sql)
+                        </button>
+                      </>
+                    )}
+                    <button
+                      className="btn-secondary"
+                      data-tour="env-create-plan-btn"
+                      disabled={!pid || busy || !environmentConfig?.configured}
+                      onClick={() =>
+                        action(async () => {
+                          const res = await api(`/projects/${pid}/environments/dev/plan`, {
+                            method: "POST",
+                          });
+                          setEnvironmentPlan(res);
+                          if (setEnvironmentPlanState) setEnvironmentPlanState(res);
+                          tour.notify("env:plan-created", { environmentPlan: res });
+                          return res;
+                        })
+                      }
+                    >
+                      <Plus size={14} /> Create DEV Plan
+                    </button>
+                  </div>
                 </div>
 
                 {!environmentPlan?.exists ? (
@@ -12624,7 +12822,31 @@ function AppInner({
                                     <Badge s={preflightAction} />
                                   </td>
                                   <td>
-                                    <code style={{ fontSize: "11px", color: "#475569" }}>{operation}</code>
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                      <code style={{ fontSize: "11px", color: "#475569" }}>{operation}</code>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          copyTextToClipboard(operation.trim().endsWith(";") ? operation.trim() : `${operation.trim()};`, () => {
+                                            setCopiedField(`op-${index}`);
+                                            setTimeout(() => setCopiedField(null), 1500);
+                                          });
+                                        }}
+                                        style={{
+                                          background: "none",
+                                          border: "none",
+                                          cursor: "pointer",
+                                          color: copiedField === `op-${index}` ? "#059669" : "#94a3b8",
+                                          display: "inline-flex",
+                                          alignItems: "center",
+                                          padding: "2px 4px",
+                                          borderRadius: 4,
+                                        }}
+                                        title={copiedField === `op-${index}` ? "Copied!" : "Copy DDL statement"}
+                                      >
+                                        {copiedField === `op-${index}` ? <Check size={13} /> : <Copy size={13} />}
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
                               );
