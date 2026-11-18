@@ -965,6 +965,12 @@ function getUserFromToken(): { username: string; role: string; initials: string 
 export const DEMO_LOGISTICS_PROMPT =
   "Migrate the database LogisticsMiniDemo to Databricks DEV. Bronze: ingest BRANCHES, CUSTOMERS, DELIVERYROUTES, DRIVERS, SHIPMENTS and VEHICLES. Silver: create cleaned views for Branches, Customers, DeliveryRoutes, Drivers, Shipments and Vehicles; calculate shipping charges per kilogram; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dim_branches, dim_drivers, dim_vehicles, dim_customers, fact_shipments, and monthly executive KPI aggregation marts.";
 
+export const MANAGED_DATABRICKS_TRIAL = {
+  workspace_host: "dbc-b25bfbf9-1acd.cloud.databricks.com",
+  http_path: "/sql/1.0/warehouses/a20732b5f896963e",
+  catalog_prefix: "demo",
+};
+
 function isDemoUserLoggedIn(): boolean {
   try {
     const user = getUserFromToken();
@@ -1217,6 +1223,7 @@ function AppInner({
     [artifactSearchQuery, setArtifactSearchQuery] = useState<Record<string, string>>({});
   const [showDatabricksPrereqModal, setShowDatabricksPrereqModal] = useState(false);
   const [envPrereqShowGuide, setEnvPrereqShowGuide] = useState(false);
+  const [isUsingManagedTrial, setIsUsingManagedTrial] = useState(false);
 
   useEffect(() => {
     if (page === "Environment Setup" && !isDemoAccount) {
@@ -1241,6 +1248,43 @@ function AppInner({
       }
     }
   };
+
+  const isTrialWorkspace =
+    isUsingManagedTrial ||
+    (Boolean(environmentConfig?.workspace_host) && environmentConfig?.workspace_host === MANAGED_DATABRICKS_TRIAL.workspace_host) ||
+    (Boolean(environmentForm.workspace_host) && environmentForm.workspace_host === MANAGED_DATABRICKS_TRIAL.workspace_host);
+
+  async function handleSelectManagedTrial() {
+    setEnvironmentForm({
+      workspace_host: MANAGED_DATABRICKS_TRIAL.workspace_host,
+      http_path: MANAGED_DATABRICKS_TRIAL.http_path,
+      catalog_prefix: "demo",
+      token_env_key: "DATABRICKS_TOKEN",
+    });
+    setIsUsingManagedTrial(true);
+    setShowDatabricksPrereqModal(false);
+    handleFocusConfigForm();
+    if (!pid) return;
+    setBusy(true);
+    try {
+      const res: any = await api(`/projects/${pid}/databricks/managed-trial`, { method: "POST" });
+      setEnvironmentConfig(res);
+      if (setEnvironmentConfigState) setEnvironmentConfigState(res);
+      if (res?.status === "READY" || res?.test_result?.status === "READY") {
+        setMsg("Managed Trial Databricks workspace activated & connected successfully (Status: READY)!");
+      } else {
+        setMsg("Managed Trial Databricks workspace selected.");
+      }
+      tour.notify("env:config-saved", { environmentConfig: res });
+      if (res?.test_result) {
+        tour.notify("env:connection-tested", { environmentConfig: res, testResult: res.test_result });
+      }
+    } catch (e: any) {
+      setMsg(`Failed to activate managed trial: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
   const [bronzeLoadMode, setBronzeLoadMode] = useState("FULL_LOAD"),
     [bronzeBatchSize, setBronzeBatchSize] = useState(1000),
     [bronzeMaxRows, setBronzeMaxRows] = useState("");
@@ -1395,57 +1439,6 @@ function AppInner({
   const [showAutoAuthModal, setShowAutoAuthModal] = useState(false);
   const [showDemoSalesModal, setShowDemoSalesModal] = useState(false);
   const [copiedSalesEmail, setCopiedSalesEmail] = useState(false);
-  const [copiedEnvConfig, setCopiedEnvConfig] = useState(false);
-  const [copiedPlanSql, setCopiedPlanSql] = useState(false);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-
-  function copyTextToClipboard(text: string, onSuccess?: () => void) {
-    if (navigator?.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(() => {
-        if (onSuccess) onSuccess();
-      }).catch(() => {
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          document.body.removeChild(ta);
-          if (onSuccess) onSuccess();
-        } catch (e) {
-          console.error("Clipboard copy failed:", e);
-        }
-      });
-    } else {
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-        if (onSuccess) onSuccess();
-      } catch (e) {
-        console.error("Clipboard copy failed:", e);
-      }
-    }
-  }
-
-  function downloadFile(content: string, filename: string, mimeType: string = "text/plain") {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
   const hasAutoResetDemoRef = useRef(false);
   const [autoAuthLoading, setAutoAuthLoading] = useState(false);
   const refreshInFlight = useRef(new Set<string>());
@@ -12157,6 +12150,39 @@ function AppInner({
                             </button>
                           </div>
                         </div>
+
+                        {/* Option 3: Start with Our Trial Account */}
+                        <div
+                          className="env-choice-card selected-trial"
+                          style={{ cursor: "default" }}
+                        >
+                          <div>
+                            <div className="env-choice-header">
+                              <div className="env-choice-icon purple">
+                                <Sparkles size={22} />
+                              </div>
+                              <span className="env-choice-tag purple">Instant Access</span>
+                            </div>
+                            <h4 className="env-choice-h3">Start with Our Trial Account</h4>
+                            <p className="env-choice-desc">
+                              Don't have a Databricks account? Proceed immediately using our secure pre-configured trial workspace to test Databricks Unity Catalog provisioning.
+                            </p>
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: "auto" }}>
+                            <button
+                              type="button"
+                              className="env-choice-btn purple"
+                              onClick={handleSelectManagedTrial}
+                              style={{ padding: "12px 18px", fontSize: 13.5, fontWeight: 700 }}
+                            >
+                              <span>Start with Trial Account</span>
+                              <ArrowRight size={15} />
+                            </button>
+                            <span style={{ fontSize: "11px", color: "#6d28d9", textAlign: "center", fontWeight: 600 }}>
+                              Zero cloud setup required · Auto-filled &amp; secured
+                            </span>
+                          </div>
+                        </div>
                       </div>
 
                       {/* Step-by-Step Instructions (expanded when envPrereqShowGuide is true) */}
@@ -12324,141 +12350,157 @@ function AppInner({
                   </div>
                 </div>
 
+                {/* Managed Trial Active Notice & Switcher */}
+                {isTrialWorkspace && (
+                  <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    background: "rgba(139, 92, 246, 0.08)",
+                    border: "1px solid rgba(139, 92, 246, 0.25)",
+                    borderRadius: 8,
+                    padding: "10px 16px",
+                    marginBottom: 16,
+                    fontSize: "12.5px",
+                    color: "#6d28d9"
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <Sparkles size={16} color="#7c3aed" />
+                      <span><b>Managed Trial Workspace Active:</b> Credentials pre-filled and securely masked. Click <b>Save Configuration</b> to verify connection.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUsingManagedTrial(false);
+                        setEnvironmentForm({
+                          workspace_host: "",
+                          http_path: "",
+                          catalog_prefix: "migration",
+                          token_env_key: "DATABRICKS_TOKEN",
+                        });
+                        setDirectDatabricksToken("");
+                      }}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "#7c3aed",
+                        textDecoration: "underline",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                        fontWeight: 600
+                      }}
+                    >
+                      Use Custom Credentials
+                    </button>
+                  </div>
+                )}
+
                 {/* Form Inputs Grid */}
                 <div className="env-form-grid">
                   <div className="env-field-group">
-                    <label className="env-field-label">Workspace Host *</label>
-                    <div className="env-input-wrapper" style={{ position: "relative" }}>
+                    <label className="env-field-label">
+                      Workspace Host *
+                      {isTrialWorkspace && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: "#7c3aed", fontWeight: 700 }}>
+                          🔒 Managed Trial Host (Masked for Security)
+                        </span>
+                      )}
+                    </label>
+                    <div className="env-input-wrapper">
                       <input
                         id="env-workspace-host-input"
+                        type={isTrialWorkspace ? "password" : "text"}
                         className="env-text-input"
-                        value={environmentForm.workspace_host}
+                        value={isTrialWorkspace ? "••••••••••••••••••••••••••••••••" : environmentForm.workspace_host}
+                        readOnly={isTrialWorkspace}
                         placeholder="dbc-example.cloud.databricks.com"
                         onChange={(e) =>
-                          setEnvironmentForm({
+                          !isTrialWorkspace && setEnvironmentForm({
                             ...environmentForm,
                             workspace_host: e.target.value,
                           })
                         }
-                        style={{ paddingRight: 36 }}
                       />
-                      {environmentForm.workspace_host && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            copyTextToClipboard(environmentForm.workspace_host, () => {
-                              setCopiedField("host");
-                              setTimeout(() => setCopiedField(null), 2000);
-                            });
-                          }}
-                          style={{
-                            position: "absolute",
-                            right: 10,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            color: copiedField === "host" ? "#059669" : "#64748b",
-                            display: "flex",
-                            alignItems: "center",
-                            padding: 0,
-                          }}
-                          title={copiedField === "host" ? "Host copied!" : "Copy Workspace Host"}
-                        >
-                          {copiedField === "host" ? <Check size={15} /> : <Copy size={15} />}
-                        </button>
-                      )}
                     </div>
                   </div>
 
                   <div className="env-field-group">
-                    <label className="env-field-label">SQL Warehouse HTTP Path *</label>
-                    <div className="env-input-wrapper" style={{ position: "relative" }}>
+                    <label className="env-field-label">
+                      SQL Warehouse HTTP Path *
+                      {isTrialWorkspace && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: "#7c3aed", fontWeight: 700 }}>
+                          🔒 Managed Warehouse Path (Masked)
+                        </span>
+                      )}
+                    </label>
+                    <div className="env-input-wrapper">
                       <input
+                        type={isTrialWorkspace ? "password" : "text"}
                         className="env-text-input"
-                        value={environmentForm.http_path}
+                        value={isTrialWorkspace ? "••••••••••••••••••••••••••••••••" : environmentForm.http_path}
+                        readOnly={isTrialWorkspace}
                         placeholder="/sql/1.0/warehouses/..."
                         onChange={(e) =>
-                          setEnvironmentForm({
+                          !isTrialWorkspace && setEnvironmentForm({
                             ...environmentForm,
                             http_path: e.target.value,
                           })
                         }
-                        style={{ paddingRight: 36 }}
                       />
-                      {environmentForm.http_path && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            copyTextToClipboard(environmentForm.http_path, () => {
-                              setCopiedField("path");
-                              setTimeout(() => setCopiedField(null), 2000);
-                            });
-                          }}
-                          style={{
-                            position: "absolute",
-                            right: 10,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            color: copiedField === "path" ? "#059669" : "#64748b",
-                            display: "flex",
-                            alignItems: "center",
-                            padding: 0,
-                          }}
-                          title={copiedField === "path" ? "Path copied!" : "Copy SQL Warehouse HTTP Path"}
-                        >
-                          {copiedField === "path" ? <Check size={15} /> : <Copy size={15} />}
-                        </button>
-                      )}
                     </div>
                   </div>
 
                   <div className="env-field-group">
                     <label className="env-field-label">
                       Databricks Personal Access Token (PAT)
-                      {environmentConfig?.has_direct_token && (
+                      {isTrialWorkspace ? (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: "#7c3aed", fontWeight: 700 }}>
+                          🔒 Pre-configured Managed Token
+                        </span>
+                      ) : environmentConfig?.has_direct_token ? (
                         <span style={{ marginLeft: 8, fontSize: 11, color: "#059669", fontWeight: 700 }}>
                           ✓ User Credential Active (AES Encrypted)
                         </span>
-                      )}
+                      ) : null}
                     </label>
                     <div className="env-input-wrapper" style={{ position: "relative" }}>
                       <Lock size={15} className="env-input-icon" />
                       <input
-                        type={showDirectDatabricksToken ? "text" : "password"}
+                        type="password"
                         className="env-text-input has-icon"
-                        value={directDatabricksToken}
+                        value={isTrialWorkspace ? "••••••••••••••••••••••••••••••••" : directDatabricksToken}
+                        readOnly={isTrialWorkspace}
                         placeholder={environmentConfig?.has_direct_token ? "•••••••••••••••• (Leave blank to keep your current token)" : "dapi... (Enter your personal Databricks token)"}
-                        onChange={(e) => setDirectDatabricksToken(e.target.value)}
-                        style={{ paddingRight: 36 }}
+                        onChange={(e) => !isTrialWorkspace && setDirectDatabricksToken(e.target.value)}
+                        style={{ paddingRight: isTrialWorkspace ? 12 : 36 }}
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowDirectDatabricksToken(!showDirectDatabricksToken)}
-                        style={{
-                          position: "absolute",
-                          right: 10,
-                          top: "50%",
-                          transform: "translateY(-50%)",
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          color: "#64748b",
-                          display: "flex",
-                          alignItems: "center",
-                          padding: 0,
-                        }}
-                        title={showDirectDatabricksToken ? "Hide token" : "Show token"}
-                      >
-                        {showDirectDatabricksToken ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
-                      </button>
+                      {!isTrialWorkspace && (
+                        <button
+                          type="button"
+                          onClick={() => setShowDirectDatabricksToken(!showDirectDatabricksToken)}
+                          style={{
+                            position: "absolute",
+                            right: 10,
+                            top: "50%",
+                            transform: "translateY(-50%)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            color: "#64748b",
+                            display: "flex",
+                            alignItems: "center",
+                            padding: 0,
+                          }}
+                          title={showDirectDatabricksToken ? "Hide token" : "Show token"}
+                        >
+                          {showDirectDatabricksToken ? <EyeOffIcon size={16} /> : <EyeIcon size={16} />}
+                        </button>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, color: "#64748b", marginTop: 4 }}>
-                      Each project uses its own dedicated credentials. Your token is encrypted and used exclusively for this workspace.
+                      {isTrialWorkspace
+                        ? "Using protected trial credentials. Token is safely encrypted on the backend."
+                        : "Each project uses its own dedicated credentials. Your token is encrypted and used exclusively for this workspace."}
                     </div>
                   </div>
 
@@ -12512,28 +12554,55 @@ function AppInner({
                     disabled={!pid || busy}
                     onClick={() =>
                       action(async () => {
-                        await api(`/projects/${pid}/databricks/configuration`, {
-                          method: "PUT",
-                          body: JSON.stringify(environmentForm),
-                        });
-                        if (directDatabricksToken.trim()) {
-                          await api(`/projects/${pid}/databricks/token`, {
-                            method: "POST",
-                            body: JSON.stringify({ token: directDatabricksToken.trim() }),
+                        if (isTrialWorkspace) {
+                          await api(`/projects/${pid}/databricks/managed-trial`, { method: "POST" });
+                        } else {
+                          const payload = {
+                            workspace_host: environmentForm.workspace_host,
+                            http_path: environmentForm.http_path,
+                            catalog_prefix: environmentForm.catalog_prefix || "demo",
+                            token_env_key: environmentForm.token_env_key || "DATABRICKS_TOKEN",
+                          };
+                          await api(`/projects/${pid}/databricks/configuration`, {
+                            method: "PUT",
+                            body: JSON.stringify(payload),
                           });
-                          setDirectDatabricksToken("");
+                          if (directDatabricksToken.trim()) {
+                            await api(`/projects/${pid}/databricks/token`, {
+                              method: "POST",
+                              body: JSON.stringify({ token: directDatabricksToken.trim() }),
+                            });
+                            setDirectDatabricksToken("");
+                          }
                         }
-                        const updated = await api(`/projects/${pid}/databricks/configuration`);
+                        let updated: any = await api(`/projects/${pid}/databricks/configuration`);
                         setEnvironmentConfig(updated);
                         if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
-                        setMsg("Databricks configuration and token saved successfully.");
                         tour.notify("env:config-saved", { environmentConfig: updated });
+
+                        // Run connection test immediately to verify live connectivity and show status
+                        try {
+                          const testRes: any = await api(`/projects/${pid}/databricks/connection-test`, {
+                            method: "POST",
+                          });
+                          updated = await api(`/projects/${pid}/databricks/configuration`);
+                          setEnvironmentConfig(updated);
+                          if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
+                          tour.notify("env:connection-tested", { environmentConfig: updated, testResult: testRes });
+                          if (testRes?.status === "READY" || updated?.status === "READY") {
+                            setMsg("Configuration saved & Connection test SUCCESS! Databricks control plane is READY.");
+                          } else {
+                            setMsg(`Configuration saved. Test result: ${testRes?.detail || updated?.status || "FAILED"}`);
+                          }
+                        } catch (err: any) {
+                          setMsg(`Configuration saved, but connection test failed: ${err?.message || "Failed"}`);
+                        }
                       })
                     }
                   >
                     <ShieldCheck size={16} /> Save Configuration
                   </button>
-                  {environmentConfig?.has_direct_token && (
+                  {environmentConfig?.has_direct_token && !isTrialWorkspace && (
                     <button
                       className="btn-secondary"
                       style={{ color: "#dc2626", borderColor: "#fca5a5" }}
@@ -12570,64 +12639,6 @@ function AppInner({
                     }
                   >
                     <PlugZap size={15} /> Test Connection
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    disabled={!environmentForm.workspace_host && !environmentConfig?.workspace_host}
-                    onClick={() => {
-                      const host = environmentForm.workspace_host || environmentConfig?.workspace_host || "";
-                      const path = environmentForm.http_path || environmentConfig?.http_path || "";
-                      const prefix = environmentForm.catalog_prefix || environmentConfig?.catalog_prefix || "";
-                      const configExport = {
-                        project_id: pid,
-                        workspace_host: host,
-                        http_path: path,
-                        catalog_prefix: prefix,
-                        token_env_key: environmentForm.token_env_key || environmentConfig?.token_env_key || "DATABRICKS_TOKEN",
-                        token_configured: Boolean(environmentConfig?.token_configured || directDatabricksToken),
-                        has_direct_token: Boolean(environmentConfig?.has_direct_token || directDatabricksToken),
-                        status: environmentConfig?.status || "NOT_TESTED",
-                        exported_at: new Date().toISOString(),
-                      };
-                      copyTextToClipboard(JSON.stringify(configExport, null, 2), () => {
-                        setCopiedEnvConfig(true);
-                        setMsg("Databricks configuration JSON copied to clipboard!");
-                        setTimeout(() => setCopiedEnvConfig(false), 2500);
-                      });
-                    }}
-                    title="Copy Databricks configuration parameters as JSON"
-                  >
-                    {copiedEnvConfig ? <Check size={14} color="#059669" /> : <Copy size={14} />}
-                    {copiedEnvConfig ? "Configuration Copied!" : "Copy Configuration"}
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    disabled={!environmentForm.workspace_host && !environmentConfig?.workspace_host}
-                    onClick={() => {
-                      const host = environmentForm.workspace_host || environmentConfig?.workspace_host || "";
-                      const path = environmentForm.http_path || environmentConfig?.http_path || "";
-                      const prefix = environmentForm.catalog_prefix || environmentConfig?.catalog_prefix || "";
-                      const configExport = {
-                        project_id: pid,
-                        workspace_host: host,
-                        http_path: path,
-                        catalog_prefix: prefix,
-                        token_env_key: environmentForm.token_env_key || environmentConfig?.token_env_key || "DATABRICKS_TOKEN",
-                        token_configured: Boolean(environmentConfig?.token_configured || directDatabricksToken),
-                        has_direct_token: Boolean(environmentConfig?.has_direct_token || directDatabricksToken),
-                        status: environmentConfig?.status || "NOT_TESTED",
-                        exported_at: new Date().toISOString(),
-                      };
-                      downloadFile(JSON.stringify(configExport, null, 2), `databricks-config-${prefix || "dev"}.json`, "application/json");
-                      setMsg("Databricks configuration downloaded as JSON!");
-                    }}
-                    title="Download Databricks configuration as .json file"
-                  >
-                    <Download size={14} /> Download Config (.json)
                   </button>
                 </div>
 
@@ -12674,60 +12685,24 @@ function AppInner({
                     <Layers3 size={15} color="#2563eb" />
                     Governed DEV Environment Plan
                   </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    {environmentPlan?.exists && (environmentPlan.operations || []).length > 0 && (
-                      <>
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => {
-                            const sql = (environmentPlan.operations || []).map((op: string) => op.trim().endsWith(";") ? op.trim() : `${op.trim()};`).join("\n\n");
-                            const fullScript = `-- Databricks DEV Environment Provisioning Plan\n-- Target Environment: DEV\n-- Catalog Name: ${environmentPlan.catalog_name || "migration_dev"}\n-- Generated: ${new Date().toISOString()}\n\n${sql}\n`;
-                            copyTextToClipboard(fullScript, () => {
-                              setCopiedPlanSql(true);
-                              setMsg("Governed DEV plan SQL (DDL) copied to clipboard!");
-                              setTimeout(() => setCopiedPlanSql(false), 2500);
-                            });
-                          }}
-                          title="Copy all DDL statements to clipboard"
-                        >
-                          {copiedPlanSql ? <Check size={14} color="#059669" /> : <Copy size={14} />}
-                          {copiedPlanSql ? "SQL Copied!" : "Copy Plan SQL"}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => {
-                            const sql = (environmentPlan.operations || []).map((op: string) => op.trim().endsWith(";") ? op.trim() : `${op.trim()};`).join("\n\n");
-                            const fullScript = `-- Databricks DEV Environment Provisioning Plan\n-- Target Environment: DEV\n-- Catalog Name: ${environmentPlan.catalog_name || "migration_dev"}\n-- Status: ${environmentPlan.status || "DRAFT"}\n-- Generated: ${new Date().toISOString()}\n\n${sql}\n`;
-                            downloadFile(fullScript, `dev-environment-plan-${environmentPlan.catalog_name || "dev"}.sql`, "text/sql");
-                            setMsg("DEV environment plan downloaded as .sql file!");
-                          }}
-                          title="Download complete DEV environment plan as .sql file"
-                        >
-                          <Download size={14} /> Download Plan (.sql)
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className="btn-secondary"
-                      data-tour="env-create-plan-btn"
-                      disabled={!pid || busy || !environmentConfig?.configured}
-                      onClick={() =>
-                        action(async () => {
-                          const res = await api(`/projects/${pid}/environments/dev/plan`, {
-                            method: "POST",
-                          });
-                          setEnvironmentPlan(res);
-                          if (setEnvironmentPlanState) setEnvironmentPlanState(res);
-                          tour.notify("env:plan-created", { environmentPlan: res });
-                          return res;
-                        })
-                      }
-                    >
-                      <Plus size={14} /> Create DEV Plan
-                    </button>
-                  </div>
+                  <button
+                    className="btn-secondary"
+                    data-tour="env-create-plan-btn"
+                    disabled={!pid || busy || !environmentConfig?.configured}
+                    onClick={() =>
+                      action(async () => {
+                        const res = await api(`/projects/${pid}/environments/dev/plan`, {
+                          method: "POST",
+                        });
+                        setEnvironmentPlan(res);
+                        if (setEnvironmentPlanState) setEnvironmentPlanState(res);
+                        tour.notify("env:plan-created", { environmentPlan: res });
+                        return res;
+                      })
+                    }
+                  >
+                    <Plus size={14} /> Create DEV Plan
+                  </button>
                 </div>
 
                 {!environmentPlan?.exists ? (
@@ -12822,31 +12797,7 @@ function AppInner({
                                     <Badge s={preflightAction} />
                                   </td>
                                   <td>
-                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                      <code style={{ fontSize: "11px", color: "#475569" }}>{operation}</code>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          copyTextToClipboard(operation.trim().endsWith(";") ? operation.trim() : `${operation.trim()};`, () => {
-                                            setCopiedField(`op-${index}`);
-                                            setTimeout(() => setCopiedField(null), 1500);
-                                          });
-                                        }}
-                                        style={{
-                                          background: "none",
-                                          border: "none",
-                                          cursor: "pointer",
-                                          color: copiedField === `op-${index}` ? "#059669" : "#94a3b8",
-                                          display: "inline-flex",
-                                          alignItems: "center",
-                                          padding: "2px 4px",
-                                          borderRadius: 4,
-                                        }}
-                                        title={copiedField === `op-${index}` ? "Copied!" : "Copy DDL statement"}
-                                      >
-                                        {copiedField === `op-${index}` ? <Check size={13} /> : <Copy size={13} />}
-                                      </button>
-                                    </div>
+                                    <code style={{ fontSize: "11px", color: "#475569" }}>{operation}</code>
                                   </td>
                                 </tr>
                               );

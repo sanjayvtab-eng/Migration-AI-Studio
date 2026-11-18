@@ -695,6 +695,18 @@ def project_databricks_connection_test(project_id:str,db:Session=Depends(get_db)
     try: return environment_service.test_connection(db,project_id,actor)
     except Exception as e: _environment_error(e)
 
+@router.post("/projects/{project_id}/databricks/managed-trial")
+def project_databricks_managed_trial(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
+    actor = _admin_actor(user)
+    try:
+        row = environment_service.apply_managed_trial(db, project_id, actor)
+        test_res = environment_service.test_connection(db, project_id, actor)
+        view = environment_service.configuration_view(row)
+        view["test_result"] = test_res
+        return view
+    except Exception as e:
+        _environment_error(e)
+
 @router.get("/projects/{project_id}/environments/dev/plan")
 def dev_environment_plan_get(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
     try: return environment_service.plan_view(environment_service.get_dev_plan(db,project_id))

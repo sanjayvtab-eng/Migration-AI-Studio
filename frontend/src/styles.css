@@ -6853,11 +6853,11 @@
 
 .env-choice-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 980px) {
   .env-choice-grid {
     grid-template-columns: 1fr;
   }
@@ -6894,6 +6894,12 @@
   box-shadow: 0 4px 20px rgba(37, 99, 235, 0.12);
 }
 
+.env-choice-card.selected-trial {
+  border-color: #8b5cf6;
+  background: linear-gradient(180deg, rgba(245, 243, 255, 0.65) 0%, #ffffff 100%);
+  box-shadow: 0 4px 22px rgba(139, 92, 246, 0.16);
+}
+
 .env-choice-header {
   display: flex;
   align-items: flex-start;
@@ -6924,6 +6930,12 @@
   border: 1px solid #bfdbfe;
 }
 
+.env-choice-icon.purple {
+  background: #f5f3ff;
+  color: #7c3aed;
+  border: 1px solid #ddd6fe;
+}
+
 .env-choice-tag {
   font-size: 11px;
   font-weight: 700;
@@ -6941,6 +6953,11 @@
 .env-choice-tag.blue {
   background: #dbeafe;
   color: #1e40af;
+}
+
+.env-choice-tag.purple {
+  background: #ede9fe;
+  color: #6d28d9;
 }
 
 .env-choice-h3 {
@@ -6988,6 +7005,16 @@
 
 .env-choice-btn.success:hover {
   background: #047857;
+}
+
+.env-choice-btn.purple {
+  background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+  color: #ffffff;
+}
+
+.env-choice-btn.purple:hover {
+  background: linear-gradient(135deg, #6d28d9 0%, #5b21b6 100%);
+  box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35);
 }
 
 /* Steps checklist for creating new account */
@@ -7114,7 +7141,7 @@
   border-radius: 20px;
   box-shadow: 0 25px 60px -15px rgba(15, 23, 42, 0.4), 0 0 0 1px rgba(15, 23, 42, 0.08);
   width: 100%;
-  max-width: 860px;
+  max-width: 1060px;
   max-height: 90vh;
   overflow-y: auto;
   position: relative;

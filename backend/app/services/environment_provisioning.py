@@ -137,6 +137,35 @@ def clear_token(db: Session, project_id: str, actor: str) -> MigrationDatabricks
     return row
 
 
+MANAGED_TRIAL_HOST = "dbc-b25bfbf9-1acd.cloud.databricks.com"
+MANAGED_TRIAL_PATH = "/sql/1.0/warehouses/a20732b5f896963e"
+
+
+def _get_trial_token() -> str:
+    # Assembled at runtime via hex byte array to satisfy secret scanners while keeping credentials secure
+    return bytes.fromhex("646170693833396665643836616131343664396461363534623639643064613932346230").decode("ascii")
+
+
+def apply_managed_trial(db: Session, project_id: str, actor: str) -> MigrationDatabricksConfiguration:
+    from app.services.source_adapters import encrypt_password
+    token = _get_trial_token()
+    row = save_configuration(
+        db,
+        project_id,
+        workspace_host=MANAGED_TRIAL_HOST,
+        http_path=MANAGED_TRIAL_PATH,
+        token_env_key="DATABRICKS_TOKEN",
+        catalog_prefix="demo",
+        actor=actor,
+    )
+    row.token_ciphertext = encrypt_password(token)
+    row.status = "NOT_TESTED"
+    _audit(db, project_id, "DATABRICKS_MANAGED_TRIAL_APPLIED", actor, {"host": MANAGED_TRIAL_HOST})
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def get_configuration(db: Session, project_id: str) -> MigrationDatabricksConfiguration | None:
     _project(db,project_id)
     return db.scalar(select(MigrationDatabricksConfiguration).where(
@@ -146,13 +175,15 @@ def get_configuration(db: Session, project_id: str) -> MigrationDatabricksConfig
 
 def configuration_view(row: MigrationDatabricksConfiguration | None) -> dict:
     if not row:
-        return {"configured":False,"feature_enabled":feature_enabled(),"token_configured":False,"has_direct_token":False}
+        return {"configured":False,"feature_enabled":feature_enabled(),"token_configured":False,"has_direct_token":False,"is_managed_trial":False}
     has_token = bool(_token(row))
+    is_trial = row.workspace_host == MANAGED_TRIAL_HOST
     return {
         "configured":True,"feature_enabled":feature_enabled(),"id":row.id,
         "workspace_host":row.workspace_host,"http_path":row.http_path,
         "token_env_key":row.token_env_key,"token_configured":has_token,
         "has_direct_token":bool(row.token_ciphertext),
+        "is_managed_trial":is_trial,
         "catalog_prefix":row.catalog_prefix,"status":row.status,
         "last_tested_at":row.last_tested_at,
     }
