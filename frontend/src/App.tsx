@@ -2281,7 +2281,7 @@ function AppInner({
 
   async function authorizeAutomatedPromotion() {
     if (!pid) return;
-    if (isDemoAccount) {
+    if (isDemoUser || isDemoAccount) {
       setShowAutoAuthModal(false);
       setShowDemoSalesModal(true);
       setMsg("Demo Version: Automated promotion to PROD is restricted in Demo mode. Contact contactsales@vtabsquare.com for enterprise activation.");
@@ -13145,10 +13145,10 @@ function AppInner({
                       <div style={{ gridColumn: "span 2" }}><span style={{ color: "#64748b" }}>Catalogs:</span> <b style={{ color: "#93c5fd" }}>{autoPromotionStatus?.preflight?.dev_catalog || "Not available"} → {autoPromotionStatus?.preflight?.test_catalog || "Not available"} → {autoPromotionStatus?.preflight?.uat_catalog || "Not available"} → {autoPromotionStatus?.preflight?.prod_catalog || "Not available"}</b></div>
                     </div>
 
-                    <p role="status" style={{ fontSize: 12, color: isDemoAccount || autoPromotionStatus?.preflight?.eligible ? "#38bdf8" : "#f87171", margin: "0 0 12px 0" }}>
+                    <p role="status" style={{ fontSize: 12, color: (isDemoUser || isDemoAccount || autoPromotionStatus?.preflight?.eligible) ? "#38bdf8" : "#f87171", margin: "0 0 12px 0" }}>
                       {autoAuthLoading
                         ? "Checking the current release and prerequisites…"
-                        : (isDemoAccount || autoPromotionStatus?.preflight?.eligible)
+                        : (isDemoUser || isDemoAccount || autoPromotionStatus?.preflight?.eligible)
                         ? "Current release is eligible for authorization."
                         : "Authorization blocked. Complete measured DEV reconciliation and resolve the listed prerequisites."}
                     </p>
@@ -13189,12 +13189,12 @@ function AppInner({
                           autoAuthText.trim() !== "PROMOTE TO PROD" ||
                           autoRunning ||
                           autoAuthLoading ||
-                          (!isDemoAccount && !autoPromotionStatus?.preflight?.eligible)
+                          (!isDemoUser && !isDemoAccount && !autoPromotionStatus?.preflight?.eligible)
                         }
                         onClick={() => {
                           setShowAutoAuthModal(false);
                           tour.notify("deploy:promotion-confirmed");
-                          if (isDemoAccount) {
+                          if (isDemoUser || isDemoAccount) {
                             setShowDemoSalesModal(true);
                             setMsg("Demo Version: Automated promotion to PROD is restricted. Contact contactsales@vtabsquare.com for enterprise access.");
                             return;
