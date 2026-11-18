@@ -6063,28 +6063,48 @@ function AppInner({
                   <h2>Sources · {current ? current.name : "Active Project"}</h2>
                   <p>Registered SQL Server instances, local connector runtimes, and live database connection health.</p>
                 </div>
-                <button
-                  className="btn-primary-blue"
-                  disabled={!pid || isDemoAccount}
-                  style={
-                    isDemoAccount
-                      ? {
-                          opacity: 0.38,
-                          cursor: "not-allowed",
-                          pointerEvents: "none",
-                          filter: "grayscale(25%)",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }
-                      : undefined
-                  }
-                  title={isDemoAccount ? "Demo Version: Source is pre-configured and locked" : undefined}
-                  onClick={() => setNewSourceModalOpen(true)}
-                >
-                  {isDemoAccount ? <Lock size={14} /> : <Plus size={16} />}
-                  Add Source
-                </button>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <button
+                    className="btn-secondary"
+                    type="button"
+                    onClick={() => tour.startTour("Sources")}
+                    title="Start step-by-step guided tour of Sources & Local Connector"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      padding: "7px 14px",
+                      borderRadius: 6,
+                    }}
+                  >
+                    <Sparkles size={14} />
+                    <span>Take a tour</span>
+                  </button>
+                  <button
+                    className="btn-primary-blue"
+                    disabled={!pid || isDemoAccount}
+                    style={
+                      isDemoAccount
+                        ? {
+                            opacity: 0.38,
+                            cursor: "not-allowed",
+                            pointerEvents: "none",
+                            filter: "grayscale(25%)",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }
+                        : undefined
+                    }
+                    title={isDemoAccount ? "Demo Version: Source is pre-configured and locked" : undefined}
+                    onClick={() => setNewSourceModalOpen(true)}
+                  >
+                    {isDemoAccount ? <Lock size={14} /> : <Plus size={16} />}
+                    Add Source
+                  </button>
+                </div>
               </div>
 
               {/* 4-Card Quick Metric Deck */}
@@ -6199,6 +6219,7 @@ function AppInner({
                                   Test Connection
                                 </button>
                                 <div
+                                  data-tour="connector-agent-wrapper"
                                   style={
                                     isDemoAccount
                                       ? {

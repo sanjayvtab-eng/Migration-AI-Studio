@@ -391,13 +391,24 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
-      // 2. Sources stage: Connection test completed
+      // 2a. Sources stage: Connector Agent modal closed -> guide to test connection
+      if (event === "connector-agent-closed") {
+        setTimeout(() => {
+          const testStep = TOUR_STEPS.find((s) => s.id === "step-4-test-connection") || TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
+          if (testStep) {
+            highlightStep(testStep);
+          }
+        }, 400);
+        return;
+      }
+
+      // 2b. Sources stage: Connection test completed
       if (event === "test-connection-completed") {
         setTimeout(() => {
-          const step4 = TOUR_STEPS.find((s) => s.id === "step-4-test-results");
-          if (step4) {
-            saveTourState({ currentStepIndex: 3, currentStage: "Sources" });
-            highlightStep(step4);
+          const stepResults = TOUR_STEPS.find((s) => s.id === "step-5-test-results") || TOUR_STEPS.find((s) => s.id === "step-4-test-results");
+          if (stepResults) {
+            saveTourState({ currentStepIndex: 4, currentStage: "Sources" });
+            highlightStep(stepResults);
           }
         }, 500);
         return;
@@ -406,10 +417,10 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       // 3. Discovery stage: Discovery completed
       if (event === "discovery-completed") {
         setTimeout(() => {
-          const step7 = TOUR_STEPS.find((s) => s.id === "step-7-proceed-studio");
-          if (step7) {
-            saveTourState({ currentStepIndex: 6, currentStage: "Discovery" });
-            highlightStep(step7);
+          const stepStudio = TOUR_STEPS.find((s) => s.id === "step-8-proceed-studio") || TOUR_STEPS.find((s) => s.id === "step-7-proceed-studio");
+          if (stepStudio) {
+            saveTourState({ currentStepIndex: 7, currentStage: "Discovery" });
+            highlightStep(stepStudio);
           }
         }, 500);
         return;
@@ -467,6 +478,17 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     }
   }, []);
 
+  // Listen for local connector dialog close event
+  useEffect(() => {
+    const handleConnectorClosed = () => {
+      notify("connector-agent-closed");
+    };
+    window.addEventListener("connector-agent-closed", handleConnectorClosed);
+    return () => {
+      window.removeEventListener("connector-agent-closed", handleConnectorClosed);
+    };
+  }, [notify]);
+
   // When stage changes, resume tour if active and not completed
   useEffect(() => {
     const state = getTourState();
@@ -499,13 +521,18 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return () => clearTimeout(timer);
       } else if (currentStage === "Sources") {
         const timer = setTimeout(() => {
-          const step = TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
+          const step =
+            TOUR_STEPS.find((s) => s.id === "step-3-connector-agent") ||
+            TOUR_STEPS.find((s) => s.id === "step-4-test-connection") ||
+            TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
           if (step) highlightStep(step);
         }, 500);
         return () => clearTimeout(timer);
       } else if (currentStage === "Discovery") {
         const timer = setTimeout(() => {
-          const step = TOUR_STEPS.find((s) => s.id === "step-6-run-discovery");
+          const step =
+            TOUR_STEPS.find((s) => s.id === "step-7-run-discovery") ||
+            TOUR_STEPS.find((s) => s.id === "step-6-run-discovery");
           if (step) highlightStep(step);
         }, 500);
         return () => clearTimeout(timer);

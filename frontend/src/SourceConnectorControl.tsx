@@ -123,6 +123,7 @@ export default function SourceConnectorControl({
         setOpen(false);
         setRegistration(null);
         setError("");
+        window.dispatchEvent(new CustomEvent("connector-agent-closed"));
       }}
       style={{
         border: "1px solid #d6dce5",
@@ -411,6 +412,7 @@ export default function SourceConnectorControl({
               setOpen(false);
               setRegistration(null);
               setError("");
+              window.dispatchEvent(new CustomEvent("connector-agent-closed"));
             }}
             style={{
               background: "#dfe1e6",
@@ -433,6 +435,7 @@ export default function SourceConnectorControl({
       <>
         <button
           type="button"
+          data-tour="connector-agent-btn"
           onClick={() => setOpen(true)}
           title={`Configure Local ${engine} Connector`}
           style={{

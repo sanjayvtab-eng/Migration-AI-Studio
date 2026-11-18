@@ -205,12 +205,29 @@ export const TOUR_STEPS: TourStep[] = [
     condition: (context: any) => !context.isDemoAccount,
   },
 
-  // Stage 3: Sources (Steps 3, 4, 5)
+  // Stage 3: Sources (Steps 3, 4, 5, 6)
   {
-    id: "step-3-test-connection",
+    id: "step-3-connector-agent",
     stage: "Sources",
     stageNumber: 3,
     stepNumber: 3,
+    totalSteps: 9,
+    element: '[data-tour="connector-agent-btn"]',
+    popover: {
+      title: "Local Connector Setup",
+      description:
+        "When you add a new data source, the first step is to register it with the Local Connector. After registration, download the Connector EXE file and the latest ENV file. If you already have the Local Connector installed, you don't need to reinstall the EXE. Simply delete the existing ENV file and replace it with the newly downloaded ENV file. This will update the connector configuration with the credentials of the newly added source. Once completed, you can proceed with Test Connection.",
+      side: "bottom",
+      align: "end",
+    },
+    disableBack: false,
+    scrollIntoView: true,
+  },
+  {
+    id: "step-4-test-connection",
+    stage: "Sources",
+    stageNumber: 3,
+    stepNumber: 4,
     totalSteps: 9,
     element: '[data-tour="test-connection-btn"]',
     popover: {
@@ -221,13 +238,13 @@ export const TOUR_STEPS: TourStep[] = [
     },
     actionType: "click",
     advanceOnEvent: "test-connection-completed",
-    disableBack: true,
+    disableBack: false,
   },
   {
-    id: "step-4-test-results",
+    id: "step-5-test-results",
     stage: "Sources",
     stageNumber: 3,
-    stepNumber: 4,
+    stepNumber: 5,
     totalSteps: 9,
     element: '[data-tour="test-results-panel"]',
     popover: {
@@ -240,10 +257,10 @@ export const TOUR_STEPS: TourStep[] = [
     scrollIntoView: true,
   },
   {
-    id: "step-5-proceed-discovery",
+    id: "step-6-proceed-discovery",
     stage: "Sources",
     stageNumber: 3,
-    stepNumber: 5,
+    stepNumber: 6,
     totalSteps: 9,
     element: '[data-tour="proceed-discovery-btn"]',
     popover: {
@@ -254,12 +271,12 @@ export const TOUR_STEPS: TourStep[] = [
     },
   },
 
-  // Stage 4: Discovery (Steps 6 & 7)
+  // Stage 4: Discovery (Steps 7 & 8)
   {
-    id: "step-6-run-discovery",
+    id: "step-7-run-discovery",
     stage: "Discovery",
     stageNumber: 4,
-    stepNumber: 6,
+    stepNumber: 7,
     totalSteps: 9,
     element: '[data-tour="run-discovery-btn"]',
     popover: {
@@ -273,10 +290,10 @@ export const TOUR_STEPS: TourStep[] = [
     disableBack: true,
   },
   {
-    id: "step-7-proceed-studio",
+    id: "step-8-proceed-studio",
     stage: "Discovery",
     stageNumber: 4,
-    stepNumber: 7,
+    stepNumber: 8,
     totalSteps: 9,
     element: '[data-tour="proceed-studio-btn"]',
     popover: {
