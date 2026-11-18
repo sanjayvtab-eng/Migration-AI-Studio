@@ -1234,6 +1234,13 @@ function AppInner({
     }
   }, [page, isDemoAccount]);
 
+  // Jump straight to Migration Studio whenever Discovery stage is entered
+  useEffect(() => {
+    if (page === "Discovery") {
+      setPage("Migration Workflow");
+    }
+  }, [page]);
+
   const handleFocusConfigForm = () => {
     const formElement = document.getElementById("databricks-config-form");
     if (formElement) {
@@ -10056,47 +10063,7 @@ function AppInner({
                           <option value="FAILED">Failed only</option>
                         </select>
                         <button
-                          disabled={isDemoAccount || (!(Array.isArray(medLogs) && medLogs.length > 0) && !(Array.isArray(logView) && logView.length > 0))}
-                          onClick={copyMedallionLogs}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 5,
-                            ...(isDemoAccount
-                              ? {
-                                  opacity: 0.38,
-                                  cursor: "not-allowed",
-                                  pointerEvents: "none",
-                                  filter: "grayscale(25%)",
-                                }
-                              : {}),
-                          }}
-                          title={isDemoAccount ? "Demo Version: Copy logs is locked" : undefined}
-                        >
-                          <ScrollText size={14} /> Copy Logs
-                        </button>
-                        <button
-                          disabled={isDemoAccount || !pid || busy}
-                          onClick={medDeployment?.run_id ? downloadMedallionLogs : downloadDevLogs}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 5,
-                            ...(isDemoAccount
-                              ? {
-                                  opacity: 0.38,
-                                  cursor: "not-allowed",
-                                  pointerEvents: "none",
-                                  filter: "grayscale(25%)",
-                                }
-                              : {}),
-                          }}
-                          title={isDemoAccount ? "Demo Version: Download CSV is locked" : undefined}
-                        >
-                          <Download size={14} /> Download CSV
-                        </button>
-                        <button
-                          disabled={isDemoAccount || !pid || busy}
+                          disabled={!pid || busy}
                           onClick={async () => {
                             setBusy(true);
                             try {
@@ -10112,19 +10079,11 @@ function AppInner({
                               setBusy(false);
                             }
                           }}
-                          title={isDemoAccount ? "Demo Version: Refresh logs is locked" : "Refresh deployment status and execution logs"}
+                          title="Refresh deployment status and execution logs"
                           style={{
                             display: "flex",
                             alignItems: "center",
                             gap: 5,
-                            ...(isDemoAccount
-                              ? {
-                                  opacity: 0.38,
-                                  cursor: "not-allowed",
-                                  pointerEvents: "none",
-                                  filter: "grayscale(25%)",
-                                }
-                              : {}),
                           }}
                         >
                           <RefreshCw size={14} className={busy ? "spinning" : ""} /> Refresh Logs
@@ -10270,12 +10229,12 @@ function AppInner({
                   </Panel>
 
                   <Panel
-                title={isDemoAccount ? "Scheduled Incremental Data Refresh (Delta Sync) (Demo · Locked 🔒)" : "Scheduled Incremental Data Refresh (Delta Sync)"}
+                title="Scheduled Incremental Data Refresh (Delta Sync) (Locked 🔒)"
                 actions={
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <button
                       className="primary-action"
-                      disabled={isDemoAccount || !pid || busy || scheduleSyncing}
+                      disabled={true}
                       onClick={triggerScheduleNow}
                       style={{
                         background: "#2563eb",
@@ -10283,61 +10242,56 @@ function AppInner({
                         display: "flex",
                         alignItems: "center",
                         gap: 6,
-                        ...(isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                            }
-                          : {}),
+                        opacity: 0.38,
+                        cursor: "not-allowed",
+                        pointerEvents: "none",
+                        filter: "grayscale(25%)",
                       }}
-                      title={isDemoAccount ? "Demo Version: Incremental sync is locked" : undefined}
+                      title="Enterprise Feature: Scheduled Delta incremental sync is locked"
                     >
-                      <RefreshCw size={14} className={scheduleSyncing ? "spinning" : ""} />
-                      {scheduleSyncing ? "Syncing Delta Records..." : "Run Incremental Sync Now"}
+                      <RefreshCw size={14} />
+                      Run Incremental Sync Now
                     </button>
                   </div>
                 }
               >
-                {isDemoAccount && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "12px 18px",
+                  background: "linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 41, 59, 0.92) 100%)",
+                  borderRadius: 8,
+                  color: "#e2e8f0",
+                  marginBottom: 16,
+                  border: "1px solid rgba(56, 189, 248, 0.35)",
+                  boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)"
+                }}>
                   <div style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: "50%",
+                    background: "rgba(56, 189, 248, 0.15)",
+                    border: "1px solid rgba(56, 189, 248, 0.4)",
                     display: "flex",
                     alignItems: "center",
-                    gap: 12,
-                    padding: "12px 18px",
-                    background: "linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 41, 59, 0.92) 100%)",
-                    borderRadius: 8,
-                    color: "#e2e8f0",
-                    marginBottom: 16,
-                    border: "1px solid rgba(56, 189, 248, 0.35)",
-                    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)"
+                    justifyContent: "center",
+                    color: "#38bdf8",
+                    flexShrink: 0
                   }}>
-                    <div style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: "50%",
-                      background: "rgba(56, 189, 248, 0.15)",
-                      border: "1px solid rgba(56, 189, 248, 0.4)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: "#38bdf8",
-                      flexShrink: 0
-                    }}>
-                      <Lock size={18} />
+                    <Lock size={18} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc", display: "flex", alignItems: "center", gap: 6 }}>
+                      Automated Delta Sync Locked <span style={{ fontSize: 10, background: "rgba(56, 189, 248, 0.2)", color: "#7dd3fc", padding: "1px 6px", borderRadius: 4 }}>Enterprise Feature</span>
                     </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc", display: "flex", alignItems: "center", gap: 6 }}>
-                        Automated Delta Sync Locked <span style={{ fontSize: 10, background: "rgba(56, 189, 248, 0.2)", color: "#7dd3fc", padding: "1px 6px", borderRadius: 4 }}>Demo Version</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
-                        High-watermark incremental sync and automated schedules are managed in production. Feature locked for demo session.
-                      </div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+                      High-watermark incremental sync and automated schedules are managed in production. Feature locked and mocked for current environment.
                     </div>
                   </div>
-                )}
-                <div className={isDemoAccount ? "demo-faded-content" : ""} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                </div>
+
+                <div className="demo-faded-content" style={{ display: "flex", flexDirection: "column", gap: 16, pointerEvents: "none" }}>
                   {/* Status Banner */}
                   <div style={{
                     display: "flex",
@@ -10601,10 +10555,6 @@ function AppInner({
                     <button disabled={!pid || busy} onClick={viewDevLogs}>
                       <ScrollText size={15} />
                       View Logs
-                    </button>
-                    <button disabled={!pid || busy} onClick={downloadDevLogs}>
-                      <Download size={15} />
-                      Download Log
                     </button>
                   </div>
                 }
@@ -11324,17 +11274,10 @@ function AppInner({
                     <span className="deploy-header-sep">·</span>
                     <span
                       className="deploy-run-id-chip"
-                      title={`Click to copy: ${activeRunId}`}
-                      onClick={() => {
-                        if (activeRunId && activeRunId !== "-") {
-                          navigator.clipboard.writeText(activeRunId);
-                          setDeployCopiedRunId(true);
-                          setTimeout(() => setDeployCopiedRunId(false), 2000);
-                        }
-                      }}
+                      title={`Run ID: ${activeRunId}`}
+                      style={{ cursor: "default" }}
                     >
                       <span>{truncateRunId(activeRunId)}</span>
-                      {deployCopiedRunId ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
                     </span>
                   </div>
 
@@ -11416,62 +11359,6 @@ function AppInner({
                         <AlertCircle size={13} /> Reset Stale Run
                       </button>
                     )}
-
-                    <button
-                      type="button"
-                      className="deploy-action-btn"
-                      title={isDemoAccount ? "Demo Version: Copy logs is locked" : "Copy deployment logs as JSON"}
-                      disabled={isDemoAccount}
-                      style={
-                        isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                            }
-                          : undefined
-                      }
-                      onClick={() => {
-                        const exportData = attemptItems.length > 0 ? attemptItems : (medLogs.length > 0 ? medLogs : logView);
-                        if (exportData.length > 0) {
-                          navigator.clipboard.writeText(JSON.stringify(exportData, null, 2));
-                          setMsg("Deployment evidence copied to clipboard");
-                        } else {
-                          navigator.clipboard.writeText(activeRunId);
-                          setMsg("Run ID copied to clipboard");
-                        }
-                      }}
-                    >
-                      <Copy size={13} /> Copy
-                    </button>
-                    <button
-                      type="button"
-                      className="deploy-action-btn"
-                      title={isDemoAccount ? "Demo Version: Export logs is locked" : "Export logs as CSV"}
-                      disabled={isDemoAccount || !pid || busy}
-                      onClick={() => {
-                        if (medDeployment?.run_id) {
-                          downloadMedallionLogs();
-                        } else if (reconResult?.run_id) {
-                          downloadReconciliation();
-                        } else {
-                          downloadDevLogs();
-                        }
-                      }}
-                      style={
-                        isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                            }
-                          : undefined
-                      }
-                    >
-                      <Download size={13} /> Export
-                    </button>
                   </div>
                 </div>
 
@@ -11779,48 +11666,6 @@ function AppInner({
                         value={deployTerminalFilter}
                         onChange={(e) => setDeployTerminalFilter(e.target.value)}
                       />
-                      <button
-                        type="button"
-                        className="deploy-terminal-btn"
-                        title={isDemoAccount ? "Demo Version: Copy terminal logs is locked" : "Copy terminal logs"}
-                        disabled={isDemoAccount}
-                        style={
-                          isDemoAccount
-                            ? {
-                                opacity: 0.38,
-                                cursor: "not-allowed",
-                                pointerEvents: "none",
-                                filter: "grayscale(25%)",
-                              }
-                            : undefined
-                        }
-                        onClick={() => {
-                          const text = terminalLines.map((l: any) => `${l.time} [${l.level}]  ${l.msg}`).join("\n");
-                          navigator.clipboard.writeText(text);
-                          setMsg("Terminal logs copied to clipboard");
-                        }}
-                      >
-                        <Copy size={12} /> Copy
-                      </button>
-                      <button
-                        type="button"
-                        className="deploy-terminal-btn"
-                        title={isDemoAccount ? "Demo Version: Pop-out logs is locked" : "Download full DEV logs"}
-                        disabled={isDemoAccount || !pid || busy}
-                        style={
-                          isDemoAccount
-                            ? {
-                                opacity: 0.38,
-                                cursor: "not-allowed",
-                                pointerEvents: "none",
-                                filter: "grayscale(25%)",
-                              }
-                            : undefined
-                        }
-                        onClick={downloadDevLogs}
-                      >
-                        <Download size={12} /> Pop-out
-                      </button>
                     </div>
                   </div>
 
@@ -12068,14 +11913,14 @@ function AppInner({
                     </div>
 
                     <div className="env-attention-body">
-                      {/* 2-Card Interactive Selector */}
+                      {/* 3-Card Interactive Selector */}
                       <div className="env-choice-grid">
                         {/* Option 1: Already have account */}
                         <div
                           className="env-choice-card selected-have"
                           style={{ cursor: "default" }}
                         >
-                          <div>
+                          <div className="env-choice-content">
                             <div className="env-choice-header">
                               <div className="env-choice-icon green">
                                 <CheckCircle2 size={22} />
@@ -12087,18 +11932,24 @@ function AppInner({
                               Your workspace, SQL Warehouse, and Unity Catalog are ready. Click below to proceed to the configuration form to enter your Workspace Host, SQL Warehouse Path, and Personal Access Token (PAT).
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            className="env-choice-btn success"
-                            onClick={() => {
-                              setShowDatabricksPrereqModal(false);
-                              handleFocusConfigForm();
-                            }}
-                            style={{ padding: "12px 18px", fontSize: 13.5, fontWeight: 700, marginTop: "auto" }}
-                          >
-                            <span>I Have an Account · Proceed to Form</span>
-                            <ArrowRight size={15} />
-                          </button>
+                          <div className="env-choice-actions">
+                            <button
+                              type="button"
+                              className="env-choice-btn success"
+                              onClick={() => {
+                                setShowDatabricksPrereqModal(false);
+                                handleFocusConfigForm();
+                              }}
+                            >
+                              <span>I Have an Account · Proceed to Form</span>
+                              <ArrowRight size={15} />
+                            </button>
+                            <div className="env-choice-subaction">
+                              <span style={{ fontSize: 11, color: "#059669", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <Check size={13} /> Direct connection to your workspace
+                              </span>
+                            </div>
+                          </div>
                         </div>
 
                         {/* Option 2: Need account */}
@@ -12106,7 +11957,7 @@ function AppInner({
                           className="env-choice-card selected-need"
                           style={{ cursor: "default" }}
                         >
-                          <div>
+                          <div className="env-choice-content">
                             <div className="env-choice-header">
                               <div className="env-choice-icon blue">
                                 <ExternalLink size={22} />
@@ -12118,36 +11969,37 @@ function AppInner({
                               A Databricks workspace is required to host your Medallion architecture (Bronze, Silver, Gold). Sign up for a 14-day Free Trial or deploy via your cloud provider, then bring back your credentials.
                             </p>
                           </div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: "auto" }}>
+                          <div className="env-choice-actions">
                             <a
                               href="https://www.databricks.com/try-databricks"
                               target="_blank"
                               rel="noopener noreferrer"
                               className="env-choice-btn primary"
-                              style={{ padding: "12px 18px", fontSize: 13.5, fontWeight: 700 }}
                             >
                               <span>Create Databricks Account (Free Trial)</span>
                               <ExternalLink size={15} />
                             </a>
-                            <button
-                              type="button"
-                              onClick={() => setEnvPrereqShowGuide(!envPrereqShowGuide)}
-                              style={{
-                                background: "transparent",
-                                border: "none",
-                                color: "#2563eb",
-                                fontSize: 12,
-                                fontWeight: 600,
-                                cursor: "pointer",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                gap: 5,
-                                padding: "4px 0"
-                              }}
-                            >
-                              <span>{envPrereqShowGuide ? "Hide Setup Instructions ▲" : "View Step-by-Step Instructions & Cloud Links ▼"}</span>
-                            </button>
+                            <div className="env-choice-subaction">
+                              <button
+                                type="button"
+                                onClick={() => setEnvPrereqShowGuide(!envPrereqShowGuide)}
+                                style={{
+                                  background: "transparent",
+                                  border: "none",
+                                  color: "#2563eb",
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  cursor: "pointer",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  gap: 5,
+                                  padding: 0
+                                }}
+                              >
+                                <span>{envPrereqShowGuide ? "Hide Setup Instructions ▲" : "View Step-by-Step Instructions & Cloud Links ▼"}</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
 
@@ -12156,7 +12008,7 @@ function AppInner({
                           className="env-choice-card selected-trial"
                           style={{ cursor: "default" }}
                         >
-                          <div>
+                          <div className="env-choice-content">
                             <div className="env-choice-header">
                               <div className="env-choice-icon purple">
                                 <Sparkles size={22} />
@@ -12168,19 +12020,20 @@ function AppInner({
                               Don't have a Databricks account? Proceed immediately using our secure pre-configured trial workspace to test Databricks Unity Catalog provisioning.
                             </p>
                           </div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: "auto" }}>
+                          <div className="env-choice-actions">
                             <button
                               type="button"
                               className="env-choice-btn purple"
                               onClick={handleSelectManagedTrial}
-                              style={{ padding: "12px 18px", fontSize: 13.5, fontWeight: 700 }}
                             >
                               <span>Start with Trial Account</span>
                               <ArrowRight size={15} />
                             </button>
-                            <span style={{ fontSize: "11px", color: "#6d28d9", textAlign: "center", fontWeight: 600 }}>
-                              Zero cloud setup required · Auto-filled &amp; secured
-                            </span>
+                            <div className="env-choice-subaction">
+                              <span style={{ fontSize: "11px", color: "#6d28d9", textAlign: "center", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <Sparkles size={12} color="#7c3aed" /> Zero cloud setup required · Auto-filled &amp; secured
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -12978,8 +12831,8 @@ function AppInner({
               backText: isDemoAccount ? "← Back to Projects" : "← Back to Environment",
               backTarget: isDemoAccount ? "Projects" : "Environment Setup",
               backDisabled: false,
-              forwardText: "Proceed to Discovery →",
-              forwardTarget: "Discovery",
+              forwardText: "Proceed to Migration Studio →",
+              forwardTarget: "Migration Workflow",
               forwardDisabled: !pid,
             },
             4: {
@@ -12990,10 +12843,8 @@ function AppInner({
               backText: "← Back to Sources",
               backTarget: "Sources",
               backDisabled: false,
-              forwardText: isDemoAccount
-                ? "Proceed to Migration Studio (Demo Bypassed) →"
-                : `Proceed to Inventory (${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects) →`,
-              forwardTarget: isDemoAccount ? "Migration Workflow" : "Inventory",
+              forwardText: "Proceed to Migration Studio →",
+              forwardTarget: "Migration Workflow",
               forwardDisabled: false,
             },
             5: {
@@ -13001,13 +12852,11 @@ function AppInner({
               context: isDemoAccount
                 ? "Bypassed in Demo · Proceed to Studio"
                 : `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Source Objects Cataloged`,
-              backText: "← Back to Discovery",
-              backTarget: "Discovery",
+              backText: "← Back to Sources",
+              backTarget: "Sources",
               backDisabled: false,
-              forwardText: isDemoAccount
-                ? "Proceed to Migration Studio →"
-                : `Proceed to Classification (${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Objects) →`,
-              forwardTarget: isDemoAccount ? "Migration Workflow" : "Layer Classification",
+              forwardText: "Proceed to Migration Studio →",
+              forwardTarget: "Migration Workflow",
               forwardDisabled: false,
             },
             6: {
@@ -13015,8 +12864,8 @@ function AppInner({
               context: isDemoAccount
                 ? "Bypassed in Demo · Proceed to Studio"
                 : "Medallion Architecture Layer Assignment",
-              backText: isDemoAccount ? "← Back to Discovery" : "← Back to Inventory",
-              backTarget: isDemoAccount ? "Discovery" : "Inventory",
+              backText: "← Back to Sources",
+              backTarget: "Sources",
               backDisabled: false,
               forwardText: "Approve & Proceed to Studio →",
               forwardTarget: "Migration Workflow",
@@ -13025,8 +12874,8 @@ function AppInner({
             7: {
               title: "Stage 7 of 9: Migration Studio",
               context: `${medArts.length || 14} Medallion Artifacts · ${medArts.filter((a: any) => a.review_status === "APPROVED").length} Approved`,
-              backText: isDemoAccount ? "← Back to Discovery" : "← Back to Classification",
-              backTarget: isDemoAccount ? "Discovery" : "Layer Classification",
+              backText: "← Back to Sources",
+              backTarget: "Sources",
               backDisabled: false,
               forwardText: `Proceed to Deployment (${medArts.length || 14} Artifacts) →`,
               forwardTarget: "Deployments",

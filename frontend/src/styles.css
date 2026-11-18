@@ -6874,6 +6874,14 @@
   cursor: pointer;
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   position: relative;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.env-choice-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 .env-choice-card:hover {
@@ -6965,6 +6973,9 @@
   font-size: 15px;
   font-weight: 700;
   color: #0f172a;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
 }
 
 .env-choice-desc {
@@ -6972,6 +6983,14 @@
   font-size: 12.5px;
   color: #64748b;
   line-height: 1.5;
+  flex: 1;
+}
+
+.env-choice-actions {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .env-choice-btn {
@@ -6981,12 +7000,21 @@
   gap: 8px;
   padding: 10px 16px;
   border-radius: 9px;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 700;
   cursor: pointer;
   transition: all 0.15s ease;
   border: none;
   width: 100%;
+  height: 46px;
+  box-sizing: border-box;
+}
+
+.env-choice-subaction {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .env-choice-btn.primary {
