@@ -441,21 +441,21 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       if (event === "connector:token-generated") {
         setTimeout(() => {
-          const step = TOUR_STEPS.find((s) => s.id === "connector-download-exe");
+          const step = TOUR_STEPS.find((s) => s.id === "connector-download-env");
           if (step) highlightStep(step);
         }, 250);
         return;
       }
 
-      if (event === "connector:exe-downloaded") {
+      if (event === "connector:env-downloaded") {
         setTimeout(() => {
-          const step = TOUR_STEPS.find((s) => s.id === "connector-download-env");
+          const step = TOUR_STEPS.find((s) => s.id === "connector-download-exe");
           if (step) highlightStep(step);
         }, 150);
         return;
       }
 
-      if (event === "connector:env-downloaded") {
+      if (event === "connector:exe-downloaded") {
         dismissSpotlight();
         return;
       }

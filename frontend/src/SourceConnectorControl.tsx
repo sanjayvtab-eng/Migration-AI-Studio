@@ -11,8 +11,8 @@ type Props = {
 
 const SETUP_ROADMAP = [
   ["1", "Generate Token", "Issue a secure token for this source."],
-  ["2", "Download EXE", "Save migration-agent.exe locally."],
-  ["3", "Download ENV", "Save agent.env in the same folder."],
+  ["2", "Download ENV", "Save pre-configured agent.env locally."],
+  ["3", "Download EXE", "Save migration-agent.exe in the same folder."],
   ["4", "Launch and Keep Open", "Run the EXE and leave its console active."],
   ["5", "Verify Telemetry", "Open localhost:8585 and confirm ONLINE."],
   ["6", "Test Connection", "Return here and run the source test."],
@@ -30,6 +30,7 @@ export default function SourceConnectorControl({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const [hasDownloadedEnv, setHasDownloadedEnv] = useState(false);
   const [hasDownloadedExe, setHasDownloadedExe] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const path = `/projects/${projectId}/sources/${source.id}/connector`;
@@ -61,6 +62,7 @@ export default function SourceConnectorControl({
       setRegistration(method === "POST" ? result : null);
       setStatus(method === "POST" ? "OFFLINE" : "REVOKED");
       if (method === "POST") {
+        setHasDownloadedEnv(false);
         setHasDownloadedExe(false);
         window.dispatchEvent(new CustomEvent("connector-tour-event", { detail: { event: "connector:token-generated" } }));
       }
@@ -87,6 +89,7 @@ export default function SourceConnectorControl({
         trust_cert: String(trustCert),
       });
       await downloadApi(`${path}/config?${query.toString()}`, "agent.env");
+      setHasDownloadedEnv(true);
       window.dispatchEvent(new CustomEvent("connector-tour-event", { detail: { event: "connector:env-downloaded" } }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to download agent.env");
@@ -99,6 +102,7 @@ export default function SourceConnectorControl({
   };
 
   const handleDownloadExe = () => {
+    if (!hasDownloadedEnv) return;
     downloadAgent("exe");
     setHasDownloadedExe(true);
     window.dispatchEvent(new CustomEvent("connector-tour-event", { detail: { event: "connector:exe-downloaded" } }));
@@ -130,6 +134,7 @@ export default function SourceConnectorControl({
       onCancel={() => {
         setOpen(false);
         setRegistration(null);
+        setHasDownloadedEnv(false);
         setHasDownloadedExe(false);
         setError("");
         window.dispatchEvent(new CustomEvent("connector-agent-closed"));
@@ -153,18 +158,6 @@ export default function SourceConnectorControl({
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
           <h2 style={{ margin: 0 }}>Local {engine} Connector</h2>
-          <button
-            type="button"
-            className="btn-tour-guide-highlight"
-            onClick={() => {
-              setOpen(false);
-              window.dispatchEvent(new CustomEvent("open-connector-tour"));
-            }}
-            title="Open step-by-step Local Connector Agent Guided Tour"
-          >
-            <span style={{ fontSize: "1.05rem" }}>🧭</span>
-            <span>6-Step Tour Guide</span>
-          </button>
         </div>
         <p>
           Run the connector on your local machine to connect your local {engine} instance ({source.server_name} / {source.database_name}) with Migration AI Studio. It connects outward over HTTPS; your database credentials stay local on your computer.
@@ -173,39 +166,6 @@ export default function SourceConnectorControl({
           Status: <strong>{status}</strong>
         </p>
         {error && <p role="alert" style={{ color: "#de350b" }}>{error}</p>}
-        <div
-          style={{
-            marginTop: 18,
-            background: "#f8fafc",
-            border: "1px solid #e2e8f0",
-            borderRadius: 10,
-            padding: "16px 18px",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
-            <strong style={{ fontSize: 13, color: "#0f172a" }}>6-Step Connector Setup Roadmap</strong>
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                window.dispatchEvent(new CustomEvent("open-connector-tour"));
-              }}
-              style={{ background: "transparent", border: 0, color: "#2563eb", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
-            >
-              Open Interactive Tour Guide ↗
-            </button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: 10 }}>
-            {SETUP_ROADMAP.map(([number, title, description]) => (
-              <div key={number} style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                <strong style={{ fontSize: 12, color: Number(number) < 4 ? "#2563eb" : "#16a34a" }}>
-                  Step {number}: {title}
-                </strong>
-                <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>{description}</p>
-              </div>
-            ))}
-          </div>
-        </div>
         {registration ? (
           <>
             <p>
@@ -280,6 +240,30 @@ export default function SourceConnectorControl({
 
             <div
               style={{
+                marginTop: 18,
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: 10,
+                padding: "16px 18px",
+              }}
+            >
+              <div style={{ marginBottom: 12 }}>
+                <strong style={{ fontSize: 13, color: "#0f172a" }}>6-Step Connector Setup Roadmap</strong>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: 10 }}>
+                {SETUP_ROADMAP.map(([number, title, description]) => (
+                  <div key={number} style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                    <strong style={{ fontSize: 12, color: Number(number) < 4 ? "#2563eb" : "#16a34a" }}>
+                      Step {number}: {title}
+                    </strong>
+                    <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>{description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div
+              style={{
                 background: "#f4f5f7",
                 borderRadius: 8,
                 padding: 16,
@@ -297,7 +281,7 @@ export default function SourceConnectorControl({
                   gap: 6,
                 }}
               >
-                <span>⭐ Quick Start: Standalone Agent Executable (.exe)</span>
+                <span>⭐ Quick Start: Standalone Agent Configuration & Executable</span>
               </div>
               <p
                 style={{
@@ -306,17 +290,18 @@ export default function SourceConnectorControl({
                   color: "#42526e",
                 }}
               >
-                Download and run <code>migration-agent.exe</code> on your local computer. Place <code>agent.env</code> next to it to connect automatically.
+                First download <code>agent.env</code> containing your source configuration. Next download <code>migration-agent.exe</code> into the exact same folder and launch it.
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 <button
                   type="button"
-                  data-tour="download-agent-exe-btn"
-                  onClick={handleDownloadExe}
+                  data-tour="download-agent-env-btn"
+                  onClick={downloadEnvFile}
+                  title="Download pre-configured agent.env configuration"
                   style={{
-                    background: hasDownloadedExe ? "#ecfdf5" : "#0052cc",
-                    color: hasDownloadedExe ? "#166534" : "white",
-                    border: hasDownloadedExe ? "1px solid #86efac" : "1px solid #0052cc",
+                    background: hasDownloadedEnv ? "#ecfdf5" : "#0052cc",
+                    color: hasDownloadedEnv ? "#166534" : "white",
+                    border: hasDownloadedEnv ? "1px solid #86efac" : "1px solid #0052cc",
                     borderRadius: 4,
                     padding: "9px 18px",
                     fontSize: "0.95rem",
@@ -327,31 +312,31 @@ export default function SourceConnectorControl({
                     gap: 8,
                   }}
                 >
-                  {hasDownloadedExe ? <CheckCircle2 size={16} /> : <Download size={16} />}
-                  {hasDownloadedExe ? "Downloaded Agent (.exe)" : "Download Agent (.exe)"}
+                  {hasDownloadedEnv ? <CheckCircle2 size={16} /> : <FileText size={16} />}
+                  {hasDownloadedEnv ? "Downloaded Configuration (agent.env)" : "Download Configuration (agent.env)"}
                 </button>
                 <button
                   type="button"
-                  data-tour="download-agent-env-btn"
-                  onClick={downloadEnvFile}
-                  disabled={!hasDownloadedExe}
-                  title={!hasDownloadedExe ? "Download the executable before downloading its configuration" : "Download pre-configured agent.env"}
+                  data-tour="download-agent-exe-btn"
+                  onClick={handleDownloadExe}
+                  disabled={!hasDownloadedEnv}
+                  title={!hasDownloadedEnv ? "Download the configuration (agent.env) before downloading the executable" : "Download standalone migration-agent.exe"}
                   style={{
-                    background: hasDownloadedExe ? "#0052cc" : "#f1f5f9",
-                    color: hasDownloadedExe ? "white" : "#94a3b8",
-                    border: `1px solid ${hasDownloadedExe ? "#0052cc" : "#cbd5e1"}`,
+                    background: !hasDownloadedEnv ? "#f1f5f9" : hasDownloadedExe ? "#ecfdf5" : "#0052cc",
+                    color: !hasDownloadedEnv ? "#94a3b8" : hasDownloadedExe ? "#166534" : "white",
+                    border: `1px solid ${!hasDownloadedEnv ? "#cbd5e1" : hasDownloadedExe ? "#86efac" : "#0052cc"}`,
                     borderRadius: 4,
                     padding: "9px 18px",
                     fontSize: "0.95rem",
                     fontWeight: 600,
-                    cursor: hasDownloadedExe ? "pointer" : "not-allowed",
+                    cursor: hasDownloadedEnv ? "pointer" : "not-allowed",
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
                   }}
                 >
-                  {hasDownloadedExe ? <FileText size={16} /> : <Lock size={14} />}
-                  Download Configuration (agent.env){!hasDownloadedExe ? " (Locked)" : ""}
+                  {!hasDownloadedEnv ? <Lock size={14} /> : hasDownloadedExe ? <CheckCircle2 size={16} /> : <Download size={16} />}
+                  {hasDownloadedExe ? "Downloaded Agent (.exe)" : `Download Agent (.exe)${!hasDownloadedEnv ? " (Locked)" : ""}`}
                 </button>
                 <button
                   type="button"
@@ -458,9 +443,34 @@ export default function SourceConnectorControl({
             </details>
           </>
         ) : (
-          <p>
-            Register this source to generate a token for the Local Connector Agent.
-          </p>
+          <div>
+            <p>
+              Register this source to generate a token for the Local Connector Agent.
+            </p>
+            <div
+              style={{
+                marginTop: 14,
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: 10,
+                padding: "16px 18px",
+              }}
+            >
+              <div style={{ marginBottom: 12 }}>
+                <strong style={{ fontSize: 13, color: "#0f172a" }}>6-Step Connector Setup Roadmap</strong>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: 10 }}>
+                {SETUP_ROADMAP.map(([number, title, description]) => (
+                  <div key={number} style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                    <strong style={{ fontSize: 12, color: Number(number) < 4 ? "#2563eb" : "#16a34a" }}>
+                      Step {number}: {title}
+                    </strong>
+                    <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>{description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
 
         <div
@@ -513,6 +523,7 @@ export default function SourceConnectorControl({
             onClick={() => {
               setOpen(false);
               setRegistration(null);
+              setHasDownloadedEnv(false);
               setHasDownloadedExe(false);
               setError("");
               window.dispatchEvent(new CustomEvent("connector-agent-closed"));
