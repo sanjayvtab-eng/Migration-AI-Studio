@@ -299,6 +299,21 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         }
       }
 
+      if (stageToStart === "Sources") {
+        const hasSources = Boolean(
+          (contextRef.current.sourcesCount && contextRef.current.sourcesCount > 0) ||
+          contextRef.current.isDemoAccount
+        );
+        const step = !hasSources
+          ? TOUR_STEPS.find((s) => s.id === "step-3-add-source")
+          : TOUR_STEPS.find((s) => s.id === "step-3-connector-agent") ||
+            TOUR_STEPS.find((s) => s.id === "step-4-test-connection");
+        if (step) {
+          highlightStep(step);
+          return;
+        }
+      }
+
       if (stageToStart === "Migration Workflow") {
         const derivedId = deriveStudioStepId(
           contextRef.current.promptSpec,
@@ -411,7 +426,16 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
-      // 2a. Sources stage: Connector Agent modal closed -> guide to test connection
+      // 2a. Sources stage: Source created -> guide to Connector Agent
+      if (event === "source-created") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "step-3-connector-agent");
+          if (step) highlightStep(step);
+        }, 500);
+        return;
+      }
+
+      // 2b. Sources stage: Connector Agent modal closed -> guide to test connection
       if (event === "connector-agent-closed") {
         setTimeout(() => {
           const testStep = TOUR_STEPS.find((s) => s.id === "step-4-test-connection") || TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
@@ -542,10 +566,15 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return () => clearTimeout(timer);
       } else if (currentStage === "Sources") {
         const timer = setTimeout(() => {
-          const step =
-            TOUR_STEPS.find((s) => s.id === "step-3-connector-agent") ||
-            TOUR_STEPS.find((s) => s.id === "step-4-test-connection") ||
-            TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
+          const hasSources = Boolean(
+            (stageContext.sourcesCount && stageContext.sourcesCount > 0) ||
+            stageContext.isDemoAccount
+          );
+          const step = !hasSources
+            ? TOUR_STEPS.find((s) => s.id === "step-3-add-source")
+            : TOUR_STEPS.find((s) => s.id === "step-3-connector-agent") ||
+              TOUR_STEPS.find((s) => s.id === "step-4-test-connection") ||
+              TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
           if (step) highlightStep(step);
         }, 500);
         return () => clearTimeout(timer);

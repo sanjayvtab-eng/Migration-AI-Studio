@@ -1056,6 +1056,7 @@ export default function App() {
   const [showDatabricksPrereqModalState, setShowDatabricksPrereqModalState] = useState(
     getInitialStage() === "Environment Setup"
   );
+  const [sourcesCountState, setSourcesCountState] = useState(0);
 
   return (
     <TourProvider
@@ -1068,6 +1069,7 @@ export default function App() {
         environmentConfig: environmentConfigState,
         environmentPlan: environmentPlanState,
         showDatabricksPrereqModal: showDatabricksPrereqModalState,
+        sourcesCount: sourcesCountState,
       }}
     >
       <AppInner
@@ -1090,6 +1092,8 @@ export default function App() {
         setEnvironmentPlanState={setEnvironmentPlanState}
         showDatabricksPrereqModalState={showDatabricksPrereqModalState}
         setShowDatabricksPrereqModalState={setShowDatabricksPrereqModalState}
+        sourcesCountState={sourcesCountState}
+        setSourcesCountState={setSourcesCountState}
       />
     </TourProvider>
   );
@@ -1115,6 +1119,8 @@ function AppInner({
   setEnvironmentPlanState,
   showDatabricksPrereqModalState,
   setShowDatabricksPrereqModalState,
+  sourcesCountState,
+  setSourcesCountState,
 }: any) {
   const tour = useTour();
 
@@ -1229,6 +1235,12 @@ function AppInner({
   const [envPrereqShowGuide, setEnvPrereqShowGuide] = useState(false);
   const [isUsingManagedTrial, setIsUsingManagedTrial] = useState(false);
   const [showConnectorTourModal, setShowConnectorTourModal] = useState(false);
+
+  useEffect(() => {
+    if (setSourcesCountState) {
+      setSourcesCountState(sources.length);
+    }
+  }, [sources.length, setSourcesCountState]);
 
   useEffect(() => {
     const handleOpenTour = () => setShowConnectorTourModal(true);
@@ -2244,6 +2256,7 @@ function AppInner({
       auth_mode: "WINDOWS",
     });
     setNewSourceModalOpen(false);
+    tour.notify("source-created");
   }
 
   async function generatePromptPlan(pText?: string) {
@@ -6114,34 +6127,8 @@ function AppInner({
                 </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                   <button
-                    type="button"
-                    className="btn-tour-guide-highlight"
-                    onClick={() => setShowConnectorTourModal(true)}
-                    title="Local Connector Agent 6-Step Guided Tour"
-                  >
-                    <span style={{ fontSize: "1.05rem" }}>🧭</span>
-                    <span>6-Step Tour Guide</span>
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    type="button"
-                    onClick={() => tour.startTour("Sources")}
-                    title="Start step-by-step guided tour of Sources & Local Connector"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      fontSize: 13,
-                      fontWeight: 600,
-                      padding: "7px 14px",
-                      borderRadius: 6,
-                    }}
-                  >
-                    <Sparkles size={14} />
-                    <span>Take a tour</span>
-                  </button>
-                  <button
                     className="btn-primary-blue"
+                    data-tour={sources.length === 0 ? "add-source-header-btn" : "add-source-btn"}
                     disabled={!pid || isDemoAccount}
                     style={
                       isDemoAccount
@@ -6309,6 +6296,7 @@ function AppInner({
                     <p>Add a SQL Server, PostgreSQL, MySQL, or Oracle source to begin discovery.</p>
                     <button
                       className="btn-primary-blue"
+                      data-tour="add-source-btn"
                       disabled={!pid || isDemoAccount}
                       style={
                         isDemoAccount

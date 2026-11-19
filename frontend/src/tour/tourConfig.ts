@@ -227,6 +227,25 @@ export const TOUR_STEPS: TourStep[] = [
 
   // Stage 3: Sources (Steps 3, 4, 5, 6)
   {
+    id: "step-3-add-source",
+    stage: "Sources",
+    stageNumber: 3,
+    stepNumber: 3,
+    totalSteps: 9,
+    element: '[data-tour="add-source-btn"]',
+    popover: {
+      title: "Add Data Source",
+      description: "Click Add Source to register your database connection profile (SQL Server, PostgreSQL, MySQL, or Oracle) to begin migration.",
+      side: "bottom",
+      align: "center",
+    },
+    actionType: "click",
+    actionHint: "Click the highlighted button to add a source",
+    advanceOnEvent: "source-created",
+    disableBack: false,
+    condition: (context: any) => !context.isDemoAccount && (!context.sourcesCount || context.sourcesCount === 0),
+  },
+  {
     id: "step-3-connector-agent",
     stage: "Sources",
     stageNumber: 3,
