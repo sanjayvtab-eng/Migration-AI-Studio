@@ -907,6 +907,16 @@
   transform: translateY(-1px);
 }
 
+.btn-primary-blue:disabled {
+  background: #94a3b8 !important;
+  border-color: #cbd5e1 !important;
+  color: #f1f5f9 !important;
+  box-shadow: none !important;
+  cursor: not-allowed !important;
+  opacity: 0.65 !important;
+  transform: none !important;
+}
+
 /* Projects Table */
 .projects-table-card {
   background: #ffffff;
@@ -1801,6 +1811,44 @@
   padding-top: 16px;
   border-top: 1px solid #e2e8f0;
   flex-wrap: wrap;
+}
+
+/* Explicit Locked Action Button Style */
+.btn-action-locked {
+  background: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #94a3b8 !important;
+  border-radius: 9px !important;
+  padding: 9px 16px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  cursor: not-allowed !important;
+  opacity: 0.7 !important;
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+.btn-action-locked:hover {
+  background: #f1f5f9 !important;
+  transform: none !important;
+}
+
+/* Completed Step Button Style */
+.btn-action-completed {
+  background: #f0fdf4 !important;
+  border: 1px solid #bbf7d0 !important;
+  color: #166534 !important;
+  border-radius: 9px !important;
+  padding: 9px 16px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  cursor: default !important;
 }
 
 /* ==========================================================================

@@ -12726,70 +12726,203 @@ function AppInner({
                       </div>
                     </div>
 
-                    {/* Footer Action Deck */}
-                    <div className="env-action-deck">
-                      <button
-                        className="btn-secondary"
-                        data-tour="env-run-preflight-btn"
-                        disabled={busy || environmentConfig?.status !== "READY"}
-                        onClick={() =>
-                          action(async () => {
-                            const res = await api(`/projects/${pid}/environments/dev/preflight`, {
-                              method: "POST",
-                            });
-                            const plan = await api(`/projects/${pid}/environments/dev/plan`);
-                            setEnvironmentPlan(plan);
-                            if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
-                            tour.notify("env:preflight-completed", { environmentPlan: plan, preflight: res });
-                            return res;
-                          })
-                        }
-                      >
-                        <Stethoscope size={15} /> Run Preflight
-                      </button>
-                      <button
-                        className="btn-secondary"
-                        data-tour="env-approve-plan-btn"
-                        disabled={busy || environmentPlan.status !== "PREFLIGHT_PASSED"}
-                        onClick={() =>
-                          action(async () => {
-                            const res = await api(`/projects/${pid}/environments/dev/approve`, {
-                              method: "POST",
-                            });
-                            const plan = await api(`/projects/${pid}/environments/dev/plan`);
-                            setEnvironmentPlan(plan);
-                            if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
-                            tour.notify("env:plan-approved", { environmentPlan: plan });
-                            return res;
-                          })
-                        }
-                      >
-                        <FileCheck2 size={15} /> Approve Plan
-                      </button>
-                      <button
-                        className="btn-primary-blue"
-                        data-tour="env-provision-dev-btn"
-                        disabled={
-                          busy ||
-                          environmentPlan.status !== "APPROVED" ||
-                          !environmentConfig?.feature_enabled
-                        }
-                        onClick={() =>
-                          action(async () => {
-                            const res = await api(`/projects/${pid}/environments/dev/provision`, {
-                              method: "POST",
-                            });
-                            const plan = await api(`/projects/${pid}/environments/dev/plan`);
-                            setEnvironmentPlan(plan);
-                            if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
-                            tour.notify("env:provision-completed", { environmentPlan: plan });
-                            return res;
-                          })
-                        }
-                      >
-                        <ServerCog size={16} /> Provision DEV
-                      </button>
-                    </div>
+                    {/* Footer Action Deck with Sequential Flow & Enforced Locking */}
+                    {(() => {
+                      const isPreflightPassed =
+                        environmentPlan.status === "PREFLIGHT_PASSED" ||
+                        environmentPlan.status === "APPROVED" ||
+                        environmentPlan.status === "PROVISIONED";
+                      const isPlanApproved =
+                        environmentPlan.status === "APPROVED" ||
+                        environmentPlan.status === "PROVISIONED";
+                      const isDevProvisioned = environmentPlan.status === "PROVISIONED";
+
+                      return (
+                        <div className="env-action-deck">
+                          {/* Sequential Indicator Badge Deck */}
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              marginRight: "auto",
+                              fontSize: 12,
+                              color: "#64748b",
+                            }}
+                          >
+                            <span style={{ fontWeight: 600, color: "#0f172a" }}>Sequence:</span>
+                            <span
+                              style={{
+                                color: isPreflightPassed ? "#16a34a" : "#2563eb",
+                                fontWeight: isPreflightPassed ? 600 : 700,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 3,
+                              }}
+                            >
+                              {isPreflightPassed ? <Check size={12} /> : "1."} Preflight
+                            </span>
+                            <span>→</span>
+                            <span
+                              style={{
+                                color: isPlanApproved ? "#16a34a" : isPreflightPassed ? "#2563eb" : "#94a3b8",
+                                fontWeight: isPlanApproved ? 600 : isPreflightPassed ? 700 : 500,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 3,
+                              }}
+                            >
+                              {isPlanApproved ? <Check size={12} /> : !isPreflightPassed ? <Lock size={11} /> : "2."} Approval
+                            </span>
+                            <span>→</span>
+                            <span
+                              style={{
+                                color: isDevProvisioned ? "#16a34a" : isPlanApproved ? "#2563eb" : "#94a3b8",
+                                fontWeight: isDevProvisioned ? 600 : isPlanApproved ? 700 : 500,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 3,
+                              }}
+                            >
+                              {isDevProvisioned ? <Check size={12} /> : !isPlanApproved ? <Lock size={11} /> : "3."} Provisioning
+                            </span>
+                          </div>
+
+                          {/* 1. Run Preflight Button */}
+                          <button
+                            className={isPreflightPassed ? "btn-action-completed" : "btn-primary-blue"}
+                            data-tour="env-run-preflight-btn"
+                            disabled={busy || environmentConfig?.status !== "READY"}
+                            title={
+                              isPreflightPassed
+                                ? "Preflight validation passed. Click to re-run if needed."
+                                : "Step 1: Run Preflight Validation to inspect catalog and permissions"
+                            }
+                            onClick={() =>
+                              action(async () => {
+                                const res = await api(`/projects/${pid}/environments/dev/preflight`, {
+                                  method: "POST",
+                                });
+                                const plan = await api(`/projects/${pid}/environments/dev/plan`);
+                                setEnvironmentPlan(plan);
+                                if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
+                                tour.notify("env:preflight-completed", { environmentPlan: plan, preflight: res });
+                                return res;
+                              })
+                            }
+                          >
+                            {isPreflightPassed ? (
+                              <>
+                                <CheckCircle2 size={15} color="#16a34a" /> Preflight Passed
+                              </>
+                            ) : (
+                              <>
+                                <Stethoscope size={15} /> Run Preflight
+                              </>
+                            )}
+                          </button>
+
+                          {/* 2. Approve Plan Button (Locked until Preflight Passed) */}
+                          <button
+                            className={
+                              !isPreflightPassed
+                                ? "btn-action-locked"
+                                : isPlanApproved
+                                ? "btn-action-completed"
+                                : "btn-primary-blue"
+                            }
+                            data-tour="env-approve-plan-btn"
+                            disabled={busy || !isPreflightPassed || isPlanApproved}
+                            title={
+                              !isPreflightPassed
+                                ? "🔒 Run Preflight validation first before approving the plan"
+                                : isPlanApproved
+                                ? "DEV environment plan is approved"
+                                : "Step 2: Approve the validated DEV execution plan"
+                            }
+                            onClick={() =>
+                              action(async () => {
+                                const res = await api(`/projects/${pid}/environments/dev/approve`, {
+                                  method: "POST",
+                                });
+                                const plan = await api(`/projects/${pid}/environments/dev/plan`);
+                                setEnvironmentPlan(plan);
+                                if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
+                                tour.notify("env:plan-approved", { environmentPlan: plan });
+                                return res;
+                              })
+                            }
+                          >
+                            {!isPreflightPassed ? (
+                              <>
+                                <Lock size={14} /> Approve Plan (Locked)
+                              </>
+                            ) : isPlanApproved ? (
+                              <>
+                                <CheckCircle2 size={15} color="#16a34a" /> Plan Approved
+                              </>
+                            ) : (
+                              <>
+                                <FileCheck2 size={15} /> Approve Plan
+                              </>
+                            )}
+                          </button>
+
+                          {/* 3. Provision DEV Button (Locked until Plan Approved) */}
+                          <button
+                            className={
+                              !isPlanApproved
+                                ? "btn-action-locked"
+                                : isDevProvisioned
+                                ? "btn-action-completed"
+                                : "btn-primary-blue"
+                            }
+                            data-tour="env-provision-dev-btn"
+                            disabled={
+                              busy ||
+                              !isPlanApproved ||
+                              isDevProvisioned ||
+                              !environmentConfig?.feature_enabled
+                            }
+                            title={
+                              !isPlanApproved
+                                ? !isPreflightPassed
+                                  ? "🔒 Preflight validation and plan approval required first"
+                                  : "🔒 Approve plan before provisioning to DEV"
+                                : isDevProvisioned
+                                ? "DEV environment is fully provisioned"
+                                : "Step 3: Deploy managed target schemas to Databricks Unity Catalog"
+                            }
+                            onClick={() =>
+                              action(async () => {
+                                const res = await api(`/projects/${pid}/environments/dev/provision`, {
+                                  method: "POST",
+                                });
+                                const plan = await api(`/projects/${pid}/environments/dev/plan`);
+                                setEnvironmentPlan(plan);
+                                if (setEnvironmentPlanState) setEnvironmentPlanState(plan);
+                                tour.notify("env:provision-completed", { environmentPlan: plan });
+                                return res;
+                              })
+                            }
+                          >
+                            {!isPlanApproved ? (
+                              <>
+                                <Lock size={14} /> Provision DEV (Locked)
+                              </>
+                            ) : isDevProvisioned ? (
+                              <>
+                                <CheckCircle2 size={15} color="#16a34a" /> DEV Provisioned
+                              </>
+                            ) : (
+                              <>
+                                <ServerCog size={16} /> Provision DEV
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -12883,13 +13016,26 @@ function AppInner({
               title: isDemoAccount ? "Stage 2 of 9: Environment Setup (Demo · Locked)" : "Stage 2 of 9: Environment Setup",
               context: isDemoAccount
                 ? "Databricks target pre-provisioned for demo (Locked)"
-                : environmentConfig?.status === "READY" ? "Databricks target connection tested" : "Databricks target setup required",
+                : environmentPlan?.status === "PROVISIONED"
+                ? "DEV environment fully provisioned · Ready for Sources"
+                : environmentConfig?.status === "READY"
+                ? "Databricks target connection tested · DEV provisioning required"
+                : "Databricks target setup required",
               backText: "← Back to Projects",
               backTarget: "Projects",
               backDisabled: false,
-              forwardText: "Proceed to Sources →",
+              forwardText:
+                isDemoAccount || environmentPlan?.status === "PROVISIONED"
+                  ? "Proceed to Sources →"
+                  : "Proceed to Sources (Locked)",
               forwardTarget: "Sources",
-              forwardDisabled: !pid,
+              forwardDisabled:
+                !pid || (!isDemoAccount && environmentPlan?.status !== "PROVISIONED"),
+              forwardTooltip: !pid
+                ? "Select a project to continue"
+                : !isDemoAccount && environmentPlan?.status !== "PROVISIONED"
+                ? "🔒 Complete DEV preflight, approval, and provisioning to unlock Sources"
+                : undefined,
             },
             3: {
               title: "Stage 3 of 9: Sources",
@@ -13010,6 +13156,9 @@ function AppInner({
                   }
                   onClick={() => setPage(stageInfo.forwardTarget)}
                 >
+                  {stageInfo.forwardDisabled && currentStage === 2 && !isDemoAccount && (
+                    <Lock size={13} />
+                  )}
                   <span>{stageInfo.forwardText}</span>
                   <ArrowRight size={14} />
                 </button>
