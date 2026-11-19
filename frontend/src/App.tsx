@@ -1186,6 +1186,7 @@ function AppInner({
   const [discoveryProgressStep, setDiscoveryProgressStep] = useState<number>(0);
   const [discoveryDbFilter, setDiscoveryDbFilter] = useState<string>("ALL");
   const [discoveryTypeFilter, setDiscoveryTypeFilter] = useState<string>("ALL");
+  const [isDiscoveryComplete, setIsDiscoveryComplete] = useState<boolean>(false);
 
   // Inventory page states
   const [inventoryDbFilter, setInventoryDbFilter] = useState<string>("ALL");
@@ -1640,6 +1641,7 @@ function AppInner({
             setDiscoveryResult(null);
             setDiscoveryScanningSourceId(null);
             setDiscoveryProgressStep(0);
+            setIsDiscoveryComplete(false);
             setInventorySelectedIds([]);
             setPromptSpec(null);
             setPromptSpecPlan(null);
@@ -6855,6 +6857,7 @@ function AppInner({
                                 try {
                                   const r: any = await api(`/projects/${pid}/discovery/live/${s.id}`, { method: "POST" });
                                   setDiscoveryResult(r);
+                                  setIsDiscoveryComplete(true);
                                   await refresh();
                                   tour.notify("discovery-completed", r);
                                   return r;
@@ -7074,13 +7077,6 @@ function AppInner({
                     >
                       <FileCode2 size={14} />
                       {showRawJson ? "Hide JSON" : "Raw Diagnostic"}
-                    </button>
-                    <button
-                      className="btn-primary-blue"
-                      onClick={() => setPage("Migration Workflow")}
-                    >
-                      Proceed to Migration Studio →
-                      <ArrowRight size={14} />
                     </button>
                   </div>
                 </div>
@@ -13048,15 +13044,14 @@ function AppInner({
             },
             4: {
               title: "Stage 4 of 9: Discovery",
-              context: isDemoAccount
-                ? `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects · Demo Bypass to Studio Active`
-                : `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects Identified`,
+              context: `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects Identified`,
               backText: "← Back to Sources",
               backTarget: "Sources",
               backDisabled: false,
-              forwardText: "Proceed to Migration Studio →",
+              forwardText: isDiscoveryComplete ? "Proceed to Migration Studio →" : "Proceed to Migration Studio (Locked)",
               forwardTarget: "Migration Workflow",
-              forwardDisabled: false,
+              forwardDisabled: !isDiscoveryComplete,
+              forwardTooltip: !isDiscoveryComplete ? "🔒 Run Schema Discovery to complete discovery process and unlock Migration Studio" : undefined,
             },
             5: {
               title: isDemoAccount ? "Stage 5 of 9: Inventory (Demo Bypassed)" : "Stage 5 of 9: Inventory",
@@ -13155,7 +13150,7 @@ function AppInner({
                   }
                   onClick={() => setPage(stageInfo.forwardTarget)}
                 >
-                  {stageInfo.forwardDisabled && (currentStage === 2 || currentStage === 3) && !isDemoAccount && (
+                  {stageInfo.forwardDisabled && (
                     <Lock size={13} />
                   )}
                   <span>{stageInfo.forwardText}</span>
