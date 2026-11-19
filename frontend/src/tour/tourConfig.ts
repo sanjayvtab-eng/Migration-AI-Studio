@@ -12,6 +12,7 @@ export interface TourStep {
     align?: "start" | "center" | "end";
   };
   actionType?: "click" | "info";
+  actionHint?: string;
   advanceOnEvent?: string;
   condition?: (context: any) => boolean;
   waitForElement?: boolean;
@@ -73,13 +74,32 @@ export const TOUR_STEPS: TourStep[] = [
     condition: (context: any) => Boolean(context.hasProject || context.isDemoAccount),
   },
 
-  // Stage 2: Environment Setup (Steps 1 to 7 - Active for Non-Demo Users)
+  // Stage 2: Environment Setup (Steps 1 to 8 - Active for Non-Demo Users)
+  {
+    id: "env-choose-prereq",
+    stage: "Environment Setup",
+    stageNumber: 2,
+    stepNumber: 1,
+    totalSteps: 8,
+    element: '[data-tour="env-prereq-modal"]',
+    popover: {
+      title: "Target Databricks Account & Workspace Setup",
+      description: "Select whether you have an existing Databricks workspace ('I Have an Account'), need to create a new trial account, or want to start instantly with our pre-configured trial account.",
+      side: "top",
+      align: "center",
+    },
+    actionType: "click",
+    actionHint: "Select an account option below to proceed",
+    advanceOnEvent: "env:prereq-selected",
+    disableBack: true,
+    condition: (context: any) => !context.isDemoAccount && Boolean(context.showDatabricksPrereqModal),
+  },
   {
     id: "env-save-config",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 1,
-    totalSteps: 7,
+    stepNumber: 2,
+    totalSteps: 8,
     element: '[data-tour="env-save-config-btn"]',
     popover: {
       title: "Save Databricks Configuration",
@@ -90,14 +110,14 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     advanceOnEvent: "env:config-saved",
     disableBack: true,
-    condition: (context: any) => !context.isDemoAccount,
+    condition: (context: any) => !context.isDemoAccount && !context.showDatabricksPrereqModal,
   },
   {
     id: "env-test-connection",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 2,
-    totalSteps: 7,
+    stepNumber: 3,
+    totalSteps: 8,
     element: '[data-tour="env-test-connection-btn"]',
     popover: {
       title: "Test Databricks Connection",
@@ -114,8 +134,8 @@ export const TOUR_STEPS: TourStep[] = [
     id: "env-create-plan",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 3,
-    totalSteps: 7,
+    stepNumber: 4,
+    totalSteps: 8,
     element: '[data-tour="env-create-plan-btn"]',
     popover: {
       title: "Create DEV Plan",
@@ -132,8 +152,8 @@ export const TOUR_STEPS: TourStep[] = [
     id: "env-run-preflight",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 4,
-    totalSteps: 7,
+    stepNumber: 5,
+    totalSteps: 8,
     element: '[data-tour="env-run-preflight-btn"]',
     popover: {
       title: "Run Preflight Validation",
@@ -152,8 +172,8 @@ export const TOUR_STEPS: TourStep[] = [
     id: "env-approve-plan",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 5,
-    totalSteps: 7,
+    stepNumber: 6,
+    totalSteps: 8,
     element: '[data-tour="env-approve-plan-btn"]',
     popover: {
       title: "Approve Environment Plan",
@@ -171,8 +191,8 @@ export const TOUR_STEPS: TourStep[] = [
     id: "env-provision-dev",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 6,
-    totalSteps: 7,
+    stepNumber: 7,
+    totalSteps: 8,
     element: '[data-tour="env-provision-dev-btn"]',
     popover: {
       title: "Provision to DEV",
@@ -190,8 +210,8 @@ export const TOUR_STEPS: TourStep[] = [
     id: "env-proceed-sources",
     stage: "Environment Setup",
     stageNumber: 2,
-    stepNumber: 7,
-    totalSteps: 7,
+    stepNumber: 8,
+    totalSteps: 8,
     element: '[data-tour="env-proceed-sources-btn"]',
     popover: {
       title: "Proceed to Sources",
@@ -474,7 +494,14 @@ export const TOUR_STEPS: TourStep[] = [
 /**
  * State-derived map for Stage 2 (Environment Setup)
  */
-export const deriveEnvStepId = (environmentConfig: any, environmentPlan: any): string => {
+export const deriveEnvStepId = (
+  environmentConfig: any,
+  environmentPlan: any,
+  showDatabricksPrereqModal?: boolean
+): string => {
+  if (showDatabricksPrereqModal) {
+    return "env-choose-prereq";
+  }
   if (environmentPlan?.status === "PROVISIONED") {
     return "env-proceed-sources";
   }

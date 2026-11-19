@@ -1053,6 +1053,9 @@ export default function App() {
   const [hasProjectState, setHasProjectState] = useState(false);
   const [environmentConfigState, setEnvironmentConfigState] = useState<any>(null);
   const [environmentPlanState, setEnvironmentPlanState] = useState<any>(null);
+  const [showDatabricksPrereqModalState, setShowDatabricksPrereqModalState] = useState(
+    getInitialStage() === "Environment Setup"
+  );
 
   return (
     <TourProvider
@@ -1064,6 +1067,7 @@ export default function App() {
         hasProject: hasProjectState,
         environmentConfig: environmentConfigState,
         environmentPlan: environmentPlanState,
+        showDatabricksPrereqModal: showDatabricksPrereqModalState,
       }}
     >
       <AppInner
@@ -1084,6 +1088,8 @@ export default function App() {
         setHasProjectState={setHasProjectState}
         setEnvironmentConfigState={setEnvironmentConfigState}
         setEnvironmentPlanState={setEnvironmentPlanState}
+        showDatabricksPrereqModalState={showDatabricksPrereqModalState}
+        setShowDatabricksPrereqModalState={setShowDatabricksPrereqModalState}
       />
     </TourProvider>
   );
@@ -1107,6 +1113,8 @@ function AppInner({
   setHasProjectState,
   setEnvironmentConfigState,
   setEnvironmentPlanState,
+  showDatabricksPrereqModalState,
+  setShowDatabricksPrereqModalState,
 }: any) {
   const tour = useTour();
 
@@ -1215,7 +1223,9 @@ function AppInner({
     [directDatabricksToken, setDirectDatabricksToken] = useState(""),
     [showDirectDatabricksToken, setShowDirectDatabricksToken] = useState(false),
     [artifactSearchQuery, setArtifactSearchQuery] = useState<Record<string, string>>({});
-  const [showDatabricksPrereqModal, setShowDatabricksPrereqModal] = useState(false);
+  const [showDatabricksPrereqModal, setShowDatabricksPrereqModal] = useState(
+    showDatabricksPrereqModalState ?? false
+  );
   const [envPrereqShowGuide, setEnvPrereqShowGuide] = useState(false);
   const [isUsingManagedTrial, setIsUsingManagedTrial] = useState(false);
   const [showConnectorTourModal, setShowConnectorTourModal] = useState(false);
@@ -1229,11 +1239,13 @@ function AppInner({
   useEffect(() => {
     if (page === "Environment Setup" && !isDemoAccount) {
       setShowDatabricksPrereqModal(true);
+      if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(true);
       setEnvPrereqShowGuide(false);
     } else {
       setShowDatabricksPrereqModal(false);
+      if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(false);
     }
-  }, [page, isDemoAccount]);
+  }, [page, isDemoAccount, setShowDatabricksPrereqModalState]);
 
   const handleFocusConfigForm = () => {
     const formElement = document.getElementById("databricks-config-form");
@@ -1250,6 +1262,15 @@ function AppInner({
     }
   };
 
+  const handleClosePrereqModal = (nextAction?: "focus-form" | "none") => {
+    setShowDatabricksPrereqModal(false);
+    if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(false);
+    if (nextAction === "focus-form") {
+      handleFocusConfigForm();
+    }
+    tour.notify("env:prereq-selected");
+  };
+
   const isTrialWorkspace =
     isUsingManagedTrial ||
     (Boolean(environmentConfig?.workspace_host) && environmentConfig?.workspace_host === MANAGED_DATABRICKS_TRIAL.workspace_host) ||
@@ -1264,6 +1285,7 @@ function AppInner({
     });
     setIsUsingManagedTrial(true);
     setShowDatabricksPrereqModal(false);
+    if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(false);
     handleFocusConfigForm();
     if (!pid) return;
     setBusy(true);
@@ -11852,7 +11874,9 @@ function AppInner({
                         type="button"
                         onClick={() => {
                           setShowDatabricksPrereqModal(true);
+                          if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(true);
                           setEnvPrereqShowGuide(false);
+                          tour.notify("env:prereq-opened");
                         }}
                         className="wf-header-badge blue"
                         style={{
@@ -11925,10 +11949,11 @@ function AppInner({
               {!isDemoAccount && showDatabricksPrereqModal && (
                 <div
                   className="env-prereq-modal-overlay"
-                  onClick={() => setShowDatabricksPrereqModal(false)}
+                  onClick={() => handleClosePrereqModal("none")}
                 >
                   <div
                     className="env-prereq-modal-card"
+                    data-tour="env-prereq-modal"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div className="env-attention-header" style={{ borderRadius: "20px 20px 0 0" }}>
@@ -11952,7 +11977,7 @@ function AppInner({
                       <button
                         type="button"
                         className="env-prereq-modal-close-btn"
-                        onClick={() => setShowDatabricksPrereqModal(false)}
+                        onClick={() => handleClosePrereqModal("none")}
                         title="Dismiss popup"
                       >
                         <X size={18} />
@@ -11983,10 +12008,7 @@ function AppInner({
                             <button
                               type="button"
                               className="env-choice-btn success"
-                              onClick={() => {
-                                setShowDatabricksPrereqModal(false);
-                                handleFocusConfigForm();
-                              }}
+                              onClick={() => handleClosePrereqModal("focus-form")}
                             >
                               <span>I Have an Account</span>
                               <ArrowRight size={15} />
@@ -12179,10 +12201,7 @@ function AppInner({
                             </a>
                             <button
                               type="button"
-                              onClick={() => {
-                                setShowDatabricksPrereqModal(false);
-                                handleFocusConfigForm();
-                              }}
+                              onClick={() => handleClosePrereqModal("focus-form")}
                               style={{
                                 marginLeft: "auto",
                                 background: "#0f172a",
@@ -12213,7 +12232,7 @@ function AppInner({
                       <button
                         type="button"
                         className="btn secondary"
-                        onClick={() => setShowDatabricksPrereqModal(false)}
+                        onClick={() => handleClosePrereqModal("none")}
                         style={{ fontSize: 12.5, padding: "7px 16px" }}
                       >
                         Dismiss / Close

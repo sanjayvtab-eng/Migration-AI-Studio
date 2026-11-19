@@ -108,7 +108,7 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
               ? `<button type="button" class="mf-tour-btn-next" data-tour-action="next">
                   ${isLastStep ? "Finish" : "Next"}
                 </button>`
-              : `<span class="mf-tour-action-hint">Click the highlighted button to proceed</span>`
+              : `<span class="mf-tour-action-hint">${stepConfig.actionHint || "Click the highlighted button to proceed"}</span>`
           }
         </div>
       </div>
@@ -188,7 +188,9 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         targetEl.classList.remove("tour-pulse");
         targetEl.removeEventListener("click", handleTargetClick);
       };
-      targetEl.addEventListener("click", handleTargetClick, { once: true });
+      if (stepConfig.id !== "env-choose-prereq") {
+        targetEl.addEventListener("click", handleTargetClick, { once: true });
+      }
 
       // Wire up custom buttons in popover
       setTimeout(() => {
@@ -287,7 +289,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         if (contextRef.current.isDemoAccount) return;
         const derivedId = deriveEnvStepId(
           contextRef.current.environmentConfig,
-          contextRef.current.environmentPlan
+          contextRef.current.environmentPlan,
+          contextRef.current.showDatabricksPrereqModal
         );
         const step = TOUR_STEPS.find((s) => s.id === derivedId);
         if (step) {
@@ -343,6 +346,23 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       // 1b. Environment Setup stage (Stage 2) action progression
+      if (event === "env:prereq-selected" || event === "env:prereq-dismissed") {
+        dismissSpotlight();
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-save-config");
+          if (step) highlightStep(step);
+        }, 300);
+        return;
+      }
+
+      if (event === "env:prereq-opened") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "env-choose-prereq");
+          if (step) highlightStep(step);
+        }, 300);
+        return;
+      }
+
       if (event === "env:config-saved") {
         setTimeout(() => {
           const step = TOUR_STEPS.find((s) => s.id === "env-test-connection");
@@ -513,7 +533,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         const timer = setTimeout(() => {
           const derivedId = deriveEnvStepId(
             stageContext.environmentConfig,
-            stageContext.environmentPlan
+            stageContext.environmentPlan,
+            stageContext.showDatabricksPrereqModal
           );
           const step = TOUR_STEPS.find((s) => s.id === derivedId);
           if (step) highlightStep(step);
