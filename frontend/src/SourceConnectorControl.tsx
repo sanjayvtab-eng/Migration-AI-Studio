@@ -27,7 +27,10 @@ export default function SourceConnectorControl({
   const path = `/projects/${projectId}/sources/${source.id}/connector`;
 
   useEffect(() => {
-    if (open) dialog.current?.showModal();
+    if (open) {
+      dialog.current?.showModal();
+      window.dispatchEvent(new CustomEvent("connector-agent-opened"));
+    }
   }, [open]);
 
   useEffect(() => {
@@ -470,6 +473,8 @@ export default function SourceConnectorControl({
           </div>
           <button
             type="button"
+            data-tour="connector-close-btn"
+            className={hasDownloadedExe ? "btn-connector-token-highlight" : ""}
             onClick={() => {
               setOpen(false);
               setRegistration(null);

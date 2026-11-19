@@ -39,6 +39,36 @@ function waitForElement(selector: string, timeoutMs: number = 4000): Promise<HTM
 }
 
 /**
+ * Helper to wait until no global operation loading backdrop is active in DOM
+ */
+function waitForBackdropDismissal(timeoutMs: number = 20000): Promise<void> {
+  return new Promise((resolve) => {
+    if (!document.querySelector(".global-loading-backdrop")) {
+      return resolve();
+    }
+
+    let observer: MutationObserver | null = null;
+    const timeout = setTimeout(() => {
+      if (observer) observer.disconnect();
+      resolve();
+    }, timeoutMs);
+
+    observer = new MutationObserver(() => {
+      if (!document.querySelector(".global-loading-backdrop")) {
+        clearTimeout(timeout);
+        if (observer) observer.disconnect();
+        resolve();
+      }
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  });
+}
+
+/**
  * Hook to manage stage-aware onboarding tour lifecycle with driver.js
  */
 export function useOnboardingTour(currentStage: string, stageContext: Record<string, any> = {}) {
@@ -123,7 +153,7 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       if (!stepConfig) return;
 
       const state = getTourState();
-      if (state.skipped || state.completed) return;
+      if (state.skipped) return;
 
       currentStepRef.current = stepConfig;
 
@@ -133,23 +163,24 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
-      // Do not highlight if an operation overlay or loading backdrop is active
+      // If an operation overlay or loading backdrop is active, wait for it to dismiss before highlighting!
       if (document.querySelector(".global-loading-backdrop")) {
-        console.log(`[Tour] Operation overlay active; postponing highlight for ${stepConfig.id}.`);
+        console.log(`[Tour] Operation overlay active; waiting for it to finish before highlighting ${stepConfig.id}...`);
         dismissSpotlight();
-        return;
+        await waitForBackdropDismissal(20000);
+        await new Promise((res) => setTimeout(res, 250));
       }
 
       // Wait for element to exist in DOM
-      const targetEl = await waitForElement(stepConfig.element, 3500);
+      const targetEl = await waitForElement(stepConfig.element, 5000);
       if (!targetEl) {
         console.warn(`[Tour] Element ${stepConfig.element} not found, skipping gracefully.`);
         return;
       }
 
       if (document.querySelector(".global-loading-backdrop")) {
-        dismissSpotlight();
-        return;
+        await waitForBackdropDismissal(20000);
+        await new Promise((res) => setTimeout(res, 250));
       }
 
       // Smooth scroll into view if required or off-screen
@@ -185,11 +216,22 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         },
       });
 
-      // If target element is disconnected from DOM while highlighted, immediately destroy tour popover
+      // If target element is disconnected from DOM while highlighted, immediately destroy tour popover.
+      // If an operation overlay appears while highlighted, dismiss spotlight and wait to re-highlight!
       const disconnectObserver = new MutationObserver(() => {
-        if (!targetEl.isConnected || document.querySelector(".global-loading-backdrop")) {
+        if (!targetEl.isConnected) {
           dismissSpotlight();
           disconnectObserver.disconnect();
+        } else if (document.querySelector(".global-loading-backdrop")) {
+          dismissSpotlight();
+          disconnectObserver.disconnect();
+          waitForBackdropDismissal(20000).then(() => {
+            setTimeout(() => {
+              if (currentStepRef.current && !document.querySelector(".global-loading-backdrop")) {
+                highlightStep(currentStepRef.current);
+              }
+            }, 300);
+          });
         }
       });
       disconnectObserver.observe(document.body, { childList: true, subtree: true });
@@ -384,8 +426,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       // 1b. Environment Setup stage (Stage 2) action progression
       if (event === "env:prereq-selected" || event === "env:prereq-dismissed") {
         dismissSpotlight();
-        setTimeout(() => {
-          if (document.querySelector(".global-loading-backdrop")) return;
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-save-config");
           if (step) highlightStep(step);
         }, 400);
@@ -393,7 +435,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:prereq-opened") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-choose-prereq");
           if (step) highlightStep(step);
         }, 300);
@@ -401,7 +444,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:config-saved") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-test-connection");
           if (step) highlightStep(step);
         }, 400);
@@ -409,7 +453,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:connection-tested") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-create-plan");
           if (step) highlightStep(step);
         }, 400);
@@ -417,7 +462,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:plan-created") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-run-preflight");
           if (step) highlightStep(step);
         }, 500);
@@ -425,7 +471,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:preflight-completed") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-approve-plan");
           if (step) highlightStep(step);
         }, 400);
@@ -433,7 +480,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:plan-approved") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-provision-dev");
           if (step) highlightStep(step);
         }, 400);
@@ -441,7 +489,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "env:provision-completed") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "env-proceed-sources");
           if (step) highlightStep(step);
         }, 400);
@@ -451,7 +500,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       // 2a. Sources stage: Source created -> guide to Connector Agent
       if (event === "source-created") {
         dismissSpotlight();
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "step-3-connector-agent");
           if (step) {
             saveTourState({ currentStepIndex: 3, currentStage: "Sources" });
@@ -461,8 +511,18 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
+      if (event === "connector-agent-opened") {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const step = TOUR_STEPS.find((s) => s.id === "connector-generate-token");
+          if (step) highlightStep(step);
+        }, 300);
+        return;
+      }
+
       if (event === "connector:token-generated") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "connector-download-env");
           if (step) highlightStep(step);
         }, 250);
@@ -470,7 +530,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "connector:env-downloaded") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "connector-download-exe");
           if (step) highlightStep(step);
         }, 150);
@@ -478,13 +539,18 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event === "connector:exe-downloaded") {
-        dismissSpotlight();
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const step = TOUR_STEPS.find((s) => s.id === "connector-close-modal");
+          if (step) highlightStep(step);
+        }, 250);
         return;
       }
 
       // 2b. Sources stage: Connector Agent modal closed -> guide to test connection
       if (event === "connector-agent-closed") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const testStep = TOUR_STEPS.find((s) => s.id === "step-4-test-connection") || TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
           if (testStep) {
             highlightStep(testStep);
@@ -495,32 +561,35 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       // 2b. Sources stage: Connection test completed
       if (event === "test-connection-completed") {
-        setTimeout(() => {
-          const stepResults = TOUR_STEPS.find((s) => s.id === "step-5-test-results") || TOUR_STEPS.find((s) => s.id === "step-4-test-results");
-          if (stepResults) {
-            saveTourState({ currentStepIndex: 4, currentStage: "Sources" });
-            highlightStep(stepResults);
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const stepProceed = TOUR_STEPS.find((s) => s.id === "step-6-proceed-discovery");
+          if (stepProceed) {
+            saveTourState({ currentStepIndex: 5, currentStage: "Sources" });
+            highlightStep(stepProceed);
           }
-        }, 500);
+        }, 400);
         return;
       }
 
       // 3. Discovery stage: Discovery completed
       if (event === "discovery-completed") {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const stepStudio = TOUR_STEPS.find((s) => s.id === "step-8-proceed-studio") || TOUR_STEPS.find((s) => s.id === "step-7-proceed-studio");
           if (stepStudio) {
             saveTourState({ currentStepIndex: 7, currentStage: "Discovery" });
             highlightStep(stepStudio);
           }
-        }, 500);
+        }, 400);
         return;
       }
 
       // 4. Studio stage: Sequential highlights
       if (event === "studio:prompt-entered") {
         dismissSpotlight();
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "studio-parse-prompt");
           if (step) highlightStep(step);
         }, 300);
@@ -529,7 +598,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       if (event === "studio:prompt-parsed") {
         dismissSpotlight();
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const pSpec = payload?.promptSpec || contextRef.current.promptSpec;
           const derivedId = deriveStudioStepId(
             pSpec,
@@ -541,13 +611,14 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
           if (nextStep) {
             highlightStep(nextStep);
           }
-        }, 500);
+        }, 400);
         return;
       }
 
       if (event === "studio:defaults-applied") {
         dismissSpotlight();
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const step = TOUR_STEPS.find((s) => s.id === "studio-clarifications-save");
           if (step) highlightStep(step);
         }, 300);
@@ -556,7 +627,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       if (event === "studio:clarifications-saved") {
         dismissSpotlight();
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const derivedId = deriveStudioStepId(
             payload?.promptSpec || contextRef.current.promptSpec,
             Boolean(payload?.isDevAlreadyPassed || contextRef.current.isDevAlreadyPassed),
@@ -567,13 +639,50 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
           if (nextStep) {
             highlightStep(nextStep);
           }
+        }, 400);
+        return;
+      }
+
+      if (event === "studio:plan-approved") {
+        dismissSpotlight();
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const nextStep = TOUR_STEPS.find((s) => s.id === "studio-generate-artifacts");
+          if (nextStep) {
+            highlightStep(nextStep);
+          }
+        }, 400);
+        return;
+      }
+
+      if (event === "studio:artifacts-generated") {
+        dismissSpotlight();
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const nextStep = TOUR_STEPS.find((s) => s.id === "studio-review-artifacts");
+          if (nextStep) {
+            highlightStep(nextStep);
+          }
         }, 500);
+        return;
+      }
+
+      if (event === "studio:artifacts-validated" || event === "studio:artifacts-approved") {
+        dismissSpotlight();
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const nextStep = TOUR_STEPS.find((s) => s.id === "studio-deploy-dev");
+          if (nextStep) {
+            highlightStep(nextStep);
+          }
+        }, 400);
         return;
       }
 
       if (event === "studio:reset-demo") {
         dismissSpotlight();
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const enterPromptStep = TOUR_STEPS.find((s) => s.id === "studio-enter-prompt");
           if (enterPromptStep) highlightStep(enterPromptStep);
         }, 400);
@@ -581,7 +690,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }
 
       if (event.startsWith("studio:")) {
-        setTimeout(() => {
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
           const derivedId = deriveStudioStepId(
             payload?.promptSpec || contextRef.current.promptSpec,
             Boolean(payload?.isDevAlreadyPassed || contextRef.current.isDevAlreadyPassed),
@@ -592,7 +702,7 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
           if (nextStep) {
             highlightStep(nextStep);
           }
-        }, 500);
+        }, 400);
         return;
       }
 
@@ -626,13 +736,18 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     }
   }, []);
 
-  // Listen for local connector dialog close event
+  // Listen for local connector dialog open & close events
   useEffect(() => {
+    const handleConnectorOpened = () => {
+      notify("connector-agent-opened");
+    };
     const handleConnectorClosed = () => {
       notify("connector-agent-closed");
     };
+    window.addEventListener("connector-agent-opened", handleConnectorOpened);
     window.addEventListener("connector-agent-closed", handleConnectorClosed);
     return () => {
+      window.removeEventListener("connector-agent-opened", handleConnectorOpened);
       window.removeEventListener("connector-agent-closed", handleConnectorClosed);
     };
   }, [notify]);
@@ -648,78 +763,98 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     };
   }, [notify]);
 
-  // When stage changes, resume tour if active and not completed
+  // When stage changes or state updates, resume tour seamlessly if not explicitly skipped
   useEffect(() => {
     const state = getTourState();
-    if (state.hasSeenTour && !state.completed && !state.skipped) {
-      if (currentStage === "Projects") {
-        // Only show step 2 if projects already exist and selected, otherwise step 1
-        const timer = setTimeout(() => {
-          if (state.currentStepIndex >= 1 && stageContext.hasProject) {
-            const step2 = TOUR_STEPS.find((s) => s.id === "step-2-proceed-sources");
-            if (step2) highlightStep(step2);
-          } else if (stageContext.isDemoAccount) {
-            const demoStep = TOUR_STEPS.find((s) => s.id === "step-1-demo-project");
-            if (demoStep) highlightStep(demoStep);
-          } else {
-            const step1 = TOUR_STEPS.find((s) => s.id === "step-1-new-project");
-            if (step1) highlightStep(step1);
+    if (state.skipped) return;
+
+    if (currentStage === "Projects") {
+      // Only show step 2 if projects already exist and selected, otherwise step 1
+      const timer = setTimeout(async () => {
+        await waitForBackdropDismissal();
+        if (stageContext.hasProject) {
+          const step2 = TOUR_STEPS.find((s) => s.id === "step-2-proceed-sources");
+          if (step2) highlightStep(step2);
+        } else if (stageContext.isDemoAccount) {
+          const demoStep = TOUR_STEPS.find((s) => s.id === "step-1-demo-project");
+          if (demoStep) highlightStep(demoStep);
+        } else {
+          const step1 = TOUR_STEPS.find((s) => s.id === "step-1-new-project");
+          if (step1) highlightStep(step1);
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    } else if (currentStage === "Environment Setup") {
+      if (stageContext.isDemoAccount) return;
+      const timer = setTimeout(async () => {
+        await waitForBackdropDismissal();
+        const derivedId = deriveEnvStepId(
+          stageContext.environmentConfig,
+          stageContext.environmentPlan,
+          stageContext.showDatabricksPrereqModal
+        );
+        const step = TOUR_STEPS.find((s) => s.id === derivedId);
+        if (step) highlightStep(step);
+      }, 500);
+      return () => clearTimeout(timer);
+    } else if (currentStage === "Sources") {
+      const timer = setTimeout(async () => {
+        await waitForBackdropDismissal();
+        const connectorDialog = document.querySelector<HTMLDialogElement>("dialog[open]");
+        if (connectorDialog) {
+          const envBtn = connectorDialog.querySelector('[data-tour="download-agent-env-btn"]');
+          const exeBtn = connectorDialog.querySelector('[data-tour="download-agent-exe-btn"]');
+          const tokenBtn = connectorDialog.querySelector('[data-tour="generate-connector-token-btn"]');
+          if (tokenBtn && !envBtn) {
+            const step = TOUR_STEPS.find((s) => s.id === "connector-generate-token");
+            if (step) { highlightStep(step); return; }
+          } else if (envBtn && !exeBtn) {
+            const step = TOUR_STEPS.find((s) => s.id === "connector-download-env");
+            if (step) { highlightStep(step); return; }
           }
-        }, 500);
-        return () => clearTimeout(timer);
-      } else if (currentStage === "Environment Setup") {
-        if (stageContext.isDemoAccount) return;
-        const timer = setTimeout(() => {
-          const derivedId = deriveEnvStepId(
-            stageContext.environmentConfig,
-            stageContext.environmentPlan,
-            stageContext.showDatabricksPrereqModal
-          );
-          const step = TOUR_STEPS.find((s) => s.id === derivedId);
-          if (step) highlightStep(step);
-        }, 500);
-        return () => clearTimeout(timer);
-      } else if (currentStage === "Sources") {
-        const timer = setTimeout(() => {
-          const hasSources = Boolean(
-            (stageContext.sourcesCount && stageContext.sourcesCount > 0) ||
-            stageContext.isDemoAccount
-          );
-          const step = !hasSources
-            ? TOUR_STEPS.find((s) => s.id === "step-3-add-source")
-            : TOUR_STEPS.find((s) => s.id === "step-3-connector-agent") ||
-              TOUR_STEPS.find((s) => s.id === "step-4-test-connection") ||
-              TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
-          if (step) highlightStep(step);
-        }, 500);
-        return () => clearTimeout(timer);
-      } else if (currentStage === "Discovery") {
-        const timer = setTimeout(() => {
-          const step =
-            TOUR_STEPS.find((s) => s.id === "step-7-run-discovery") ||
-            TOUR_STEPS.find((s) => s.id === "step-6-run-discovery");
-          if (step) highlightStep(step);
-        }, 500);
-        return () => clearTimeout(timer);
-      } else if (currentStage === "Migration Workflow") {
-        const timer = setTimeout(() => {
-          const derivedId = deriveStudioStepId(
-            stageContext.promptSpec,
-            stageContext.isDevAlreadyPassed,
-            stageContext.hasInteractedPrompt,
-            stageContext.hasAppliedDefaults
-          );
-          const step = TOUR_STEPS.find((s) => s.id === derivedId);
-          if (step) highlightStep(step);
-        }, 500);
-        return () => clearTimeout(timer);
-      } else if (currentStage === "Deployments") {
-        const timer = setTimeout(() => {
-          const step = TOUR_STEPS.find((s) => s.id === "deploy-authorize-promotion");
-          if (step) highlightStep(step);
-        }, 500);
-        return () => clearTimeout(timer);
-      }
+        }
+
+        const hasSources = Boolean(
+          (stageContext.sourcesCount && stageContext.sourcesCount > 0) ||
+          stageContext.isDemoAccount
+        );
+        const step = !hasSources
+          ? TOUR_STEPS.find((s) => s.id === "step-3-add-source")
+          : TOUR_STEPS.find((s) => s.id === "step-3-connector-agent") ||
+            TOUR_STEPS.find((s) => s.id === "step-4-test-connection") ||
+            TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
+        if (step) highlightStep(step);
+      }, 500);
+      return () => clearTimeout(timer);
+    } else if (currentStage === "Discovery") {
+      const timer = setTimeout(async () => {
+        await waitForBackdropDismissal();
+        const step =
+          TOUR_STEPS.find((s) => s.id === "step-7-run-discovery") ||
+          TOUR_STEPS.find((s) => s.id === "step-6-run-discovery");
+        if (step) highlightStep(step);
+      }, 500);
+      return () => clearTimeout(timer);
+    } else if (currentStage === "Migration Workflow") {
+      const timer = setTimeout(async () => {
+        await waitForBackdropDismissal();
+        const derivedId = deriveStudioStepId(
+          stageContext.promptSpec,
+          stageContext.isDevAlreadyPassed,
+          stageContext.hasInteractedPrompt,
+          stageContext.hasAppliedDefaults
+        );
+        const step = TOUR_STEPS.find((s) => s.id === derivedId);
+        if (step) highlightStep(step);
+      }, 500);
+      return () => clearTimeout(timer);
+    } else if (currentStage === "Deployments") {
+      const timer = setTimeout(async () => {
+        await waitForBackdropDismissal();
+        const step = TOUR_STEPS.find((s) => s.id === "deploy-authorize-promotion");
+        if (step) highlightStep(step);
+      }, 500);
+      return () => clearTimeout(timer);
     }
   }, [
     currentStage,

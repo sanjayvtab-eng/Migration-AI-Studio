@@ -1059,6 +1059,7 @@ export default function App() {
   const [sourcesCountState, setSourcesCountState] = useState(0);
   const [hasInteractedPromptState, setHasInteractedPromptState] = useState(false);
   const [hasAppliedDefaultsState, setHasAppliedDefaultsState] = useState(false);
+  const [isDiscoveryCompleteState, setIsDiscoveryCompleteState] = useState(false);
 
   return (
     <TourProvider
@@ -1074,6 +1075,7 @@ export default function App() {
         sourcesCount: sourcesCountState,
         hasInteractedPrompt: hasInteractedPromptState,
         hasAppliedDefaults: hasAppliedDefaultsState,
+        hasDiscovered: isDiscoveryCompleteState,
       }}
     >
       <AppInner
@@ -1102,6 +1104,7 @@ export default function App() {
         setHasInteractedPromptState={setHasInteractedPromptState}
         hasAppliedDefaultsState={hasAppliedDefaultsState}
         setHasAppliedDefaultsState={setHasAppliedDefaultsState}
+        setIsDiscoveryCompleteState={setIsDiscoveryCompleteState}
       />
     </TourProvider>
   );
@@ -1133,6 +1136,7 @@ function AppInner({
   setHasInteractedPromptState,
   hasAppliedDefaultsState,
   setHasAppliedDefaultsState,
+  setIsDiscoveryCompleteState,
 }: any) {
   const tour = useTour();
 
@@ -4681,6 +4685,7 @@ function AppInner({
                         : environmentPassed("DEV");
                       return (
                         <button
+                          data-tour="studio-deploy-dev-btn"
                           className="btn-primary-blue"
                           style={{
                             background: isDevAlreadyPassed
@@ -6925,6 +6930,7 @@ function AppInner({
                                   const r: any = await api(`/projects/${pid}/discovery/live/${s.id}`, { method: "POST" });
                                   setDiscoveryResult(r);
                                   setIsDiscoveryComplete(true);
+                                  if (setIsDiscoveryCompleteState) setIsDiscoveryCompleteState(true);
                                   await refresh();
                                   tour.notify("discovery-completed", r);
                                   return r;
