@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, downloadApi } from "./api";
-import { AlertTriangle, CheckCircle2, Download, FileText, Lock, Settings } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileText, KeyRound, Lock, Settings } from "lucide-react";
 
 type Props = {
   projectId: string;
@@ -8,15 +8,6 @@ type Props = {
   onlyStatus?: boolean;
   onlyButton?: boolean;
 };
-
-const SETUP_ROADMAP = [
-  ["1", "Generate Token", "Issue a secure token for this source."],
-  ["2", "Download ENV", "Save pre-configured agent.env locally."],
-  ["3", "Download EXE", "Save migration-agent.exe in the same folder."],
-  ["4", "Launch and Keep Open", "Run the EXE and leave its console active."],
-  ["5", "Verify Telemetry", "Open localhost:8585 and confirm ONLINE."],
-  ["6", "Test Connection", "Return here and run the source test."],
-] as const;
 
 export default function SourceConnectorControl({
   projectId,
@@ -240,30 +231,6 @@ export default function SourceConnectorControl({
 
             <div
               style={{
-                marginTop: 18,
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderRadius: 10,
-                padding: "16px 18px",
-              }}
-            >
-              <div style={{ marginBottom: 12 }}>
-                <strong style={{ fontSize: 13, color: "#0f172a" }}>6-Step Connector Setup Roadmap</strong>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: 10 }}>
-                {SETUP_ROADMAP.map(([number, title, description]) => (
-                  <div key={number} style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                    <strong style={{ fontSize: 12, color: Number(number) < 4 ? "#2563eb" : "#16a34a" }}>
-                      Step {number}: {title}
-                    </strong>
-                    <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>{description}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div
-              style={{
                 background: "#f4f5f7",
                 borderRadius: 8,
                 padding: 16,
@@ -340,22 +307,25 @@ export default function SourceConnectorControl({
                 </button>
                 <button
                   type="button"
-                  onClick={() => downloadAgent("zip")}
+                  disabled
+                  title="Download Agent Bundle (.zip) is locked in this edition."
                   style={{
-                    background: "#091e420f",
-                    color: "#0052cc",
-                    border: "1px solid #0052cc",
+                    background: "#f1f5f9",
+                    color: "#94a3b8",
+                    border: "1px solid #cbd5e1",
                     borderRadius: 4,
                     padding: "9px 18px",
                     fontSize: "0.95rem",
                     fontWeight: 600,
-                    cursor: "pointer",
+                    cursor: "not-allowed",
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
+                    opacity: 0.75,
                   }}
                 >
-                  📦 Download Agent Bundle (.zip)
+                  <Lock size={14} />
+                  <span>Download Agent Bundle (.zip) (Locked)</span>
                 </button>
               </div>
               <div
@@ -443,34 +413,9 @@ export default function SourceConnectorControl({
             </details>
           </>
         ) : (
-          <div>
-            <p>
-              Register this source to generate a token for the Local Connector Agent.
-            </p>
-            <div
-              style={{
-                marginTop: 14,
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderRadius: 10,
-                padding: "16px 18px",
-              }}
-            >
-              <div style={{ marginBottom: 12 }}>
-                <strong style={{ fontSize: 13, color: "#0f172a" }}>6-Step Connector Setup Roadmap</strong>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: 10 }}>
-                {SETUP_ROADMAP.map(([number, title, description]) => (
-                  <div key={number} style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
-                    <strong style={{ fontSize: 12, color: Number(number) < 4 ? "#2563eb" : "#16a34a" }}>
-                      Step {number}: {title}
-                    </strong>
-                    <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>{description}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          <p>
+            Register this source to generate a token for the Local Connector Agent.
+          </p>
         )}
 
         <div
@@ -487,17 +432,22 @@ export default function SourceConnectorControl({
               data-tour="generate-connector-token-btn"
               disabled={busy}
               onClick={() => mutate("POST")}
+              className={!registration ? "btn-connector-token-highlight" : ""}
               style={{
                 background: "#0052cc",
                 color: "white",
                 border: "none",
                 borderRadius: 4,
-                padding: "8px 16px",
-                fontWeight: 600,
+                padding: "9px 18px",
+                fontWeight: 700,
                 cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
               }}
             >
-              {status === "DIRECT" ? "Register Connector Agent" : "Generate New Token"}
+              <KeyRound size={15} />
+              <span>{status === "DIRECT" ? "Register Connector Agent" : "Generate New Token"}</span>
             </button>
             {status !== "DIRECT" && (
               <button

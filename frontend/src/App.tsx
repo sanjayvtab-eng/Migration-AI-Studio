@@ -13033,9 +13033,18 @@ function AppInner({
               backText: isDemoAccount ? "← Back to Projects" : "← Back to Environment",
               backTarget: isDemoAccount ? "Projects" : "Environment Setup",
               backDisabled: false,
-              forwardText: "Proceed to Discovery →",
+              forwardText:
+                isDemoAccount || (discoveryResult && discoveryResult.ok !== false && !discoveryResult.error)
+                  ? "Proceed to Discovery →"
+                  : "Proceed to Discovery (Locked)",
               forwardTarget: "Discovery",
-              forwardDisabled: !pid,
+              forwardDisabled:
+                !pid || (!isDemoAccount && (!discoveryResult || discoveryResult.ok === false || Boolean(discoveryResult.error))),
+              forwardTooltip: !pid
+                ? "Select a project to continue"
+                : !isDemoAccount && (!discoveryResult || discoveryResult.ok === false || Boolean(discoveryResult.error))
+                ? "🔒 Test connection successfully to unlock Discovery"
+                : undefined,
             },
             4: {
               title: "Stage 4 of 9: Discovery",
@@ -13146,7 +13155,7 @@ function AppInner({
                   }
                   onClick={() => setPage(stageInfo.forwardTarget)}
                 >
-                  {stageInfo.forwardDisabled && currentStage === 2 && !isDemoAccount && (
+                  {stageInfo.forwardDisabled && (currentStage === 2 || currentStage === 3) && !isDemoAccount && (
                     <Lock size={13} />
                   )}
                   <span>{stageInfo.forwardText}</span>
