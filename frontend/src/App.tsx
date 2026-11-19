@@ -3710,18 +3710,27 @@ function AppInner({
 
   const environmentPassed = (environment: string): boolean => {
     if (environment === "DEV") {
-      const isPassed = Boolean(
+      return Boolean(
         medDeployment?.status === "PASSED" ||
         reconResult?.status === "PASSED" ||
         deployment?.status === "PASSED" ||
         (Array.isArray(attemptItems) && attemptItems.length > 0 && attemptItems.every((i: any) => i?.status === "PASSED")) ||
         (Array.isArray(life) && life.find((x: any) => x?.environment === "DEV")?.status === "PASSED")
       );
-      if (setIsDevPassedState) setIsDevPassedState(isPassed);
-      return isPassed;
     }
     return Boolean(Array.isArray(life) && life.find((x: any) => x?.environment === environment)?.status === "PASSED");
   };
+
+  useEffect(() => {
+    const isPassed = Boolean(
+      medDeployment?.status === "PASSED" ||
+      reconResult?.status === "PASSED" ||
+      deployment?.status === "PASSED" ||
+      (Array.isArray(attemptItems) && attemptItems.length > 0 && attemptItems.every((i: any) => i?.status === "PASSED")) ||
+      (Array.isArray(life) && life.find((x: any) => x?.environment === "DEV")?.status === "PASSED")
+    );
+    if (setIsDevPassedState) setIsDevPassedState(isPassed);
+  }, [medDeployment?.status, reconResult?.status, deployment?.status, attemptItems, life, setIsDevPassedState]);
 
   const overallStatus: string = useMemo((): string => {
     if (deployActiveEnv === "TEST") return String(testGate?.status || testPromotion?.status || (environmentPassed("TEST") ? "PASSED" : "NOT_STARTED")).toUpperCase();
