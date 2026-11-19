@@ -1057,6 +1057,8 @@ export default function App() {
     getInitialStage() === "Environment Setup"
   );
   const [sourcesCountState, setSourcesCountState] = useState(0);
+  const [hasInteractedPromptState, setHasInteractedPromptState] = useState(false);
+  const [hasAppliedDefaultsState, setHasAppliedDefaultsState] = useState(false);
 
   return (
     <TourProvider
@@ -1070,6 +1072,8 @@ export default function App() {
         environmentPlan: environmentPlanState,
         showDatabricksPrereqModal: showDatabricksPrereqModalState,
         sourcesCount: sourcesCountState,
+        hasInteractedPrompt: hasInteractedPromptState,
+        hasAppliedDefaults: hasAppliedDefaultsState,
       }}
     >
       <AppInner
@@ -1094,6 +1098,10 @@ export default function App() {
         setShowDatabricksPrereqModalState={setShowDatabricksPrereqModalState}
         sourcesCountState={sourcesCountState}
         setSourcesCountState={setSourcesCountState}
+        hasInteractedPromptState={hasInteractedPromptState}
+        setHasInteractedPromptState={setHasInteractedPromptState}
+        hasAppliedDefaultsState={hasAppliedDefaultsState}
+        setHasAppliedDefaultsState={setHasAppliedDefaultsState}
       />
     </TourProvider>
   );
@@ -1121,6 +1129,10 @@ function AppInner({
   setShowDatabricksPrereqModalState,
   sourcesCountState,
   setSourcesCountState,
+  hasInteractedPromptState,
+  setHasInteractedPromptState,
+  hasAppliedDefaultsState,
+  setHasAppliedDefaultsState,
 }: any) {
   const tour = useTour();
 
@@ -1276,12 +1288,15 @@ function AppInner({
   };
 
   const handleClosePrereqModal = (nextAction?: "focus-form" | "none") => {
+    tour.dismissSpotlight();
     setShowDatabricksPrereqModal(false);
     if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(false);
     if (nextAction === "focus-form") {
       handleFocusConfigForm();
+      tour.notify("env:prereq-selected");
+    } else {
+      tour.notify("env:prereq-dismissed");
     }
-    tour.notify("env:prereq-selected");
   };
 
   const isTrialWorkspace =
@@ -1290,6 +1305,7 @@ function AppInner({
     (Boolean(environmentForm.workspace_host) && environmentForm.workspace_host === MANAGED_DATABRICKS_TRIAL.workspace_host);
 
   async function handleSelectManagedTrial() {
+    tour.dismissSpotlight();
     setEnvironmentForm({
       workspace_host: MANAGED_DATABRICKS_TRIAL.workspace_host,
       http_path: MANAGED_DATABRICKS_TRIAL.http_path,
@@ -1301,6 +1317,7 @@ function AppInner({
     if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(false);
     handleFocusConfigForm();
     if (!pid) return;
+    tour.dismissSpotlight();
     setBusy(true);
     try {
       const res: any = await api(`/projects/${pid}/databricks/managed-trial`, { method: "POST" });
@@ -1398,12 +1415,19 @@ function AppInner({
     title: string;
     subtitle: string;
   } | null>(null);
+
+  useEffect(() => {
+    if (operationOverlay || busy) {
+      tour.dismissSpotlight();
+    }
+  }, [operationOverlay, busy]);
   const activeOpTitleRef = useRef<string>("Executing Operation");
   const opStartTimeRef = useRef<number>(0);
   const doneTimerRef = useRef<any>(null);
   const finishTimeoutRef = useRef<any>(null);
 
   const startOperationOverlay = useCallback((title: string, subtitle?: string) => {
+    tour.dismissSpotlight();
     if (doneTimerRef.current) {
       clearTimeout(doneTimerRef.current);
       doneTimerRef.current = null;
@@ -1951,6 +1975,7 @@ function AppInner({
 
   useEffect(() => {
     if (isOperating && !prevOperatingRef.current) {
+      tour.dismissSpotlight();
       setSyncStatus("loading");
       if (doneTimerRef.current) {
         clearTimeout(doneTimerRef.current);
@@ -2507,6 +2532,7 @@ function AppInner({
         }),
       });
       setPromptAnswers({});
+      setHasAppliedDefaultsState(false);
       await loadPromptSpecification(result.id);
       const doneText = result.status === "NEEDS_USER_INPUT" ? "Prompt parsed. Clarification questions ready." : "Prompt specification grounded & ready for plan review.";
       setMsg(doneText);
@@ -2616,6 +2642,8 @@ function AppInner({
       });
       await loadPromptSpecification(result.id);
       setMsg(result.status === "PENDING_PLAN_APPROVAL" ? "Clarifications recorded in a new version. Review and approve the exact plan." : "Clarifications recorded; unresolved grounding blockers remain.");
+      tour.notify("studio:clarifications-saved", { promptSpec: result });
+      setHasAppliedDefaultsState(false);
     } catch (e: any) {
       setMsg(e.message);
     } finally {
@@ -4424,6 +4452,8 @@ function AppInner({
                             const doneText = "Demo Studio reset to Step 1: Ready to start freshly.";
                             setMsg(doneText);
                             finishOperationOverlay(doneText);
+                            setHasInteractedPromptState(false);
+                            setHasAppliedDefaultsState(false);
                             tour.notify("studio:reset-demo");
                           } catch (e: any) {
                             setMsg(e.message);
@@ -4486,13 +4516,30 @@ function AppInner({
                 {/* Prompt Box */}
                 <div>
                   <textarea
-                    className="wf-prompt-box"
+                    data-tour="studio-prompt-input"
+                    className={`wf-prompt-box ${(!promptSpec || promptSpec.status === "DRAFT") && !hasInteractedPromptState ? "studio-prompt-box-highlight" : ""}`}
                     value={promptNativeText || masterPrompt}
+                    onFocus={() => {
+                      if (!hasInteractedPromptState) {
+                        setHasInteractedPromptState(true);
+                        tour.notify("studio:prompt-entered");
+                      }
+                    }}
+                    onClick={() => {
+                      if (!hasInteractedPromptState) {
+                        setHasInteractedPromptState(true);
+                        tour.notify("studio:prompt-entered");
+                      }
+                    }}
                     onChange={(e) => {
                       setPromptNativeText(e.target.value);
                       setPromptAnalysis(null);
                       setMasterPrompt(e.target.value);
                       setPromptText(e.target.value);
+                      if (!hasInteractedPromptState) {
+                        setHasInteractedPromptState(true);
+                        tour.notify("studio:prompt-entered");
+                      }
                     }}
                     rows={4}
                     disabled={busy || masterRunning || promptRunning}
@@ -4535,7 +4582,7 @@ function AppInner({
                       ))}
                     </select>
                     <button
-                      className="btn-primary-blue"
+                      className={`btn-primary-blue ${(!promptSpec || promptSpec.status === "DRAFT") && hasInteractedPromptState ? "tour-action-highlight" : ""}`}
                       data-tour="studio-parse-btn"
                       disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()}
                       onClick={() => {
@@ -4569,14 +4616,24 @@ function AppInner({
                     <div data-tour="studio-primary-action" style={{ display: "inline-flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     {/* Step 1: Approve Exact Plan */}
                     {promptSpec?.status === "PENDING_PLAN_APPROVAL" && (
-                      <button className="btn-primary-blue" disabled={busy} onClick={approvePromptSpecification}>
+                      <button
+                        className={`btn-primary-blue ${promptSpec?.status === "PENDING_PLAN_APPROVAL" ? "tour-action-highlight" : ""}`}
+                        data-tour="studio-approve-plan-btn"
+                        disabled={busy}
+                        onClick={approvePromptSpecification}
+                      >
                         <ShieldCheck size={14} /> Approve Exact Plan
                       </button>
                     )}
 
                     {/* Step 2: Generate Artifacts */}
                     {promptSpec?.status === "PLAN_APPROVED" && (
-                      <button className="btn-primary-blue" disabled={busy} onClick={generatePromptArtifacts}>
+                      <button
+                        className={`btn-primary-blue ${promptSpec?.status === "PLAN_APPROVED" ? "tour-action-highlight" : ""}`}
+                        data-tour="studio-generate-artifacts-btn"
+                        disabled={busy}
+                        onClick={generatePromptArtifacts}
+                      >
                         <Sparkles size={14} /> Generate Artifacts
                       </button>
                     )}
@@ -4702,7 +4759,8 @@ function AppInner({
 
                     <div className="wf-clarification-actions">
                       <button
-                        className="btn-secondary"
+                        className={`btn-secondary ${!hasAppliedDefaultsState ? "tour-action-highlight" : ""}`}
+                        data-tour="studio-clarifications-defaults-btn"
                         type="button"
                         onClick={() => {
                           setPromptAnswers((prev: Record<string, string>) => {
@@ -4714,12 +4772,15 @@ function AppInner({
                             }
                             return next;
                           });
+                          setHasAppliedDefaultsState(true);
+                          tour.notify("studio:defaults-applied");
                         }}
                       >
                         Use recommended defaults
                       </button>
                       <button
-                        className="wf-btn-dark"
+                        className={`wf-btn-dark ${hasAppliedDefaultsState ? "tour-action-highlight" : ""}`}
+                        data-tour="studio-clarifications-save-btn"
                         disabled={busy || promptSpec.clarifications.filter((question: any) => question.status === "OPEN").some((question: any) => !promptAnswers[question.key])}
                         onClick={answerPromptClarifications}
                       >
@@ -4730,7 +4791,10 @@ function AppInner({
                 )}
 
                 {/* Grounded Artifacts Plan (Bronze, Silver, Gold medallion tables) */}
-                <div className="wf-artifacts-container">
+                <div
+                  className={`wf-artifacts-container ${promptSpec?.status === "PENDING_PLAN_APPROVAL" ? "studio-plan-container-highlight" : ""}`}
+                  data-tour="studio-plan-container"
+                >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
                     <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#0f172a", display: "flex", alignItems: "center", gap: 6 }}>
                       <Table size={16} color="#0284c7" />
@@ -5269,7 +5333,10 @@ function AppInner({
 
                 {/* Right 40% Panel: Inline Reviews */}
                 {medArts.length > 0 && (
-                  <aside className="studio-inline-reviews" data-tour="studio-inline-reviews">
+                  <aside
+                    className={`studio-inline-reviews ${["VALIDATING", "TARGET_VALIDATION_FAILED"].includes(promptSpec?.status) ? "studio-reviews-panel-highlight" : ""}`}
+                    data-tour="studio-inline-reviews"
+                  >
                     <div className="studio-reviews-header">
                       <div className="studio-reviews-title">
                         <ShieldCheck size={18} color="#2563eb" />
@@ -11963,7 +12030,10 @@ function AppInner({
                       <button
                         type="button"
                         className="env-prereq-modal-close-btn"
-                        onClick={() => handleClosePrereqModal("none")}
+                        onClick={() => {
+                          tour.dismissSpotlight();
+                          handleClosePrereqModal("none");
+                        }}
                         title="Dismiss popup"
                       >
                         <X size={18} />
@@ -11994,7 +12064,10 @@ function AppInner({
                             <button
                               type="button"
                               className="env-choice-btn success"
-                              onClick={() => handleClosePrereqModal("focus-form")}
+                              onClick={() => {
+                                tour.dismissSpotlight();
+                                handleClosePrereqModal("focus-form");
+                              }}
                             >
                               <span>I Have an Account</span>
                               <ArrowRight size={15} />
@@ -12030,6 +12103,7 @@ function AppInner({
                               target="_blank"
                               rel="noopener noreferrer"
                               className="env-choice-btn primary"
+                              onClick={() => tour.dismissSpotlight()}
                             >
                               <span>Create Databricks Account</span>
                               <ExternalLink size={15} />
@@ -12079,7 +12153,10 @@ function AppInner({
                             <button
                               type="button"
                               className="env-choice-btn purple"
-                              onClick={handleSelectManagedTrial}
+                              onClick={() => {
+                                tour.dismissSpotlight();
+                                handleSelectManagedTrial();
+                              }}
                             >
                               <span>Start with Trial Account</span>
                               <ArrowRight size={15} />
@@ -12218,7 +12295,10 @@ function AppInner({
                       <button
                         type="button"
                         className="btn secondary"
-                        onClick={() => handleClosePrereqModal("none")}
+                        onClick={() => {
+                          tour.dismissSpotlight();
+                          handleClosePrereqModal("none");
+                        }}
                         style={{ fontSize: 12.5, padding: "7px 16px" }}
                       >
                         Dismiss / Close

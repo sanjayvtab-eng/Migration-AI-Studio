@@ -133,10 +133,22 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
+      // Do not highlight if an operation overlay or loading backdrop is active
+      if (document.querySelector(".global-loading-backdrop")) {
+        console.log(`[Tour] Operation overlay active; postponing highlight for ${stepConfig.id}.`);
+        dismissSpotlight();
+        return;
+      }
+
       // Wait for element to exist in DOM
       const targetEl = await waitForElement(stepConfig.element, 3500);
       if (!targetEl) {
         console.warn(`[Tour] Element ${stepConfig.element} not found, skipping gracefully.`);
+        return;
+      }
+
+      if (document.querySelector(".global-loading-backdrop")) {
+        dismissSpotlight();
         return;
       }
 
@@ -173,6 +185,15 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         },
       });
 
+      // If target element is disconnected from DOM while highlighted, immediately destroy tour popover
+      const disconnectObserver = new MutationObserver(() => {
+        if (!targetEl.isConnected || document.querySelector(".global-loading-backdrop")) {
+          dismissSpotlight();
+          disconnectObserver.disconnect();
+        }
+      });
+      disconnectObserver.observe(document.body, { childList: true, subtree: true });
+
       // Add gentle pulse class if action step
       if (stepConfig.actionType === "click") {
         targetEl.classList.add("tour-pulse");
@@ -181,16 +202,14 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         isWaitingForActionRef.current = false;
       }
 
-      // When the user clicks the highlighted button, dismiss the popover immediately
+      // When the user clicks the highlighted button/modal, dismiss the popover immediately
       // Do NOT advance yet! Advance strictly when the process completes and emits an event.
       const handleTargetClick = () => {
         dismissSpotlight();
         targetEl.classList.remove("tour-pulse");
         targetEl.removeEventListener("click", handleTargetClick);
       };
-      if (stepConfig.id !== "env-choose-prereq") {
-        targetEl.addEventListener("click", handleTargetClick, { once: true });
-      }
+      targetEl.addEventListener("click", handleTargetClick, { once: true });
 
       // Wire up custom buttons in popover
       setTimeout(() => {
@@ -317,7 +336,9 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       if (stageToStart === "Migration Workflow") {
         const derivedId = deriveStudioStepId(
           contextRef.current.promptSpec,
-          contextRef.current.isDevAlreadyPassed
+          contextRef.current.isDevAlreadyPassed,
+          contextRef.current.hasInteractedPrompt,
+          contextRef.current.hasAppliedDefaults
         );
         const step = TOUR_STEPS.find((s) => s.id === derivedId);
         if (step) {
@@ -364,9 +385,10 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       if (event === "env:prereq-selected" || event === "env:prereq-dismissed") {
         dismissSpotlight();
         setTimeout(() => {
+          if (document.querySelector(".global-loading-backdrop")) return;
           const step = TOUR_STEPS.find((s) => s.id === "env-save-config");
           if (step) highlightStep(step);
-        }, 300);
+        }, 400);
         return;
       }
 
@@ -495,12 +517,76 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
-      // 4. Studio stage: Only advance when prompt-parsed, plan-approved, etc.
+      // 4. Studio stage: Sequential highlights
+      if (event === "studio:prompt-entered") {
+        dismissSpotlight();
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "studio-parse-prompt");
+          if (step) highlightStep(step);
+        }, 300);
+        return;
+      }
+
+      if (event === "studio:prompt-parsed") {
+        dismissSpotlight();
+        setTimeout(() => {
+          const pSpec = payload?.promptSpec || contextRef.current.promptSpec;
+          const derivedId = deriveStudioStepId(
+            pSpec,
+            Boolean(payload?.isDevAlreadyPassed || contextRef.current.isDevAlreadyPassed),
+            true,
+            false
+          );
+          const nextStep = TOUR_STEPS.find((s) => s.id === derivedId);
+          if (nextStep) {
+            highlightStep(nextStep);
+          }
+        }, 500);
+        return;
+      }
+
+      if (event === "studio:defaults-applied") {
+        dismissSpotlight();
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "studio-clarifications-save");
+          if (step) highlightStep(step);
+        }, 300);
+        return;
+      }
+
+      if (event === "studio:clarifications-saved") {
+        dismissSpotlight();
+        setTimeout(() => {
+          const derivedId = deriveStudioStepId(
+            payload?.promptSpec || contextRef.current.promptSpec,
+            Boolean(payload?.isDevAlreadyPassed || contextRef.current.isDevAlreadyPassed),
+            true,
+            true
+          );
+          const nextStep = TOUR_STEPS.find((s) => s.id === derivedId);
+          if (nextStep) {
+            highlightStep(nextStep);
+          }
+        }, 500);
+        return;
+      }
+
+      if (event === "studio:reset-demo") {
+        dismissSpotlight();
+        setTimeout(() => {
+          const enterPromptStep = TOUR_STEPS.find((s) => s.id === "studio-enter-prompt");
+          if (enterPromptStep) highlightStep(enterPromptStep);
+        }, 400);
+        return;
+      }
+
       if (event.startsWith("studio:")) {
         setTimeout(() => {
           const derivedId = deriveStudioStepId(
             payload?.promptSpec || contextRef.current.promptSpec,
-            Boolean(payload?.isDevAlreadyPassed || contextRef.current.isDevAlreadyPassed)
+            Boolean(payload?.isDevAlreadyPassed || contextRef.current.isDevAlreadyPassed),
+            contextRef.current.hasInteractedPrompt,
+            contextRef.current.hasAppliedDefaults
           );
           const nextStep = TOUR_STEPS.find((s) => s.id === derivedId);
           if (nextStep) {
@@ -524,13 +610,6 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         saveTourState({ completed: true, hasSeenTour: true });
         setTourActive(false);
         return;
-      }
-
-      if (event === "studio:reset-demo") {
-        setTimeout(() => {
-          const parseStep = TOUR_STEPS.find((s) => s.id === "studio-parse-prompt");
-          if (parseStep) highlightStep(parseStep);
-        }, 400);
       }
     },
     [highlightStep, dismissSpotlight]
@@ -626,7 +705,9 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         const timer = setTimeout(() => {
           const derivedId = deriveStudioStepId(
             stageContext.promptSpec,
-            stageContext.isDevAlreadyPassed
+            stageContext.isDevAlreadyPassed,
+            stageContext.hasInteractedPrompt,
+            stageContext.hasAppliedDefaults
           );
           const step = TOUR_STEPS.find((s) => s.id === derivedId);
           if (step) highlightStep(step);
@@ -640,7 +721,18 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return () => clearTimeout(timer);
       }
     }
-  }, [currentStage, highlightStep, stageContext.promptSpec, stageContext.isDevAlreadyPassed, stageContext.hasProject, stageContext.environmentConfig, stageContext.environmentPlan, stageContext.isDemoAccount]);
+  }, [
+    currentStage,
+    highlightStep,
+    stageContext.promptSpec,
+    stageContext.isDevAlreadyPassed,
+    stageContext.hasProject,
+    stageContext.environmentConfig,
+    stageContext.environmentPlan,
+    stageContext.isDemoAccount,
+    stageContext.hasInteractedPrompt,
+    stageContext.hasAppliedDefaults,
+  ]);
 
   return {
     tourActive,

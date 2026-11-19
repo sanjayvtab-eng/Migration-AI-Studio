@@ -384,15 +384,34 @@ export const TOUR_STEPS: TourStep[] = [
 
   // Stage 7: Migration Studio (Steps mapped to studioTourStateMap)
   {
-    id: "studio-parse-prompt",
+    id: "studio-enter-prompt",
     stage: "Migration Workflow",
     stageNumber: 7,
     stepNumber: 1,
-    totalSteps: 7,
+    totalSteps: 10,
+    element: '[data-tour="studio-prompt-input"]',
+    popover: {
+      title: "Step 1: Enter Migration Prompt",
+      description: "Review or edit your Bronze, Silver, and Gold migration requirements here. Click into this prompt box to proceed to parsing.",
+      side: "bottom",
+      align: "start",
+    },
+    actionType: "click",
+    actionHint: "Click prompt box or edit prompt to proceed",
+    advanceOnEvent: "studio:prompt-entered",
+    disableBack: true,
+    scrollIntoView: true,
+  },
+  {
+    id: "studio-parse-prompt",
+    stage: "Migration Workflow",
+    stageNumber: 7,
+    stepNumber: 2,
+    totalSteps: 10,
     element: '[data-tour="studio-parse-btn"]',
     popover: {
-      title: "Parse and ground your prompt",
-      description: "Start by parsing your prompt. The studio grounds it against your discovered source metadata.",
+      title: "Step 2: Parse and Ground Prompt",
+      description: "Click 'Parse and Ground Prompt' to ground your instructions against discovered source metadata.",
       side: "bottom",
       align: "start",
     },
@@ -402,19 +421,58 @@ export const TOUR_STEPS: TourStep[] = [
     scrollIntoView: true,
   },
   {
+    id: "studio-clarifications-defaults",
+    stage: "Migration Workflow",
+    stageNumber: 7,
+    stepNumber: 3,
+    totalSteps: 10,
+    element: '[data-tour="studio-clarifications-defaults-btn"]',
+    popover: {
+      title: "Step 3: Requirement Clarifications",
+      description: "Policy-governed clarification questions detected. Click 'Use recommended defaults' to auto-populate approved answers.",
+      side: "top",
+      align: "start",
+    },
+    actionType: "click",
+    actionHint: "Click 'Use recommended defaults'",
+    advanceOnEvent: "studio:defaults-applied",
+    disableBack: true,
+    scrollIntoView: true,
+  },
+  {
+    id: "studio-clarifications-save",
+    stage: "Migration Workflow",
+    stageNumber: 7,
+    stepNumber: 4,
+    totalSteps: 10,
+    element: '[data-tour="studio-clarifications-save-btn"]',
+    popover: {
+      title: "Step 4: Save Answers and Re-ground",
+      description: "Click 'Save Answers and Re-ground' to commit clarified design rules and generate the Medallion architecture plan.",
+      side: "top",
+      align: "end",
+    },
+    actionType: "click",
+    actionHint: "Click 'Save Answers and Re-ground'",
+    advanceOnEvent: "studio:clarifications-saved",
+    disableBack: true,
+    scrollIntoView: true,
+  },
+  {
     id: "studio-approve-plan",
     stage: "Migration Workflow",
     stageNumber: 7,
-    stepNumber: 2,
-    totalSteps: 7,
-    element: '[data-tour="studio-primary-action"]',
+    stepNumber: 5,
+    totalSteps: 11,
+    element: '[data-tour="studio-approve-plan-btn"]',
     popover: {
-      title: "Approve the exact plan",
-      description: "Review the grounded plan, then approve it to unlock artifact generation.",
+      title: "Step 5: Review Grounded Plan & Approve",
+      description: "Review the Grounded Medallion Artifacts Plan highlighted below (Bronze, Silver, Gold). Click 'Approve Exact Plan' above to authorize artifact generation.",
       side: "bottom",
       align: "start",
     },
     actionType: "click",
+    actionHint: "Review plan below and click Approve Exact Plan",
     advanceOnEvent: "studio:plan-approved",
     disableBack: true,
     scrollIntoView: true,
@@ -423,17 +481,37 @@ export const TOUR_STEPS: TourStep[] = [
     id: "studio-generate-artifacts",
     stage: "Migration Workflow",
     stageNumber: 7,
-    stepNumber: 3,
-    totalSteps: 7,
-    element: '[data-tour="studio-primary-action"]',
+    stepNumber: 6,
+    totalSteps: 11,
+    element: '[data-tour="studio-generate-artifacts-btn"]',
     popover: {
-      title: "Generate artifacts",
-      description: "Generate the Bronze, Silver and Gold medallion artifacts from the approved plan.",
+      title: "Step 6: Generate Artifacts",
+      description: "Plan approved! Click 'Generate Artifacts' to synthesize the Bronze, Silver, and Gold medallion artifacts.",
       side: "bottom",
       align: "start",
     },
     actionType: "click",
+    actionHint: "Click Generate Artifacts to synthesize artifacts",
     advanceOnEvent: "studio:artifacts-generated",
+    disableBack: true,
+    scrollIntoView: true,
+  },
+  {
+    id: "studio-review-artifacts",
+    stage: "Migration Workflow",
+    stageNumber: 7,
+    stepNumber: 7,
+    totalSteps: 11,
+    element: '[data-tour="studio-inline-reviews"]',
+    popover: {
+      title: "Step 7: Review Generated Artifacts",
+      description: "Artifacts generated successfully! Review the 38 Medallion artifacts listed here across Bronze, Silver, and Gold tiers.",
+      side: "left",
+      align: "start",
+    },
+    actionType: "click",
+    actionHint: "Review generated artifacts in this panel",
+    advanceOnEvent: "studio:artifacts-validated",
     disableBack: true,
     scrollIntoView: true,
   },
@@ -441,11 +519,11 @@ export const TOUR_STEPS: TourStep[] = [
     id: "studio-validate-databricks",
     stage: "Migration Workflow",
     stageNumber: 7,
-    stepNumber: 4,
-    totalSteps: 7,
+    stepNumber: 7,
+    totalSteps: 10,
     element: '[data-tour="studio-primary-action"]',
     popover: {
-      title: "Validate in Databricks",
+      title: "Step 7: Validate in Databricks",
       description: "Validate the generated SQL against your Databricks target before approving.",
       side: "bottom",
       align: "start",
@@ -459,11 +537,11 @@ export const TOUR_STEPS: TourStep[] = [
     id: "studio-approve-artifacts",
     stage: "Migration Workflow",
     stageNumber: 7,
-    stepNumber: 5,
-    totalSteps: 7,
+    stepNumber: 8,
+    totalSteps: 10,
     element: '[data-tour="studio-primary-action"]',
     popover: {
-      title: "Approve current artifacts",
+      title: "Step 8: Approve Current Artifacts",
       description: "Approve each validated artifact version so it can be deployed.",
       side: "bottom",
       align: "start",
@@ -477,11 +555,11 @@ export const TOUR_STEPS: TourStep[] = [
     id: "studio-deploy-dev",
     stage: "Migration Workflow",
     stageNumber: 7,
-    stepNumber: 6,
-    totalSteps: 7,
+    stepNumber: 9,
+    totalSteps: 10,
     element: '[data-tour="studio-primary-action"]',
     popover: {
-      title: "Deploy and validate on DEV",
+      title: "Step 9: Deploy and Validate on DEV",
       description: "Deploy the approved artifacts to the DEV environment and run validation.",
       side: "bottom",
       align: "start",
@@ -495,11 +573,11 @@ export const TOUR_STEPS: TourStep[] = [
     id: "studio-proceed-promotion",
     stage: "Migration Workflow",
     stageNumber: 7,
-    stepNumber: 7,
-    totalSteps: 7,
+    stepNumber: 10,
+    totalSteps: 10,
     element: '[data-tour="studio-primary-action"]',
     popover: {
-      title: "Proceed to promotion",
+      title: "Step 10: Proceed to Promotion",
       description: "DEV passed. Continue to promotion to take these artifacts forward.",
       side: "bottom",
       align: "start",
@@ -582,11 +660,31 @@ export const deriveEnvStepId = (
 /**
  * State-derived map for Stage 7 (Migration Studio)
  */
-export const deriveStudioStepId = (promptSpec: any, isDevAlreadyPassed: boolean): string => {
+export const deriveStudioStepId = (
+  promptSpec: any,
+  isDevAlreadyPassed: boolean,
+  hasInteractedPrompt?: boolean,
+  hasAppliedDefaults?: boolean
+): string => {
   if (isDevAlreadyPassed || promptSpec?.status === "DEV_GATE_PASSED") {
     return "studio-proceed-promotion";
   }
+
+  // Check if requirement clarification questions are open
+  const hasOpenClarifications = Boolean(
+    promptSpec?.clarifications?.some((q: any) => q.status === "OPEN")
+  );
+  if (hasOpenClarifications) {
+    if (hasAppliedDefaults) {
+      return "studio-clarifications-save";
+    }
+    return "studio-clarifications-defaults";
+  }
+
   if (!promptSpec || !promptSpec.status || promptSpec.status === "DRAFT") {
+    if (!hasInteractedPrompt) {
+      return "studio-enter-prompt";
+    }
     return "studio-parse-prompt";
   }
   if (promptSpec.status === "PENDING_PLAN_APPROVAL") {
@@ -596,7 +694,7 @@ export const deriveStudioStepId = (promptSpec: any, isDevAlreadyPassed: boolean)
     return "studio-generate-artifacts";
   }
   if (["VALIDATING", "TARGET_VALIDATION_FAILED"].includes(promptSpec.status)) {
-    return "studio-validate-databricks";
+    return "studio-review-artifacts";
   }
   if (promptSpec.status === "PENDING_ARTIFACT_REVIEW") {
     return "studio-approve-artifacts";

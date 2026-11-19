@@ -47,6 +47,16 @@
 }
 
 /* Popover card styling */
+body:has(.global-loading-backdrop) .driver-popover,
+body:has(.global-loading-backdrop) .driver-overlay,
+.global-loading-backdrop ~ .driver-popover,
+.global-loading-backdrop ~ .driver-overlay {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+}
+
 .driver-popover.mf-tour-popover {
   background: #ffffff !important;
   color: #0f172a !important;

@@ -6930,8 +6930,92 @@
 }
 
 .tour-action-highlight {
-  animation: tourPulse 2s infinite ease-in-out !important;
-  box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7) !important;
+  animation: tourActionPulse 1.8s infinite ease-in-out !important;
+  outline: 2px solid #2563eb !important;
+  outline-offset: 2px !important;
+}
+
+@keyframes tourActionPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.75), 0 2px 6px rgba(37, 99, 235, 0.3);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0), 0 4px 14px rgba(37, 99, 235, 0.4);
+    transform: scale(1.03);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0), 0 2px 6px rgba(37, 99, 235, 0.3);
+    transform: scale(1);
+  }
+}
+
+.studio-prompt-box-highlight {
+  border: 2px solid #2563eb !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25), 0 2px 10px rgba(37, 99, 235, 0.15) !important;
+  animation: promptBoxPulse 2s infinite ease-in-out !important;
+  background: #ffffff !important;
+}
+
+@keyframes promptBoxPulse {
+  0% {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2), 0 2px 8px rgba(37, 99, 235, 0.1);
+  }
+  50% {
+    border-color: #1d4ed8;
+    box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.35), 0 4px 16px rgba(37, 99, 235, 0.25);
+  }
+  100% {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2), 0 2px 8px rgba(37, 99, 235, 0.1);
+  }
+}
+
+/* Grounded Medallion Artifacts Plan Highlight */
+.studio-plan-container-highlight {
+  border: 2.5px solid #2563eb !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25), 0 4px 20px rgba(37, 99, 235, 0.15) !important;
+  animation: planContainerPulse 2.2s infinite ease-in-out !important;
+  position: relative !important;
+  z-index: 10 !important;
+}
+
+@keyframes planContainerPulse {
+  0% {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 4px 14px rgba(37, 99, 235, 0.1);
+  }
+  50% {
+    border-color: #1d4ed8;
+    box-shadow: 0 0 0 7px rgba(37, 99, 235, 0.35), 0 8px 24px rgba(37, 99, 235, 0.25);
+  }
+  100% {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 4px 14px rgba(37, 99, 235, 0.1);
+  }
+}
+
+/* Right-side Artifacts List Panel Highlight */
+.studio-reviews-panel-highlight {
+  border: 2.5px solid #2563eb !important;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.25), 0 4px 22px rgba(37, 99, 235, 0.2) !important;
+  animation: reviewsPanelPulse 2.2s infinite ease-in-out !important;
+}
+
+@keyframes reviewsPanelPulse {
+  0% {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 4px 16px rgba(37, 99, 235, 0.12);
+  }
+  50% {
+    border-color: #1d4ed8;
+    box-shadow: 0 0 0 7px rgba(37, 99, 235, 0.35), 0 8px 28px rgba(37, 99, 235, 0.25);
+  }
+  100% {
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2), 0 4px 16px rgba(37, 99, 235, 0.12);
+  }
 }
 
 .btn-connector-token-highlight {
