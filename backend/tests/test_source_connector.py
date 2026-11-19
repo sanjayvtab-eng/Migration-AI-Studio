@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.models.connector import SourceConnector, ConnectorTask
 from app.models.entities import MigrationSource, MigrationProject, User
 from app.services import source_connector as transport
+from app.services.source_adapters import encrypt_password
 from app.services.discovery import connection_diagnostic
 from app.services.deployment import _source_table_count, _source_rows
 
@@ -20,7 +21,15 @@ spec.loader.exec_module(agent_module)
 def registered(client, db, headers, source_id="SRC", project_id="PROJ"):
     if not db.get(MigrationProject, project_id):
         db.add(MigrationProject(id=project_id,name=project_id,created_by="admin")); db.commit()
-    db.add(MigrationSource(id=source_id, project_id=project_id, profile_name="Local", server_name="PC\\SQLEXPRESS", database_name="Demo"))
+    db.add(MigrationSource(
+        id=source_id,
+        project_id=project_id,
+        profile_name="Local",
+        server_name="PC\\SQLEXPRESS",
+        database_name="Demo",
+        username="db_user",
+        credential_ciphertext=encrypt_password("db_password"),
+    ))
     db.commit()
     path = f"/api/projects/{project_id}/sources/{source_id}/connector"
     response = client.post(path, headers=headers)
@@ -229,6 +238,8 @@ def test_connector_config_download_and_bundle_download(client, db, auth_headers)
     assert "CONNECTOR_TOKEN=" + token in config_resp.text
     assert "CONNECTOR_SOURCE=SRC" in config_resp.text
     assert "CONNECTOR_SERVER=PC\\SQLEXPRESS" in config_resp.text
+    assert "CONNECTOR_USERNAME=db_user" in config_resp.text
+    assert "CONNECTOR_PASSWORD=db_password" in config_resp.text
 
     dl_resp = client.get("/api/connector/download?package_type=zip")
     assert dl_resp.status_code == 200

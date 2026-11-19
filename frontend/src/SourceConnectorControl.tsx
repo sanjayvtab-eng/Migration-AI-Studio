@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "./api";
-import { Settings } from "lucide-react";
+import { api, downloadApi } from "./api";
+import { AlertTriangle, CheckCircle2, Download, FileText, Lock, Settings } from "lucide-react";
 
 type Props = {
   projectId: string;
@@ -8,6 +8,15 @@ type Props = {
   onlyStatus?: boolean;
   onlyButton?: boolean;
 };
+
+const SETUP_ROADMAP = [
+  ["1", "Generate Token", "Issue a secure token for this source."],
+  ["2", "Download EXE", "Save migration-agent.exe locally."],
+  ["3", "Download ENV", "Save agent.env in the same folder."],
+  ["4", "Launch and Keep Open", "Run the EXE and leave its console active."],
+  ["5", "Verify Telemetry", "Open localhost:8585 and confirm ONLINE."],
+  ["6", "Test Connection", "Return here and run the source test."],
+] as const;
 
 export default function SourceConnectorControl({
   projectId,
@@ -21,6 +30,7 @@ export default function SourceConnectorControl({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const [hasDownloadedExe, setHasDownloadedExe] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const path = `/projects/${projectId}/sources/${source.id}/connector`;
 
@@ -50,6 +60,10 @@ export default function SourceConnectorControl({
       const result = await api<{ token: string }>(path, { method });
       setRegistration(method === "POST" ? result : null);
       setStatus(method === "POST" ? "OFFLINE" : "REVOKED");
+      if (method === "POST") {
+        setHasDownloadedExe(false);
+        window.dispatchEvent(new CustomEvent("connector-tour-event", { detail: { event: "connector:token-generated" } }));
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Connector update failed");
     } finally { setBusy(false); }
@@ -61,39 +75,33 @@ export default function SourceConnectorControl({
   const configuredApi = import.meta.env.VITE_API_URL || "/api";
   const connectorApplicationUrl = new URL(configuredApi, window.location.origin).origin;
   const engine = source.engine || "SQLSERVER";
-  const defaultPorts: Record<string, number> = { SQLSERVER: 1433, MYSQL: 3306, POSTGRESQL: 5432, ORACLE: 1521 };
   const command = `python scripts/local_connector.py --url ${quote(connectorApplicationUrl)} --source ${quote(source.id)} --engine ${quote(engine)} --server ${quote(source.server_name)} --database ${quote(source.database_name)}${engine === "SQLSERVER" ? ` --driver ${quote(driver)}${certificateOption}` : ""}`;
 
-  const downloadEnvFile = () => {
+  const downloadEnvFile = async () => {
     if (!registration) return;
-    const content = [
-      "# Databricks Migration AI Studio - Agent Configuration",
-      `# Source: ${source.id} (${source.server_name} / ${source.database_name} - ${engine})`,
-      `CONNECTOR_URL=${connectorApplicationUrl}`,
-      `CONNECTOR_SOURCE=${source.id}`,
-      `CONNECTOR_ENGINE=${engine}`,
-      `CONNECTOR_SERVER=${source.server_name}`,
-      `CONNECTOR_PORT=${defaultPorts[engine] || 3306}`,
-      `CONNECTOR_DATABASE=${source.database_name}`,
-      `CONNECTOR_TOKEN=${registration.token}`,
-      engine === "SQLSERVER" ? `CONNECTOR_DRIVER=${driver}` : "",
-      engine === "SQLSERVER" ? `CONNECTOR_TRUST_CERT=${trustCert ? "true" : "false"}` : "",
-      "# Credentials for local desktop database (leave blank for Windows Auth on SQL Server)",
-      "CONNECTOR_USERNAME=",
-      "CONNECTOR_PASSWORD=",
-    ].filter(Boolean).join("\n");
-    const blob = new Blob([content], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "agent.env";
-    a.click();
-    URL.revokeObjectURL(url);
+    setError("");
+    try {
+      const query = new URLSearchParams({
+        token: registration.token,
+        driver,
+        trust_cert: String(trustCert),
+      });
+      await downloadApi(`${path}/config?${query.toString()}`, "agent.env");
+      window.dispatchEvent(new CustomEvent("connector-tour-event", { detail: { event: "connector:env-downloaded" } }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to download agent.env");
+    }
   };
 
   const downloadAgent = (pkgType: "exe" | "zip" = "exe") => {
     const downloadUrl = `${connectorApplicationUrl}/api/connector/download?package_type=${pkgType}`;
     window.open(downloadUrl, "_blank");
+  };
+
+  const handleDownloadExe = () => {
+    downloadAgent("exe");
+    setHasDownloadedExe(true);
+    window.dispatchEvent(new CustomEvent("connector-tour-event", { detail: { event: "connector:exe-downloaded" } }));
   };
 
   const isOnline = status === "DIRECT" || status === "ONLINE";
@@ -122,6 +130,7 @@ export default function SourceConnectorControl({
       onCancel={() => {
         setOpen(false);
         setRegistration(null);
+        setHasDownloadedExe(false);
         setError("");
         window.dispatchEvent(new CustomEvent("connector-agent-closed"));
       }}
@@ -164,6 +173,39 @@ export default function SourceConnectorControl({
           Status: <strong>{status}</strong>
         </p>
         {error && <p role="alert" style={{ color: "#de350b" }}>{error}</p>}
+        <div
+          style={{
+            marginTop: 18,
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: 10,
+            padding: "16px 18px",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+            <strong style={{ fontSize: 13, color: "#0f172a" }}>6-Step Connector Setup Roadmap</strong>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                window.dispatchEvent(new CustomEvent("open-connector-tour"));
+              }}
+              style={{ background: "transparent", border: 0, color: "#2563eb", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+            >
+              Open Interactive Tour Guide ↗
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(155px, 1fr))", gap: 10 }}>
+            {SETUP_ROADMAP.map(([number, title, description]) => (
+              <div key={number} style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                <strong style={{ fontSize: 12, color: Number(number) < 4 ? "#2563eb" : "#16a34a" }}>
+                  Step {number}: {title}
+                </strong>
+                <p style={{ margin: "3px 0 0", fontSize: 11, color: "#64748b", lineHeight: 1.4 }}>{description}</p>
+              </div>
+            ))}
+          </div>
+        </div>
         {registration ? (
           <>
             <p>
@@ -269,11 +311,12 @@ export default function SourceConnectorControl({
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 <button
                   type="button"
-                  onClick={() => downloadAgent("exe")}
+                  data-tour="download-agent-exe-btn"
+                  onClick={handleDownloadExe}
                   style={{
-                    background: "#0052cc",
-                    color: "white",
-                    border: "none",
+                    background: hasDownloadedExe ? "#ecfdf5" : "#0052cc",
+                    color: hasDownloadedExe ? "#166534" : "white",
+                    border: hasDownloadedExe ? "1px solid #86efac" : "1px solid #0052cc",
                     borderRadius: 4,
                     padding: "9px 18px",
                     fontSize: "0.95rem",
@@ -284,26 +327,31 @@ export default function SourceConnectorControl({
                     gap: 8,
                   }}
                 >
-                  ⬇ Download Agent (.exe)
+                  {hasDownloadedExe ? <CheckCircle2 size={16} /> : <Download size={16} />}
+                  {hasDownloadedExe ? "Downloaded Agent (.exe)" : "Download Agent (.exe)"}
                 </button>
                 <button
                   type="button"
+                  data-tour="download-agent-env-btn"
                   onClick={downloadEnvFile}
+                  disabled={!hasDownloadedExe}
+                  title={!hasDownloadedExe ? "Download the executable before downloading its configuration" : "Download pre-configured agent.env"}
                   style={{
-                    background: "#091e420f",
-                    color: "#0052cc",
-                    border: "1px solid #0052cc",
+                    background: hasDownloadedExe ? "#0052cc" : "#f1f5f9",
+                    color: hasDownloadedExe ? "white" : "#94a3b8",
+                    border: `1px solid ${hasDownloadedExe ? "#0052cc" : "#cbd5e1"}`,
                     borderRadius: 4,
                     padding: "9px 18px",
                     fontSize: "0.95rem",
                     fontWeight: 600,
-                    cursor: "pointer",
+                    cursor: hasDownloadedExe ? "pointer" : "not-allowed",
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
                   }}
                 >
-                  📄 Download Configuration (agent.env)
+                  {hasDownloadedExe ? <FileText size={16} /> : <Lock size={14} />}
+                  Download Configuration (agent.env){!hasDownloadedExe ? " (Locked)" : ""}
                 </button>
                 <button
                   type="button"
@@ -325,6 +373,32 @@ export default function SourceConnectorControl({
                   📦 Download Agent Bundle (.zip)
                 </button>
               </div>
+              <div
+                role="alert"
+                style={{
+                  marginTop: 14,
+                  background: "#fffbeb",
+                  border: "1.5px solid #f59e0b",
+                  borderRadius: 8,
+                  padding: "12px 16px",
+                  display: "flex",
+                  gap: 12,
+                  alignItems: "flex-start",
+                }}
+              >
+                <AlertTriangle size={20} color="#d97706" style={{ marginTop: 2, flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#92400e", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                    <span>CRITICAL: Keep Connector Agent Console Open!</span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#fef3c7", color: "#b45309", fontSize: 11, padding: "2px 8px", borderRadius: 12, border: "1px solid #fde68a" }}>
+                      <span className="connector-live-pulse" /> Active Tunnel Required
+                    </span>
+                  </div>
+                  <p style={{ margin: "4px 0 0", fontSize: 12, color: "#78350f", lineHeight: 1.45 }}>
+                    Do <strong>not</strong> close the <code>migration-agent.exe</code> command prompt while testing or running migrations. Closing it disconnects your database immediately.
+                  </p>
+                </div>
+              </div>
               <p
                 style={{
                   margin: "12px 0 0 0",
@@ -332,7 +406,7 @@ export default function SourceConnectorControl({
                   color: "#5e6c84",
                 }}
               >
-                💡 <strong>Instructions:</strong> Save <code>agent.env</code> into the same folder as <code>migration-agent.exe</code> (or unzip the bundle), enter your local database username and password in <code>agent.env</code>, and run! When started, the Agent will automatically launch the local dashboard at <code>http://localhost:8585</code> to track real-time telemetry.
+                💡 <strong>Instructions:</strong> Save the pre-configured <code>agent.env</code> into the same folder as <code>migration-agent.exe</code> (or unzip the bundle), then run the executable. The Agent opens <code>http://localhost:8585</code> for real-time telemetry.
               </p>
               <p
                 style={{
@@ -400,6 +474,7 @@ export default function SourceConnectorControl({
           <div style={{ display: "flex", gap: 10 }}>
             <button
               type="button"
+              data-tour="generate-connector-token-btn"
               disabled={busy}
               onClick={() => mutate("POST")}
               style={{
@@ -438,6 +513,7 @@ export default function SourceConnectorControl({
             onClick={() => {
               setOpen(false);
               setRegistration(null);
+              setHasDownloadedExe(false);
               setError("");
               window.dispatchEvent(new CustomEvent("connector-agent-closed"));
             }}

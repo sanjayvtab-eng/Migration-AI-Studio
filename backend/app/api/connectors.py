@@ -10,7 +10,7 @@ from app.api.routes import auth
 from app.models.entities import MigrationSource
 from app.models.connector import SourceConnector, ConnectorTask
 from app.services.source_connector import digest, connector_info
-from app.services.source_adapters import normalize_engine
+from app.services.source_adapters import decrypt_password, normalize_engine
 
 router = APIRouter(prefix="/api")
 
@@ -79,6 +79,14 @@ def get_config(
         if app_url.endswith("/api"):
             app_url = app_url[:-4]
 
+    user_val = src.username or ""
+    password_val = ""
+    if src.credential_ciphertext:
+        try:
+            password_val = decrypt_password(src.credential_ciphertext) or ""
+        except RuntimeError:
+            password_val = ""
+
     content = (
         f"# Databricks Migration AI Studio - Agent Configuration\n"
         f"# Generated for Source: {src.profile_name} ({src.id})\n"
@@ -92,9 +100,9 @@ def get_config(
         f"CONNECTOR_TOKEN={token}\n"
         f"CONNECTOR_DRIVER={driver}\n"
         f"CONNECTOR_TRUST_CERT={'true' if trust_cert else 'false'}\n"
-        f"# Optional SQL Authentication credentials (leave blank for Windows Auth)\n"
-        f"CONNECTOR_USERNAME=\n"
-        f"CONNECTOR_PASSWORD=\n"
+        f"# Pre-populated Source Authentication Credentials\n"
+        f"CONNECTOR_USERNAME={user_val}\n"
+        f"CONNECTOR_PASSWORD={password_val}\n"
     )
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(

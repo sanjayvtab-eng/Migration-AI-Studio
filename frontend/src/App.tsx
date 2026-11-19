@@ -6596,7 +6596,9 @@ function AppInner({
                                     profile_name: engine === "SQLSERVER" ? "SQLServer1" : `${item.label}1`,
                                     auth_mode: engine === "SQLSERVER" ? "WINDOWS" : "PASSWORD",
                                   })}>
-                                  <Database size={18} />
+                                  <div className="source-engine-icon-wrap">
+                                    <Database size={18} />
+                                  </div>
                                   <b>{item.label}</b>
                                   <span>Port {item.port}</span>
                                 </button>

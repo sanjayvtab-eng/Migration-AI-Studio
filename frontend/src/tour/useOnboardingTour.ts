@@ -428,10 +428,35 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       // 2a. Sources stage: Source created -> guide to Connector Agent
       if (event === "source-created") {
+        dismissSpotlight();
         setTimeout(() => {
           const step = TOUR_STEPS.find((s) => s.id === "step-3-connector-agent");
+          if (step) {
+            saveTourState({ currentStepIndex: 3, currentStage: "Sources" });
+            highlightStep(step);
+          }
+        }, 450);
+        return;
+      }
+
+      if (event === "connector:token-generated") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "connector-download-exe");
           if (step) highlightStep(step);
-        }, 500);
+        }, 250);
+        return;
+      }
+
+      if (event === "connector:exe-downloaded") {
+        setTimeout(() => {
+          const step = TOUR_STEPS.find((s) => s.id === "connector-download-env");
+          if (step) highlightStep(step);
+        }, 150);
+        return;
+      }
+
+      if (event === "connector:env-downloaded") {
+        dismissSpotlight();
         return;
       }
 
@@ -530,6 +555,17 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     window.addEventListener("connector-agent-closed", handleConnectorClosed);
     return () => {
       window.removeEventListener("connector-agent-closed", handleConnectorClosed);
+    };
+  }, [notify]);
+
+  useEffect(() => {
+    const handleConnectorTourEvent = (event: Event) => {
+      const tourEvent = (event as CustomEvent<{ event?: string }>).detail?.event;
+      if (tourEvent) notify(tourEvent);
+    };
+    window.addEventListener("connector-tour-event", handleConnectorTourEvent);
+    return () => {
+      window.removeEventListener("connector-tour-event", handleConnectorTourEvent);
     };
   }, [notify]);
 
