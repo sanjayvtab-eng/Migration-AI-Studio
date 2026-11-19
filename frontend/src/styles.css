@@ -5704,10 +5704,20 @@
 }
 
 .workspace-phase-card.locked {
-  opacity: 0.55;
-  cursor: not-allowed;
-  background: #f8fafc;
-  border-color: #e2e8f0;
+  opacity: 0.52;
+  cursor: not-allowed !important;
+  background: #f8fafc !important;
+  border: 1px dashed #cbd5e1 !important;
+  box-shadow: none !important;
+}
+
+.workspace-phase-card.locked:hover {
+  background: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+}
+
+.workspace-phase-card.locked .phase-card-arrow {
+  opacity: 0.35;
 }
 
 .phase-card-left {

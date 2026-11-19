@@ -3989,9 +3989,10 @@ function AppInner({
 
   const phase2Active = currentStage >= 5 && currentStage <= 7;
   const phase2Completed = currentStage > 7;
+  const phase2Locked = currentStage < 5;
 
   const phase3Active = currentStage >= 8 && currentStage <= 9;
-  const phase3Locked = currentStage < 8 && !medArts.some((a: any) => a.review_status === "APPROVED");
+  const phase3Locked = currentStage < 8 || !medArts.some((a: any) => a.review_status === "APPROVED");
   const phase3Completed = currentStage === 9 && workflowComplete;
 
   const bronzeArts = medArts.filter((a: any) => (a.layer || "").toUpperCase() === "BRONZE");
@@ -4262,6 +4263,7 @@ function AppInner({
             phase1Completed={phase1Completed}
             phase2Active={phase2Active}
             phase2Completed={phase2Completed}
+            phase2Locked={phase2Locked}
             phase3Active={phase3Active}
             phase3Completed={phase3Completed}
             phase3Locked={phase3Locked}

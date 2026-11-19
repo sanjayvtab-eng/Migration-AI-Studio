@@ -8,6 +8,7 @@ export interface WorkspacePhaseStepperProps {
   phase1Completed: boolean;
   phase2Active: boolean;
   phase2Completed: boolean;
+  phase2Locked: boolean;
   phase3Active: boolean;
   phase3Completed: boolean;
   phase3Locked: boolean;
@@ -21,6 +22,7 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
   phase1Completed,
   phase2Active,
   phase2Completed,
+  phase2Locked,
   phase3Active,
   phase3Completed,
   phase3Locked,
@@ -34,8 +36,10 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
           className={`workspace-phase-card ${phase1Active ? "active" : ""} ${phase1Completed ? "completed" : ""}`}
           onClick={() => {
             if (phase1Active) {
-              setPage("Projects");
-            } else {
+              // Within Phase 1: stay on current stage, do not jump or reset
+              return;
+            }
+            if (phase1Completed) {
               setPage("Discovery");
             }
           }}
@@ -69,19 +73,32 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
 
         {/* Phase 2: Classify & Studio */}
         <div
-          className={`workspace-phase-card ${phase2Active ? "active" : ""} ${phase2Completed ? "completed" : ""}`}
+          className={`workspace-phase-card ${phase2Active ? "active" : ""} ${phase2Completed ? "completed" : ""} ${phase2Locked ? "locked" : ""}`}
           onClick={() => {
+            if (phase2Locked) return;
             if (phase2Active) {
               setPage(stageConfig[currentStage]?.page || "Migration Workflow");
-            } else {
+            } else if (phase2Completed) {
               setPage("Migration Workflow");
             }
           }}
-          title="Phase 2: Classify & Studio (Stages 5–7: Inventory, Layer Classification, Migration Studio)"
+          title={
+            phase2Locked
+              ? "Phase 2 is locked. Please complete Stages 1–4 (Connect & Discover) sequentially."
+              : "Phase 2: Classify & Studio (Stages 5–7: Inventory, Layer Classification, Migration Studio)"
+          }
         >
           <div className="phase-card-left">
-            <div className={`workspace-phase-pip ${phase2Completed ? "completed" : phase2Active ? "active" : ""}`}>
-              {phase2Completed ? <Check size={14} strokeWidth={3} /> : phase2Active ? <span className="pip-dot" /> : "2"}
+            <div className={`workspace-phase-pip ${phase2Completed ? "completed" : phase2Active ? "active" : phase2Locked ? "locked" : ""}`}>
+              {phase2Completed ? (
+                <Check size={14} strokeWidth={3} />
+              ) : phase2Active ? (
+                <span className="pip-dot" />
+              ) : phase2Locked ? (
+                <Lock size={12} />
+              ) : (
+                "2"
+              )}
             </div>
             <div className="workspace-phase-meta">
               <div className="phase-eyebrow">PHASE 2 · CLASSIFY &amp; STUDIO</div>
@@ -90,10 +107,16 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
                   ? "Classify & Studio"
                   : phase2Active
                   ? `Stage ${currentStage}: ${stageConfig[currentStage]?.label || "Studio"}`
+                  : phase2Locked
+                  ? "Classify & Studio (Locked)"
                   : "Classify & Studio"}
               </div>
               <div className="phase-scope-desc">
-                {phase2Completed ? "✓ Stages 5–7 Completed" : "Stages 5–7 · Inventory & Migration Studio"}
+                {phase2Completed
+                  ? "✓ Stages 5–7 Completed"
+                  : phase2Locked
+                  ? "🔒 Requires Discovery Completion (Stage 4)"
+                  : "Stages 5–7 · Inventory & Migration Studio"}
               </div>
             </div>
           </div>
