@@ -4585,7 +4585,7 @@ function AppInner({
                       className="wf-source-select"
                       value={promptSourceId}
                       onChange={(e) => { setPromptSourceId(e.target.value); setPromptAnalysis(null); }}
-                      disabled={busy}
+                      disabled={busy || Boolean(promptSpec && promptSpec.status !== "DRAFT")}
                     >
                       <option value="">Auto-detect from prompt</option>
                       {sources.map((s: any) => (
@@ -4594,35 +4594,39 @@ function AppInner({
                         </option>
                       ))}
                     </select>
-                    <button
-                      className={`btn-primary-blue ${(!promptSpec || promptSpec.status === "DRAFT") && hasInteractedPromptState ? "tour-action-highlight" : ""}`}
-                      data-tour="studio-parse-btn"
-                      disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()}
-                      onClick={() => {
-                        submitPromptSpecification();
-                      }}
-                      style={{ padding: "8px 16px" }}
-                    >
-                      <Command size={14} /> Parse and Ground Prompt
-                    </button>
-                    <button
-                      className="btn-secondary"
-                      disabled={isDemoAccount || !pid || busy || !(promptNativeText || masterPrompt).trim()}
-                      style={
-                        isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                            }
-                          : undefined
-                      }
-                      title={isDemoAccount ? "Demo Version: Prompt analysis is pre-grounded" : undefined}
-                      onClick={analyzePromptSpecification}
-                    >
-                      Analyze Prompt
-                    </button>
+                    {(!promptSpec || promptSpec.status === "DRAFT") && (
+                      <>
+                        <button
+                          className={`btn-primary-blue ${(!promptSpec || promptSpec.status === "DRAFT") && hasInteractedPromptState ? "tour-action-highlight" : ""}`}
+                          data-tour="studio-parse-btn"
+                          disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()}
+                          onClick={() => {
+                            submitPromptSpecification();
+                          }}
+                          style={{ padding: "8px 16px" }}
+                        >
+                          <Command size={14} /> Parse and Ground Prompt
+                        </button>
+                        <button
+                          className="btn-secondary"
+                          disabled={isDemoAccount || !pid || busy || !(promptNativeText || masterPrompt).trim()}
+                          style={
+                            isDemoAccount
+                              ? {
+                                  opacity: 0.38,
+                                  cursor: "not-allowed",
+                                  pointerEvents: "none",
+                                  filter: "grayscale(25%)",
+                                }
+                              : undefined
+                          }
+                          title={isDemoAccount ? "Demo Version: Prompt analysis is pre-grounded" : undefined}
+                          onClick={analyzePromptSpecification}
+                        >
+                          Analyze Prompt
+                        </button>
+                      </>
+                    )}
                   </div>
 
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -4653,14 +4657,24 @@ function AppInner({
 
                     {/* Step 3: Validate in Databricks */}
                     {["VALIDATING", "TARGET_VALIDATION_FAILED"].includes(promptSpec?.status) && (
-                      <button className="btn-primary-blue" disabled={busy} onClick={validatePromptArtifacts}>
+                      <button
+                        data-tour="studio-validate-databricks-btn"
+                        className={`btn-primary-blue ${["VALIDATING", "TARGET_VALIDATION_FAILED"].includes(promptSpec?.status) ? "tour-action-highlight" : ""}`}
+                        disabled={busy}
+                        onClick={validatePromptArtifacts}
+                      >
                         <ShieldCheck size={14} /> Validate in Databricks
                       </button>
                     )}
 
                     {/* Step 4: Approve Current Artifacts */}
                     {promptSpec?.status === "PENDING_ARTIFACT_REVIEW" && (
-                      <button className="btn-primary-blue" disabled={busy} onClick={approveAllPromptArtifacts}>
+                      <button
+                        data-tour="studio-approve-artifacts-btn"
+                        className={`btn-primary-blue ${promptSpec?.status === "PENDING_ARTIFACT_REVIEW" ? "tour-action-highlight" : ""}`}
+                        disabled={busy}
+                        onClick={approveAllPromptArtifacts}
+                      >
                         <ShieldCheck size={14} /> Approve Current Artifacts
                       </button>
                     )}
@@ -4687,11 +4701,7 @@ function AppInner({
                         ? "Deploying to DEV (or click to retry if interrupted)"
                         : "Complete artifact review before DEV deployment";
 
-                      const isDevAlreadyPassed = promptSpec
-                        ? promptSpec.status === "DEV_GATE_PASSED"
-                        : isDemoAccount
-                        ? false
-                        : environmentPassed("DEV");
+                      const isDevAlreadyPassed = Boolean(promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV"));
                       return (
                         <button
                           data-tour="studio-deploy-dev-btn"
@@ -4723,14 +4733,27 @@ function AppInner({
                       );
                     })()}
                     </div>
-                    <button
-                      className="btn-secondary"
-                      onClick={() => setPage("Deployments")}
-                      title="View DEV deployment execution logs in Stage 8"
-                      style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 8 }}
-                    >
-                      <ScrollText size={14} /> View DEV Logs →
-                    </button>
+                    {(() => {
+                      const isDevAlreadyPassed = Boolean(promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV"));
+                      return (
+                        <button
+                          className="btn-secondary"
+                          onClick={() => isDevAlreadyPassed && setPage("Deployments")}
+                          disabled={!isDevAlreadyPassed || busy}
+                          title={isDevAlreadyPassed ? "View DEV deployment execution logs in Stage 8" : "Locked: Complete DEV deployment to view logs"}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            marginLeft: 8,
+                            opacity: isDevAlreadyPassed ? 1 : 0.45,
+                            cursor: isDevAlreadyPassed ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          {isDevAlreadyPassed ? <ScrollText size={14} /> : <Lock size={14} />} View DEV Logs →
+                        </button>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -13178,9 +13201,14 @@ function AppInner({
               backText: "← Back to Discovery",
               backTarget: "Discovery",
               backDisabled: false,
-              forwardText: `Proceed to Deployment (${medArts.length || 14} Artifacts) →`,
+              forwardText: (promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV"))
+                ? `Proceed to Deployment (${medArts.length || 14} Artifacts) →`
+                : "Proceed to Deployment (Locked)",
               forwardTarget: "Deployments",
-              forwardDisabled: false,
+              forwardDisabled: !(promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV")),
+              forwardTooltip: (promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV"))
+                ? "Proceed to Stage 8: Deployments"
+                : "Locked: Complete artifact generation, validation, and DEV deployment to proceed",
             },
             8: {
               title: "Stage 8 of 9: Deployment (DEV)",
