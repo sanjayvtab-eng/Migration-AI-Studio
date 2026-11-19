@@ -5782,29 +5782,46 @@ function AppInner({
                             >
                               <td>
                                 <div className="project-name-cell">
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                    <span
+                                      className={`project-selection-indicator ${isSelected ? "selected" : ""}`}
+                                      title={isSelected ? "Selected active project" : "Click to select this project"}
+                                    >
+                                      {isSelected ? (
+                                        <CheckCircle2 size={18} className="selection-checked-icon" />
+                                      ) : (
+                                        <span className="selection-empty-circle" />
+                                      )}
+                                    </span>
                                     <span className="project-title">{p.name}</span>
+                                    {isSelected && (
+                                      <span className="project-selected-badge" title="Currently selected active project for migration pipeline">
+                                        <Check size={11} strokeWidth={3} /> Selected
+                                      </span>
+                                    )}
                                     {isDemoProject && (
                                       <span className="demo-tour-guide-badge" title="Pre-configured migration project for guided exploration">
                                         <Sparkles size={11} /> Guided Tour
                                       </span>
                                     )}
                                   </div>
-                                  <span
-                                    className="project-id-mono"
-                                    title="Click to copy ID"
-                                    onClick={(e) => copyToClipboard(e, p.id)}
-                                  >
-                                    {copiedId === p.id ? (
-                                      <>
-                                        <Check size={11} color="#059669" /> Copied
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Copy size={11} /> {p.id.slice(0, 8)}...
-                                      </>
-                                    )}
-                                  </span>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 28 }}>
+                                    <span
+                                      className="project-id-mono"
+                                      title="Click to copy ID"
+                                      onClick={(e) => copyToClipboard(e, p.id)}
+                                    >
+                                      {copiedId === p.id ? (
+                                        <>
+                                          <Check size={11} color="#059669" /> Copied
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy size={11} /> {p.id.slice(0, 8)}...
+                                        </>
+                                      )}
+                                    </span>
+                                  </div>
                                 </div>
                               </td>
                               <td>

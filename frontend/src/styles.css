@@ -967,19 +967,80 @@
 
 .project-row {
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition: all 0.15s ease;
 }
 
 .project-row:hover td {
-  background-color: #f8fbff;
+  background-color: #f1f5f9;
 }
 
+/* Selected row prominent highlight */
 .project-row.selected-row td {
-  background-color: #f0f7ff !important;
+  background: #e0f2fe !important;
+  border-top: 2px solid #0284c7 !important;
+  border-bottom: 2px solid #0284c7 !important;
 }
 
 .project-row.selected-row td:first-child {
-  border-left: 3px solid #2563eb;
+  border-left: 6px solid #0284c7 !important;
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+
+.project-row.selected-row td:last-child {
+  border-right: 2px solid #0284c7 !important;
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.project-row.selected-row:hover td {
+  background: #bae6fd !important;
+}
+
+.project-row.selected-row .project-title {
+  color: #0369a1 !important;
+  font-weight: 800 !important;
+  font-size: 13.5px;
+}
+
+.project-selection-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.selection-checked-icon {
+  color: #0284c7;
+  filter: drop-shadow(0 1px 2px rgba(2, 132, 199, 0.35));
+}
+
+.selection-empty-circle {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #cbd5e1;
+  border-radius: 50%;
+  display: inline-block;
+  transition: all 0.15s ease;
+}
+
+.project-row:hover .selection-empty-circle {
+  border-color: #0284c7;
+  background-color: #f0f9ff;
+}
+
+.project-selected-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #0284c7;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  box-shadow: 0 1px 3px rgba(2, 132, 199, 0.4);
+  letter-spacing: 0.2px;
 }
 
 .project-name-cell {
@@ -6716,10 +6777,9 @@
   cursor: pointer !important;
 }
 
-.demo-tour-highlight-row {
-  background: rgba(239, 246, 255, 0.75) !important;
-  border-left: 4px solid #2563eb !important;
-  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.3) !important;
+.demo-tour-highlight-row:not(.selected-row) {
+  background: rgba(248, 250, 252, 0.9) !important;
+  border-left: 3px dashed #93c5fd !important;
 }
 
 .demo-tour-guide-badge {
