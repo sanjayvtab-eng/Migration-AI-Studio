@@ -380,6 +380,19 @@ def _safe_execute_artifact(content: str, *, allow_destructive: bool = False) -> 
     _execute_promoted_sql(content, safe_retry=False)
 
 
+def _clean_group_order_by_aliases(sql: str) -> str:
+    """Strip illegal 'AS <alias>' keywords from inside GROUP BY and ORDER BY clauses."""
+    def _strip_as(m):
+        clause = m.group(1)
+        body = m.group(2)
+        cleaned = re.sub(r"(?i)(\b[A-Za-z0-9_]+\([^)]*\)|[A-Za-z0-9_`.]+)\s+AS\s+[`'\"]?[A-Za-z0-9_]+[`'\"]?", r"\1", body)
+        return f"{clause}{cleaned}"
+
+    sql = re.sub(r"(?is)(\bGROUP\s+BY\b)(.*?)(?=\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b|\bWINDOW\b|;|$)", _strip_as, sql)
+    sql = re.sub(r"(?is)(\bORDER\s+BY\b)(.*?)(?=\bLIMIT\b|\bWINDOW\b|;|$)", _strip_as, sql)
+    return sql
+
+
 def _safe_execute_with_auto_healing(
     db: Session, sql: str, allow_destructive: bool = False, *,
     project_id: str | None = None, run_id: str | None = None,
@@ -406,6 +419,19 @@ def _safe_execute_with_auto_healing(
             except Exception as original_error:
                 last_error = original_error
                 err_str = str(original_error)
+
+                # 0. Heal PARSE_SYNTAX_ERROR caused by invalid 'AS <alias>' inside GROUP BY / ORDER BY
+                if ("PARSE_SYNTAX_ERROR" in err_str or "extra input" in err_str or "Syntax error at or near" in err_str) and ("GROUP BY" in cur_stmt.upper() or "ORDER BY" in cur_stmt.upper()):
+                    cleaned_stmt = _clean_group_order_by_aliases(cur_stmt)
+                    if cleaned_stmt != cur_stmt:
+                        cur_stmt = cleaned_stmt.rstrip(';') + ';'
+                        repairs.append({
+                            "type": "GROUP_BY_SYNTAX_HEALING",
+                            "original_sql": statement,
+                            "patched_sql": cur_stmt,
+                            "reason": "Removed illegal 'AS <alias>' from GROUP BY / ORDER BY clause",
+                        })
+                        continue
 
                 # 1. Heal fact_sales -> fact_orders
                 if ("TABLE_OR_VIEW_NOT_FOUND" in err_str or "cannot be found" in err_str) and "fact_sales" in cur_stmt.lower():
@@ -673,6 +699,8 @@ def _safe_execute_with_auto_healing(
                             patched = re.sub(arith_pattern2, r"0\g<1>", patched, flags=re.I)
                             bare_pattern = rf"\b{col_name}\b(?!\s*=)"
                             patched = re.sub(bare_pattern, f"CAST(NULL AS STRING) AS {col_name}", patched, flags=re.I)
+
+                        patched = _clean_group_order_by_aliases(patched)
 
                         if patched != cur_stmt:
                             cur_stmt = patched.rstrip(';') + ';'

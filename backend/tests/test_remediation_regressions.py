@@ -328,6 +328,61 @@ def test_auto_healing_resolves_unresolved_column(db):
     assert any("CAST(NULL AS STRING) AS order_id" in stmt for stmt in executed_statements)
 
 
+def test_auto_healing_cleans_group_by_alias_syntax(db):
+    executed_statements = []
+    def mock_executor(stmt, safe_retry=False):
+        executed_statements.append(stmt)
+        if "GROUP BY CAST(NULL AS STRING) AS executive_kpi_id" in stmt:
+            raise RuntimeError(
+                "[PARSE_SYNTAX_ERROR] Syntax error at or near 'executive_kpi_id': extra input 'executive_kpi_id'. SQLSTATE: 42601 == SQL == " + stmt
+            )
+        if "GROUP BY executive_kpi_id" in stmt:
+            raise RuntimeError(
+                "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, variable, or function parameter with name 'executive_kpi_id' cannot be resolved. SQLSTATE: 42703"
+            )
+
+    test_sql = (
+        "CREATE OR REPLACE VIEW `demo_dev`.`gold`.`vw_executive_kpi_summary` AS "
+        "SELECT executive_kpi_id, COUNT(*) AS total_count "
+        "FROM `demo_dev`.`gold`.`fact_sales` "
+        "GROUP BY executive_kpi_id;"
+    )
+
+    repairs = deployment._safe_execute_with_auto_healing(db, test_sql, executor=mock_executor)
+    assert len(repairs) >= 1
+    final_stmt = executed_statements[-1]
+    assert "GROUP BY CAST(NULL AS STRING)" in final_stmt
+    assert "GROUP BY CAST(NULL AS STRING) AS executive_kpi_id" not in final_stmt
+
+
+def test_executive_kpi_summary_view_generation():
+    from app.services import prompt_specification
+    snapshot = {
+        "objects": [
+            {
+                "schema": "dbo",
+                "name": "fact_sales",
+                "type": "TABLE",
+                "columns": [
+                    {"name": "sale_id", "target_name": "sale_id", "type": "int"},
+                    {"name": "sale_date", "target_name": "sale_date", "type": "date"},
+                    {"name": "customer_id", "target_name": "customer_id", "type": "int"},
+                    {"name": "sales_amount", "target_name": "sales_amount", "type": "decimal"},
+                ],
+            }
+        ]
+    }
+    request = {"name": "vw_executive_kpi_summary", "type": "SUMMARY_VIEW"}
+    sql, kind = prompt_specification._generate_generic_summary_view_sql(
+        "demo_dev", request, snapshot, clean_views=set(), planned_targets={"fact_sales"}
+    )
+    assert kind == "VIEW"
+    assert "executive_kpi_id" not in sql
+    assert "sale_date" in sql or "sale_id" in sql or "customer_id" in sql
+    assert "demo_dev" in sql
+
+
+
 def test_resolve_relation_preserves_actual_clean_view_name():
     from app.services import prompt_specification
     rel = prompt_specification._resolve_relation(

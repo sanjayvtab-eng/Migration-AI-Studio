@@ -3671,10 +3671,63 @@ WHERE i.{i_stock} <= 25;"""
         fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views, planned_targets=planned_targets)
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT product_id, SUM(quantity) AS units_sold, SUM(sales_amount) AS total_sales\nFROM {fact_rel}\nGROUP BY product_id;", "VIEW"
 
+    if "kpi" in lowered or "executive" in lowered:
+        fact_name = _resolve_sales_fact_name(table_map, snapshot, planned_targets=planned_targets)
+        fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views, planned_targets=planned_targets)
+        fact_tbl = next((tbl for k, tbl in table_map.items() if k.replace("_", "") == fact_name.replace("_", "")), None)
+
+        date_col = None
+        amount_col = None
+        id_col = None
+        if fact_tbl:
+            for c in fact_tbl.get("columns", []):
+                cl = c["target_name"].lower()
+                if not date_col and any(term in cl for term in ("date", "day", "month")):
+                    date_col = c["target_name"]
+                if not amount_col and any(term in cl for term in ("amount", "sales", "revenue", "price", "total")):
+                    amount_col = c["target_name"]
+                if not id_col and (cl.endswith("_id") or cl == "id"):
+                    id_col = c["target_name"]
+
+        if date_col:
+            rev_expr = f", ROUND(SUM(COALESCE({amount_col}, 0)), 2) AS total_revenue" if amount_col else ""
+            cnt_expr = f"COUNT(DISTINCT {id_col})" if id_col else "COUNT(*)"
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  DATE_TRUNC('month', {date_col}) AS kpi_month,
+  {cnt_expr} AS total_transactions{rev_expr}
+FROM {fact_rel}
+GROUP BY DATE_TRUNC('month', {date_col});"""
+            return sql, "VIEW"
+        elif id_col:
+            rev_expr = f", ROUND(SUM(COALESCE({amount_col}, 0)), 2) AS total_revenue" if amount_col else ""
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  {id_col},
+  COUNT(*) AS total_count{rev_expr}
+FROM {fact_rel}
+GROUP BY {id_col};"""
+            return sql, "VIEW"
+        else:
+            rev_expr = f"ROUND(SUM(COALESCE({amount_col}, 0)), 2) AS total_revenue" if amount_col else "COUNT(*) AS total_count"
+            sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
+SELECT
+  COUNT(*) AS total_records,
+  {rev_expr}
+FROM {fact_rel};"""
+            return sql, "VIEW"
+
     # Dynamic summary
     if "fact_sales" in snapshot or any(o.get("name", "").lower() == "fact_sales" for o in snapshot.get("objects", [])) or "fact_orders" in snapshot or any(o.get("name", "").lower() == "fact_orders" for o in snapshot.get("objects", [])):
+        fact_name = _resolve_sales_fact_name(table_map, snapshot, planned_targets=planned_targets)
         fact_rel = _resolve_sales_fact_relation(catalog, snapshot, table_map, clean_views, planned_targets=planned_targets)
+        fact_tbl = next((tbl for k, tbl in table_map.items() if k.replace("_", "") == fact_name.replace("_", "")), None)
         group_key = f"{stem}_id" if stem else "id"
+        if fact_tbl:
+            cols = [c["target_name"].lower() for c in fact_tbl.get("columns", [])]
+            if group_key.lower() not in cols:
+                matching_id = next((c["target_name"] for c in fact_tbl.get("columns", []) if c["target_name"].lower().endswith("_id")), None)
+                group_key = matching_id or (fact_tbl["columns"][0]["target_name"] if fact_tbl.get("columns") else "id")
         return f"CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS\nSELECT {group_key}, COUNT(*) AS total_count\nFROM {fact_rel}\nGROUP BY {group_key};", "VIEW"
 
     source_refs = request.get("source_refs", [])
