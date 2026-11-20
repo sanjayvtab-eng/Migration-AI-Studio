@@ -712,6 +712,26 @@ def _safe_execute_with_auto_healing(
                             })
                             continue
 
+                # 4. Heal Delta MERGE schema mismatches (DELTA_MERGE_UNRESOLVED_EXPRESSION)
+                if "DELTA_MERGE_UNRESOLVED_EXPRESSION" in err_str or ("cannot resolve target." in err_str.lower() and "merge into" in cur_stmt.lower()):
+                    target_match = re.search(r"(?i)\bMERGE\s+INTO\s+([`'\"A-Za-z0-9_.]+)", cur_stmt)
+                    using_match = re.search(r"(?is)\bUSING\s*\(\s*(SELECT\b.*?\bFROM\b.*?)\s*\)\s*(?:AS\s+)?([A-Za-z0-9_]+)?\s+ON\b", cur_stmt)
+                    if target_match and using_match:
+                        target_tbl = target_match.group(1)
+                        source_select = using_match.group(1).strip()
+                        recreate_sql = f"CREATE OR REPLACE TABLE {target_tbl} USING DELTA AS SELECT * FROM (\n{source_select}\n) source WHERE 1 = 0;"
+                        try:
+                            execute(recreate_sql, safe_retry=False)
+                            repairs.append({
+                                "type": "DELTA_MERGE_SCHEMA_HEALING",
+                                "original_sql": statement,
+                                "patched_sql": cur_stmt,
+                                "reason": f"Recreated {target_tbl} with current schema to resolve stale Delta MERGE target columns",
+                            })
+                            continue
+                        except Exception:
+                            pass
+
                 # If no healing could be done, break and raise
                 break
 

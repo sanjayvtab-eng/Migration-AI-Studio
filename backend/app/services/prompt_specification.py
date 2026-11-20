@@ -499,6 +499,7 @@ def _source_refs_for(name: str, sentence: str, table_map: dict[str, dict[str, An
         "fn_calculatenetsales": ["SalesDetails", "Sales", "OrderItems"],
         "usp_loadinventory": ["Inventory", "Suppliers", "Products"],
         "usp_loadsales": ["Sales", "SalesDetails", "RetailCustomers", "Orders"],
+        "usp_mergedailysummary": ["FactSales", "fact_sales", "Sales", "Shipments", "Orders", "OrderItems"],
     }
     lowered = name.lower()
     if lowered in defaults:
@@ -549,6 +550,11 @@ def _source_refs_for(name: str, sentence: str, table_map: dict[str, dict[str, An
         for tbl, _ in matches:
             if tbl not in found:
                 found.append(tbl)
+        if not found and any(tok in stem for tok in ("summary", "daily", "sale", "order", "load", "merge")):
+            for t_lower, tbl in table_map.items():
+                if any(fact_tok in t_lower for fact_tok in ("fact", "sale", "order", "item", "shipment", "txn", "transaction")):
+                    if tbl["name"] not in found:
+                        found.append(tbl["name"])
         for base in list(found):
             for edge in er_graph.get(base, []):
                 connected = edge["target_table"]
@@ -651,6 +657,7 @@ def _legacy_source_refs_for(name: str, sentence: str, table_map: dict[str, dict[
         "fn_calculatenetsales": ["SalesDetails", "Sales", "OrderItems"],
         "usp_loadinventory": ["Inventory", "Suppliers", "Products"],
         "usp_loadsales": ["Sales", "SalesDetails", "RetailCustomers", "Orders"],
+        "usp_mergedailysummary": ["FactSales", "fact_sales", "Sales", "Shipments", "Orders", "OrderItems"],
     }
     for candidate in defaults.get(name.lower(), []):
         if candidate.lower() in table_map and table_map[candidate.lower()]["name"] not in found:
