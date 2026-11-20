@@ -13490,7 +13490,9 @@ function AppInner({
                     <p role="status" style={{ fontSize: 12, color: (isDemoUser || isDemoAccount || autoPromotionStatus?.preflight?.eligible) ? "#38bdf8" : "#f87171", margin: "0 0 12px 0" }}>
                       {autoAuthLoading
                         ? "Checking the current release and prerequisites…"
-                        : (isDemoUser || isDemoAccount || autoPromotionStatus?.preflight?.eligible)
+                        : (isDemoUser || isDemoAccount)
+                        ? "ℹ️ Free Demo Notice: The interactive demo concludes at DEV deployment. Authorizing here will complete the walkthrough and open Enterprise Support to unlock full access across TEST, UAT & PROD."
+                        : autoPromotionStatus?.preflight?.eligible
                         ? "Current release is eligible for authorization."
                         : "Authorization blocked. Complete measured DEV reconciliation and resolve the listed prerequisites."}
                     </p>
@@ -13622,19 +13624,21 @@ function AppInner({
 
                     {/* Top Celebration Banner */}
                     <div style={{ textAlign: "center", padding: "0 16px" }}>
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(16, 185, 129, 0.12)", border: "1px solid rgba(16, 185, 129, 0.35)", borderRadius: 999, padding: "5px 14px", marginBottom: 12 }}>
-                        <CheckCircle2 size={15} color="#34d399" />
-                        <span style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: "0.06em", color: "#34d399", textTransform: "uppercase" }}>
-                          DEV Migration Demo Completed Successfully
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(16, 185, 129, 0.14)", border: "1.5px solid rgba(16, 185, 129, 0.4)", borderRadius: 999, padding: "6px 16px", marginBottom: 12 }}>
+                        <CheckCircle2 size={16} color="#34d399" />
+                        <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.05em", color: "#34d399", textTransform: "uppercase" }}>
+                          Demo Walkthrough Complete • DEV Migration Passed
                         </span>
                       </div>
 
-                      <h2 style={{ margin: "0 0 8px 0", fontSize: 26, fontWeight: 800, background: "linear-gradient(90deg, #ffffff 0%, #cbd5e1 50%, #93c5fd 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-                        Enterprise Transformation Hub
+                      <h2 style={{ margin: "0 0 8px 0", fontSize: 27, fontWeight: 800, background: "linear-gradient(90deg, #ffffff 0%, #cbd5e1 50%, #93c5fd 100%)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                        Demo Version Concluded — Contact Support for Full Access
                       </h2>
 
-                      <p style={{ margin: 0, color: "#94a3b8", fontSize: 13.5, lineHeight: 1.5, maxWidth: 680, marginLeft: "auto", marginRight: "auto" }}>
-                        You've just witnessed automated <b>SQL Server → Databricks Medallion</b> pipeline deployment in real time. Full end-to-end promotion across <b>TEST</b>, <b>UAT</b>, and <b>PROD</b> with live Deep Clone is unlocked in the <b>Enterprise Edition</b>.
+                      <p style={{ margin: 0, color: "#94a3b8", fontSize: 13.5, lineHeight: 1.5, maxWidth: 720, marginLeft: "auto", marginRight: "auto" }}>
+                        You have successfully experienced automated end-to-end Medallion pipeline creation and DEV deployment on Databricks!
+                        <br />
+                        <b>The free demo walkthrough ends here at DEV.</b> Full multi-environment promotion across <b>TEST</b>, <b>UAT</b>, and <b>PROD</b> requires <b>Enterprise Full Access</b>. Please contact our support and architecture team to continue.
                       </p>
                     </div>
 
@@ -13734,17 +13738,17 @@ function AppInner({
                           <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(51, 65, 85, 0.6)", paddingBottom: 10, marginBottom: 14 }}>
                             <Workflow size={16} color="#818cf8" />
                             <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f8fafc", letterSpacing: "0.02em" }}>
-                              Ready for Full Production?
+                              Want Full Access to TEST, UAT &amp; PROD?
                             </h4>
                           </div>
 
                           <p style={{ margin: "0 0 16px 0", color: "#94a3b8", fontSize: 12.5, lineHeight: 1.5 }}>
-                            Schedule a 30-minute tailored architecture review and migration sizing session with our Databricks migration specialists.
+                            The free interactive demo concludes with DEV deployment. To unlock full access for multi-environment promotion, automated quality gates, and live migration support, contact our team below.
                           </p>
 
-                          {/* Primary CTA: Consultation */}
+                          {/* Primary CTA: Contact Support & Sales */}
                           <a
-                            href="mailto:contactsales@vtabsquare.com?subject=Enterprise%20Databricks%20Migration%20Architecture%20Consultation&amp;body=Hello%20VTAB%20Square%20Team,%0A%0AWe%20completed%20the%20Databricks%20Migration%20Factory%20demo%20and%20would%20like%20to%20discuss%20an%20Enterprise%20rollout.%0A%0AOrganization:%20%0ASource%20Databases%20(e.g.,%20SQL%20Server,%20Oracle):%20%0AEstimated%20Data%20Volume%20(TB):%20%0ATarget%20Databricks%20Environment:%20%0ATimeline:%20%0A%0ABest%20regards,"
+                            href="mailto:contactsales@vtabsquare.com?subject=Enterprise%20Full%20Access%20Request%20-%20Databricks%20Migration%20Factory&amp;body=Hello%20VTAB%20Square%20Support%20%26%20Sales%20Team,%0A%0AWe%20completed%20the%20Databricks%20Migration%20Factory%20DEV%20demo%20and%20would%20like%20to%20request%20Full%20Enterprise%20Access%20for%20TEST,%20UAT%20and%20PROD%20promotion.%0A%0AOrganization:%20%0ASource%20Databases:%20%0ATarget%20Databricks%20Workspace:%20%0AEstimated%20Data%20Volume:%20%0A%0ABest%20regards,"
                             style={{
                               display: "flex",
                               alignItems: "center",
@@ -13763,7 +13767,7 @@ function AppInner({
                               transition: "transform 0.15s ease",
                             }}
                           >
-                            <Mail size={16} /> Book 30-Min Architecture Consultation
+                            <Mail size={16} /> Contact Support / Sales for Full Access
                           </a>
 
                           {/* Direct Contact Desk Card */}
