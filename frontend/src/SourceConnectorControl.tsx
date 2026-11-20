@@ -115,7 +115,7 @@ export default function SourceConnectorControl({
       : `Connector: ${status.toLowerCase()}`;
 
   const statusPill = (
-    <span className={`status-pill ${pillClass}`}>
+    <span className={`status-pill ${pillClass}`} data-tour="connector-status-pill">
       <span className="status-dot" />
       {statusText}
     </span>

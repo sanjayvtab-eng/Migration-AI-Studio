@@ -547,10 +547,15 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
-      // 2b. Sources stage: Connector Agent modal closed -> guide to test connection
+      // 2b. Sources stage: Connector Agent modal closed -> guide to launch agent first
       if (event === "connector-agent-closed") {
         setTimeout(async () => {
           await waitForBackdropDismissal();
+          const guideStep = TOUR_STEPS.find((s) => s.id === "connector-launch-agent-guide");
+          if (guideStep) {
+            highlightStep(guideStep);
+            return;
+          }
           const testStep = TOUR_STEPS.find((s) => s.id === "step-4-test-connection") || TOUR_STEPS.find((s) => s.id === "step-3-test-connection");
           if (testStep) {
             highlightStep(testStep);

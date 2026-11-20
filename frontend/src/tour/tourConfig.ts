@@ -327,8 +327,8 @@ export const TOUR_STEPS: TourStep[] = [
     totalSteps: 4,
     element: '[data-tour="connector-close-btn"]',
     popover: {
-      title: "Step 4: Close and Test Connection",
-      description: "Both files are downloaded! Close this dialog and proceed to click 'Test Connection' to verify live connectivity.",
+      title: "Step 4: Close Dialog",
+      description: "Both files are downloaded! Close this dialog to proceed with launching migration-agent.exe and testing connectivity.",
       side: "top",
       align: "end",
     },
@@ -338,10 +338,26 @@ export const TOUR_STEPS: TourStep[] = [
     disableBack: true,
   },
   {
-    id: "step-4-test-connection",
+    id: "connector-launch-agent-guide",
     stage: "Sources",
     stageNumber: 3,
     stepNumber: 4,
+    totalSteps: 9,
+    element: '[data-tour="connector-status-pill"], [data-tour="test-connection-btn"]',
+    popover: {
+      title: "Step 5 – Launch Migration Agent (.exe)",
+      description:
+        "1. Open the downloaded <b>migration-agent.exe</b> file in the same folder as <b>agent.env</b>.<br/>2. <b>Do not close the console window — just minimize it.</b><br/>3. Live logs and connectivity status will stream at <a href='http://localhost:8585' target='_blank' rel='noopener noreferrer' onclick='event.stopPropagation()' style='color:#0052cc;text-decoration:underline;font-weight:600;'>http://localhost:8585</a>.<br/>4. Once the agent is running in the background, click <b>Next</b> to test live connectivity.",
+      side: "bottom",
+      align: "start",
+    },
+    disableBack: true,
+  },
+  {
+    id: "step-4-test-connection",
+    stage: "Sources",
+    stageNumber: 3,
+    stepNumber: 5,
     totalSteps: 9,
     element: '[data-tour="test-connection-btn"]',
     popover: {
@@ -352,6 +368,7 @@ export const TOUR_STEPS: TourStep[] = [
       align: "start",
     },
     actionType: "click",
+    actionHint: "Click the highlighted button to test live connectivity",
     advanceOnEvent: "test-connection-completed",
     disableBack: false,
   },
@@ -359,7 +376,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "step-5-test-results",
     stage: "Sources",
     stageNumber: 3,
-    stepNumber: 5,
+    stepNumber: 6,
     totalSteps: 9,
     element: '[data-tour="test-results-panel"]',
     popover: {
@@ -375,7 +392,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "step-6-proceed-discovery",
     stage: "Sources",
     stageNumber: 3,
-    stepNumber: 6,
+    stepNumber: 7,
     totalSteps: 9,
     element: '[data-tour="proceed-discovery-btn"]',
     popover: {
@@ -386,12 +403,12 @@ export const TOUR_STEPS: TourStep[] = [
     },
   },
 
-  // Stage 4: Discovery (Steps 7 & 8)
+  // Stage 4: Discovery (Steps 8 & 9)
   {
     id: "step-7-run-discovery",
     stage: "Discovery",
     stageNumber: 4,
-    stepNumber: 7,
+    stepNumber: 8,
     totalSteps: 9,
     element: '[data-tour="run-discovery-btn"]',
     popover: {
@@ -408,7 +425,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "step-8-proceed-studio",
     stage: "Discovery",
     stageNumber: 4,
-    stepNumber: 8,
+    stepNumber: 9,
     totalSteps: 9,
     element: '[data-tour="proceed-studio-btn"]',
     popover: {
