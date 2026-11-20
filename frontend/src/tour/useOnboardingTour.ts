@@ -124,7 +124,7 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         <div class="mf-tour-dots">${dotsHtml}</div>
       </div>
       <h4 class="driver-popover-title">${title}</h4>
-      <p class="driver-popover-description">${description}</p>
+      <div class="driver-popover-description">${description}</div>
       <div class="driver-popover-footer">
         <button type="button" class="mf-tour-skip-link" data-tour-action="skip">Skip tour</button>
         <div class="mf-tour-actions">
@@ -136,7 +136,7 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
           ${
             !isActionStep
               ? `<button type="button" class="mf-tour-btn-next" data-tour-action="next">
-                  ${isLastStep ? "Finish" : "Next"}
+                  ${isLastStep ? "Finish" : stepConfig.nextBtnText || "Next"}
                 </button>`
               : `<span class="mf-tour-action-hint">${stepConfig.actionHint || "Click the highlighted button to proceed"}</span>`
           }
@@ -171,11 +171,14 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         await new Promise((res) => setTimeout(res, 250));
       }
 
-      // Wait for element to exist in DOM
-      const targetEl = await waitForElement(stepConfig.element, 5000);
-      if (!targetEl) {
-        console.warn(`[Tour] Element ${stepConfig.element} not found, skipping gracefully.`);
-        return;
+      // Wait for element to exist in DOM (for centered modals, target is not required)
+      let targetEl: Element | null = null;
+      if (!stepConfig.isCenteredModal) {
+        targetEl = await waitForElement(stepConfig.element, 5000);
+        if (!targetEl) {
+          console.warn(`[Tour] Element ${stepConfig.element} not found, skipping gracefully.`);
+          return;
+        }
       }
 
       if (document.querySelector(".global-loading-backdrop")) {
@@ -183,8 +186,8 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         await new Promise((res) => setTimeout(res, 250));
       }
 
-      // Smooth scroll into view if required or off-screen
-      if (stepConfig.scrollIntoView || stepConfig.id === "step-4-test-results") {
+      // Smooth scroll into view if required or off-screen (skip for centered modals)
+      if (!stepConfig.isCenteredModal && (stepConfig.scrollIntoView || stepConfig.id === "step-4-test-results") && targetEl) {
         targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
         await new Promise((res) => setTimeout(res, 350));
       }
@@ -194,12 +197,14 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       const driverObj = driver({
         animate: true,
-        smoothScroll: true,
+        smoothScroll: !stepConfig.isCenteredModal,
         allowClose: true,
-        overlayColor: "rgba(15, 23, 42, 0.65)",
-        stagePadding: 8,
-        stageRadius: 8,
-        popoverClass: "mf-tour-popover",
+        overlayColor: stepConfig.isCenteredModal ? "rgba(15, 23, 42, 0.82)" : "rgba(15, 23, 42, 0.65)",
+        stagePadding: stepConfig.isCenteredModal ? 0 : 8,
+        stageRadius: stepConfig.isCenteredModal ? 0 : 8,
+        popoverClass: stepConfig.isCenteredModal
+          ? "mf-tour-popover mf-tour-popover-centered"
+          : "mf-tour-popover",
         onDestroyStarted: () => {
           driverObj.destroy();
         },
@@ -207,19 +212,29 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
 
       driverInstanceRef.current = driverObj;
 
-      driverObj.highlight({
-        element: targetEl,
-        popover: {
-          side: stepConfig.popover.side || "bottom",
-          align: stepConfig.popover.align || "start",
-          description: buildPopoverHtml(stepConfig),
-        },
-      });
+      if (stepConfig.isCenteredModal) {
+        driverObj.highlight({
+          popover: {
+            side: "bottom",
+            align: "center",
+            description: buildPopoverHtml(stepConfig),
+          },
+        });
+      } else {
+        driverObj.highlight({
+          element: targetEl!,
+          popover: {
+            side: stepConfig.popover.side || "bottom",
+            align: stepConfig.popover.align || "start",
+            description: buildPopoverHtml(stepConfig),
+          },
+        });
+      }
 
       // If target element is disconnected from DOM while highlighted, immediately destroy tour popover.
       // If an operation overlay appears while highlighted, dismiss spotlight and wait to re-highlight!
       const disconnectObserver = new MutationObserver(() => {
-        if (!targetEl.isConnected) {
+        if (!stepConfig.isCenteredModal && targetEl && !targetEl.isConnected) {
           dismissSpotlight();
           disconnectObserver.disconnect();
         } else if (document.querySelector(".global-loading-backdrop")) {
@@ -236,22 +251,26 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       });
       disconnectObserver.observe(document.body, { childList: true, subtree: true });
 
-      // Add gentle pulse class if action step
-      if (stepConfig.actionType === "click") {
-        targetEl.classList.add("tour-pulse");
-        isWaitingForActionRef.current = true;
+      // Add gentle pulse class and target click listener if not a centered modal
+      if (!stepConfig.isCenteredModal && targetEl) {
+        if (stepConfig.actionType === "click") {
+          targetEl.classList.add("tour-pulse");
+          isWaitingForActionRef.current = true;
+        } else {
+          isWaitingForActionRef.current = false;
+        }
+
+        // When the user clicks the highlighted button/modal, dismiss the popover immediately
+        // Do NOT advance yet! Advance strictly when the process completes and emits an event.
+        const handleTargetClick = () => {
+          dismissSpotlight();
+          targetEl.classList.remove("tour-pulse");
+          targetEl.removeEventListener("click", handleTargetClick);
+        };
+        targetEl.addEventListener("click", handleTargetClick, { once: true });
       } else {
         isWaitingForActionRef.current = false;
       }
-
-      // When the user clicks the highlighted button/modal, dismiss the popover immediately
-      // Do NOT advance yet! Advance strictly when the process completes and emits an event.
-      const handleTargetClick = () => {
-        dismissSpotlight();
-        targetEl.classList.remove("tour-pulse");
-        targetEl.removeEventListener("click", handleTargetClick);
-      };
-      targetEl.addEventListener("click", handleTargetClick, { once: true });
 
       // Wire up custom buttons in popover
       setTimeout(() => {

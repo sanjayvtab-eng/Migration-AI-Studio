@@ -141,8 +141,9 @@ body:has(.global-loading-backdrop) .driver-overlay,
 
 .driver-popover.mf-tour-popover .driver-popover-description {
   font-size: 13.5px !important;
-  color: #475569 !important;
-  line-height: 1.5 !important;
+  color: #1e293b !important;
+  font-weight: 500 !important;
+  line-height: 1.55 !important;
   margin-bottom: 16px !important;
 }
 
@@ -276,4 +277,69 @@ body:has(.global-loading-backdrop) .driver-overlay,
   100% {
     box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35), 0 0 0 2px rgba(191, 219, 254, 0.7);
   }
+}
+
+/* Centered High-Priority Popup Modal */
+.driver-popover.mf-tour-popover.mf-tour-popover-centered {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  margin: 0 !important;
+  max-width: 550px !important;
+  width: min(550px, 94vw) !important;
+  padding: 24px 26px !important;
+  background: #ffffff !important;
+  border-radius: 18px !important;
+  border: 2px solid #2563eb !important;
+  box-shadow: 0 25px 70px -10px rgba(15, 23, 42, 0.55), 0 0 0 1px rgba(37, 99, 235, 0.4), 0 0 45px rgba(37, 99, 235, 0.28) !important;
+  z-index: 1000000005 !important;
+  animation: mfPopCenter 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+@keyframes mfPopCenter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -46%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.driver-popover.mf-tour-popover.mf-tour-popover-centered .driver-popover-arrow {
+  display: none !important;
+}
+
+.driver-popover.mf-tour-popover.mf-tour-popover-centered .driver-popover-title {
+  font-size: 17.5px !important;
+  font-weight: 800 !important;
+  color: #0f172a !important;
+  letter-spacing: -0.3px;
+  margin-bottom: 12px !important;
+}
+
+.driver-popover.mf-tour-popover.mf-tour-popover-centered .driver-popover-description {
+  font-size: 13.5px !important;
+  color: #0f172a !important;
+  line-height: 1.55 !important;
+  margin-bottom: 16px !important;
+}
+
+.driver-popover.mf-tour-popover.mf-tour-popover-centered .mf-tour-btn-next {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
+  font-size: 13.5px !important;
+  font-weight: 700 !important;
+  padding: 9px 18px !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35) !important;
+  transition: all 0.2s ease !important;
+}
+
+.driver-popover.mf-tour-popover.mf-tour-popover-centered .mf-tour-btn-next:hover {
+  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%) !important;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45) !important;
+  transform: translateY(-1px);
 }

@@ -5,6 +5,8 @@ export interface TourStep {
   stepNumber: number;
   totalSteps: number;
   element: string;
+  isCenteredModal?: boolean;
+  nextBtnText?: string;
   popover: {
     title: string;
     description: string;
@@ -344,12 +346,62 @@ export const TOUR_STEPS: TourStep[] = [
     stepNumber: 4,
     totalSteps: 9,
     element: '[data-tour="connector-status-pill"], [data-tour="test-connection-btn"]',
+    isCenteredModal: true,
+    nextBtnText: "Proceed to Test Connection →",
     popover: {
-      title: "Step 5 – Launch Migration Agent (.exe)",
-      description:
-        "1. Open the downloaded <b>migration-agent.exe</b> file in the same folder as <b>agent.env</b>.<br/>2. <b>Do not close the console window — just minimize it.</b><br/>3. Live logs and connectivity status will stream at <a href='http://localhost:8585' target='_blank' rel='noopener noreferrer' onclick='event.stopPropagation()' style='color:#0052cc;text-decoration:underline;font-weight:600;'>http://localhost:8585</a>.<br/>4. Once the agent is running in the background, click <b>Next</b> to test live connectivity.",
+      title: "⚡ Step 5 – Launch Migration Agent (.exe)",
+      description: `
+<div style="margin-top: 4px;">
+  <div style="background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%); border: 1.5px solid #ef4444; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; display: flex; align-items: center; gap: 10px; box-shadow: 0 2px 6px rgba(239, 68, 68, 0.1);">
+    <span style="font-size: 24px; line-height: 1;">🚨</span>
+    <div>
+      <div style="font-size: 13px; font-weight: 800; color: #b91c1c; text-transform: uppercase; letter-spacing: 0.5px;">ACTION REQUIRED BEFORE TEST CONNECTION</div>
+      <div style="font-size: 12px; font-weight: 700; color: #7f1d1d; margin-top: 2px;">The connector agent must be launched locally for connection testing to pass.</div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 9px; margin-bottom: 14px;">
+    <div style="background: #f8fafc; border: 1.5px solid #cbd5e1; border-left: 5px solid #2563eb; border-radius: 9px; padding: 10px 14px;">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
+        <span style="background: #2563eb; color: #ffffff; font-weight: 800; font-size: 11px; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;">1</span>
+        <span style="font-size: 13.5px; font-weight: 800; color: #0f172a;">Launch the Executable File:</span>
+      </div>
+      <div style="font-size: 13px; font-weight: 600; color: #1e293b; padding-left: 30px;">
+        Open the downloaded <strong style="color: #0f172a; background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-family: monospace;">migration-agent.exe</strong> in the exact same folder as <strong style="color: #0f172a; background: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-family: monospace;">agent.env</strong>.
+      </div>
+    </div>
+
+    <div style="background: #fffbeb; border: 1.5px solid #f59e0b; border-left: 5px solid #d97706; border-radius: 9px; padding: 10px 14px;">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 3px;">
+        <span style="background: #d97706; color: #ffffff; font-weight: 800; font-size: 11px; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;">2</span>
+        <span style="font-size: 13.5px; font-weight: 800; color: #92400e;">DO NOT CLOSE — JUST MINIMIZE:</span>
+      </div>
+      <div style="font-size: 13px; font-weight: 700; color: #78350f; padding-left: 30px;">
+        ⚠️ Keep the console window running! <strong>DO NOT CLOSE IT</strong> — just <strong>MINIMIZE</strong> the window so it stays connected.
+      </div>
+    </div>
+
+    <div style="background: #f0fdf4; border: 1.5px solid #86efac; border-left: 5px solid #16a34a; border-radius: 9px; padding: 10px 14px;">
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+        <span style="background: #16a34a; color: #ffffff; font-weight: 800; font-size: 11px; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;">3</span>
+        <span style="font-size: 13.5px; font-weight: 800; color: #14532d;">View Live Streaming Logs:</span>
+      </div>
+      <div style="font-size: 13px; font-weight: 700; color: #166534; padding-left: 30px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;">
+        <span>The agent streams logs and status at:</span>
+        <a href="http://localhost:8585" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" style="display: inline-flex; align-items: center; gap: 5px; background: #16a34a; color: #ffffff; padding: 3px 10px; border-radius: 6px; font-weight: 800; text-decoration: none; font-size: 12px; box-shadow: 0 2px 4px rgba(22, 163, 74, 0.25);">
+          <span style="width: 7px; height: 7px; border-radius: 50%; background: #86efac; display: inline-block;"></span>
+          http://localhost:8585 ↗
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div style="background: #f1f5f9; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; font-weight: 700; color: #334155; text-align: center;">
+    👉 After minimizing the agent console, click <strong>"Proceed to Test Connection →"</strong> below.
+  </div>
+</div>`,
       side: "bottom",
-      align: "start",
+      align: "center",
     },
     disableBack: true,
   },
