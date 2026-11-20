@@ -3684,27 +3684,64 @@ WHERE i.{i_stock} <= 25;"""
         fact_tbl = next((tbl for k, tbl in table_map.items() if k.replace("_", "") == fact_name.replace("_", "")), None)
 
         date_col = None
+        date_expr = None
         amount_col = None
         id_col = None
         if fact_tbl:
-            for c in fact_tbl.get("columns", []):
-                cl = c["target_name"].lower()
-                if not date_col and any(term in cl for term in ("date", "day", "month")):
+            cols = fact_tbl.get("columns", [])
+            # 1. Prefer true DATE / TIMESTAMP column (not an integer surrogate key)
+            for c in cols:
+                cl = c.get("target_name", "").lower()
+                dt = str(c.get("data_type", "")).upper()
+                is_dt = any(t in dt for t in ("DATE", "TIME", "TIMESTAMP"))
+                is_key = cl.endswith("_key") or cl.endswith("_id") or cl.endswith("_sk")
+                if not date_col and is_dt and not is_key and any(term in cl for term in ("date", "time", "day", "month", "created", "order", "sale")):
                     date_col = c["target_name"]
-                if not amount_col and any(term in cl for term in ("amount", "sales", "revenue", "price", "total")):
-                    amount_col = c["target_name"]
-                if not id_col and (cl.endswith("_id") or cl == "id"):
+                    date_expr = f"DATE_TRUNC('month', {date_col})"
+
+            # 2. Any true DATE / TIMESTAMP column
+            if not date_col:
+                for c in cols:
+                    cl = c.get("target_name", "").lower()
+                    dt = str(c.get("data_type", "")).upper()
+                    is_dt = any(t in dt for t in ("DATE", "TIME", "TIMESTAMP"))
+                    is_key = cl.endswith("_key") or cl.endswith("_id") or cl.endswith("_sk")
+                    if is_dt and not is_key:
+                        date_col = c["target_name"]
+                        date_expr = f"DATE_TRUNC('month', {date_col})"
+                        break
+
+            # 3. If only an integer date key (e.g. date_key INT like 20240115) or string date column exists
+            if not date_col:
+                for c in cols:
+                    cl = c.get("target_name", "").lower()
+                    dt = str(c.get("data_type", "")).upper()
+                    if any(term in cl for term in ("date", "day", "month")):
+                        date_col = c["target_name"]
+                        if any(num_t in dt for num_t in ("INT", "BIGINT", "NUMERIC", "DECIMAL")) or cl.endswith("_key"):
+                            date_expr = f"DATE_TRUNC('month', COALESCE(TRY_TO_DATE(CAST({date_col} AS STRING), 'yyyyMMdd'), TRY_TO_DATE(CAST({date_col} AS STRING)), CURRENT_DATE()))"
+                        else:
+                            date_expr = f"DATE_TRUNC('month', COALESCE(TRY_TO_DATE(CAST({date_col} AS STRING)), CURRENT_DATE()))"
+                        break
+
+            for c in cols:
+                cl = c.get("target_name", "").lower()
+                dt = str(c.get("data_type", "")).upper()
+                if not amount_col and any(term in cl for term in ("amount", "sales", "revenue", "price", "total", "cost")):
+                    if any(num_t in dt for num_t in ("INT", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "MONEY", "REAL")) or not dt:
+                        amount_col = c["target_name"]
+                if not id_col and (cl.endswith("_id") or cl == "id" or cl.endswith("_key")):
                     id_col = c["target_name"]
 
-        if date_col:
+        if date_expr:
             rev_expr = f", ROUND(SUM(COALESCE({amount_col}, 0)), 2) AS total_revenue" if amount_col else ""
             cnt_expr = f"COUNT(DISTINCT {id_col})" if id_col else "COUNT(*)"
             sql = f"""CREATE OR REPLACE VIEW {_fqn(catalog, 'gold', request['name'])} AS
 SELECT
-  DATE_TRUNC('month', {date_col}) AS kpi_month,
+  {date_expr} AS kpi_month,
   {cnt_expr} AS total_transactions{rev_expr}
 FROM {fact_rel}
-GROUP BY DATE_TRUNC('month', {date_col});"""
+GROUP BY {date_expr};"""
             return sql, "VIEW"
         elif id_col:
             rev_expr = f", ROUND(SUM(COALESCE({amount_col}, 0)), 2) AS total_revenue" if amount_col else ""

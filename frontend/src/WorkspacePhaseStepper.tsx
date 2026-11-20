@@ -13,6 +13,7 @@ export interface WorkspacePhaseStepperProps {
   phase3Completed: boolean;
   phase3Locked: boolean;
   stageConfig: Record<number, { page: string; label: string; phase: number; phaseName: string }>;
+  isDemoAccount?: boolean;
 }
 
 export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
@@ -27,6 +28,7 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
   phase3Completed,
   phase3Locked,
   stageConfig,
+  isDemoAccount,
 }) => {
   return (
     <div className="workspace-phase-stepper-wrap" role="navigation" aria-label="Migration Phases">
@@ -80,6 +82,8 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
               setPage(stageConfig[currentStage]?.page || "Migration Workflow");
             } else if (phase2Completed) {
               setPage("Migration Workflow");
+            } else {
+              setPage(isDemoAccount ? "Migration Workflow" : "Inventory");
             }
           }}
           title={
@@ -116,7 +120,9 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
                   ? "✓ Stages 5–7 Completed"
                   : phase2Locked
                   ? "🔒 Requires Discovery Completion (Stage 4)"
-                  : "Stages 5–7 · Inventory & Migration Studio"}
+                  : isDemoAccount
+                  ? "Stages 5–7 · Migration Studio (Bypassed in Demo)"
+                  : "Stages 5–7 · Inventory, Classification & Studio"}
               </div>
             </div>
           </div>

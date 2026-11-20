@@ -732,6 +732,25 @@ def _safe_execute_with_auto_healing(
                         except Exception:
                             pass
 
+                # 5. Heal DATATYPE_MISMATCH in DATE_TRUNC (e.g. date_key INT or VARCHAR passed to date_trunc)
+                if ("DATATYPE_MISMATCH" in err_str or "data type mismatch" in err_str.lower()) and "date_trunc" in err_str.lower():
+                    m = re.search(r'date_trunc\([^,]+,\s*([^)]+)\)', err_str, re.I)
+                    dt_col = m.group(1).strip() if m else None
+                    if dt_col:
+                        clean_col = dt_col.strip("`'\"")
+                        pat = rf"\bDATE_TRUNC\s*\(\s*(['\"][^'\"]+['\"]|\w+)\s*,\s*([`'\"A-Za-z0-9_.]*{re.escape(clean_col)}[`'\"A-Za-z0-9_.]*)\s*\)"
+                        repl = rf"DATE_TRUNC(\1, COALESCE(TRY_TO_DATE(CAST(\2 AS STRING), 'yyyyMMdd'), TRY_TO_DATE(CAST(\2 AS STRING)), CURRENT_DATE()))"
+                        patched = re.sub(pat, repl, cur_stmt, flags=re.I)
+                        if patched != cur_stmt:
+                            cur_stmt = patched.rstrip(';') + ';'
+                            repairs.append({
+                                "type": "DATATYPE_MISMATCH_HEALING",
+                                "original_sql": statement,
+                                "patched_sql": cur_stmt,
+                                "reason": f"Auto-converted non-timestamp parameter '{dt_col}' in DATE_TRUNC to safe DATE expression",
+                            })
+                            continue
+
                 # If no healing could be done, break and raise
                 break
 

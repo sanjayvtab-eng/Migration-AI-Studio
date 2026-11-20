@@ -973,7 +973,12 @@ export const MANAGED_DATABRICKS_TRIAL = {
 };
 
 function isDemoUserLoggedIn(): boolean {
-  return false;
+  try {
+    const u = getUserFromToken();
+    return (u?.username || "").toLowerCase() === "vtabpublicuser@gmail.com";
+  } catch {
+    return false;
+  }
 }
 
 function getEmbedOrIframe(): boolean {
@@ -1043,9 +1048,9 @@ export default function App() {
   });
   const currentUserInfo = useMemo(() => getUserFromToken(), [ready]);
   const isDemoAccount = useMemo(() => {
-    // Mockups removed: vtabpublicuser now executes full live backend logic and UI workflow just like all accounts
-    return false;
-  }, []);
+    const username = (currentUserInfo?.username || "").trim().toLowerCase();
+    return isEmbedMode || username === "vtabpublicuser@gmail.com";
+  }, [currentUserInfo, isEmbedMode]);
   const [showLogin, setShowLogin] = useState(false);
   const [page, setPage] = useState(getInitialStage);
   const [promptSpec, setPromptSpec] = useState<any>(null);
@@ -4067,7 +4072,7 @@ function AppInner({
 
   const phase2Active = currentStage >= 5 && currentStage <= 7;
   const phase2Completed = currentStage > 7;
-  const phase2Locked = currentStage < 5;
+  const phase2Locked = currentStage < 4 || (currentStage === 4 && !isDiscoveryComplete);
 
   const phase3Active = currentStage >= 8 && currentStage <= 9;
   const phase3Locked = currentStage < 8 || !medArts.some((a: any) => a.review_status === "APPROVED");
@@ -4346,19 +4351,50 @@ function AppInner({
             phase3Completed={phase3Completed}
             phase3Locked={phase3Locked}
             stageConfig={STAGE_CONFIG}
+            isDemoAccount={isDemoAccount}
           />
           {page === "Migration Workflow" && (
             <>
               {/* PAGE HEADER */}
               <div className="wf-page-header">
                 <div className="wf-breadcrumbs">
-                  <span>SQL Server</span>
-                  <span className="wf-breadcrumbs-sep">→</span>
-                  <span>Databricks</span>
-                  <span className="wf-breadcrumbs-sep">|</span>
-                  <b>Migration Workflow</b>
-                  <span className="wf-breadcrumbs-sep">|</span>
-                  <span style={{ color: "#0284c7" }}>Release 7 Prompt Native</span>
+                  {!isDemoAccount ? (
+                    <>
+                      <button
+                        type="button"
+                        className="wf-breadcrumb-btn"
+                        onClick={() => setPage("Inventory")}
+                        style={{ background: "none", border: "none", padding: 0, color: "#2563eb", cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
+                        title="View Stage 5: Inventory"
+                      >
+                        Stage 5: Inventory
+                      </button>
+                      <span className="wf-breadcrumbs-sep">→</span>
+                      <button
+                        type="button"
+                        className="wf-breadcrumb-btn"
+                        onClick={() => setPage("Layer Classification")}
+                        style={{ background: "none", border: "none", padding: 0, color: "#2563eb", cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
+                        title="View Stage 6: Layer Classification"
+                      >
+                        Stage 6: Layer Classification
+                      </button>
+                      <span className="wf-breadcrumbs-sep">→</span>
+                      <b>Stage 7: Migration Studio</b>
+                      <span className="wf-breadcrumbs-sep">|</span>
+                      <span style={{ color: "#0284c7" }}>Release 7 Prompt Native</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>SQL Server</span>
+                      <span className="wf-breadcrumbs-sep">→</span>
+                      <span>Databricks</span>
+                      <span className="wf-breadcrumbs-sep">|</span>
+                      <b>Migration Workflow</b>
+                      <span className="wf-breadcrumbs-sep">|</span>
+                      <span style={{ color: "#0284c7" }}>Release 7 Prompt Native</span>
+                    </>
+                  )}
                 </div>
                 <div className="wf-header-badges">
                   <span className="wf-header-badge emerald">
@@ -13166,21 +13202,27 @@ function AppInner({
               backText: "← Back to Sources",
               backTarget: "Sources",
               backDisabled: false,
-              forwardText: isDiscoveryComplete ? "Proceed to Migration Studio →" : "Proceed to Migration Studio (Locked)",
-              forwardTarget: "Migration Workflow",
+              forwardText: isDiscoveryComplete
+                ? (isDemoAccount ? "Proceed to Migration Studio →" : "Proceed to Inventory →")
+                : (isDemoAccount ? "Proceed to Migration Studio (Locked)" : "Proceed to Inventory (Locked)"),
+              forwardTarget: isDemoAccount ? "Migration Workflow" : "Inventory",
               forwardDisabled: !isDiscoveryComplete,
-              forwardTooltip: !isDiscoveryComplete ? "🔒 Run Schema Discovery to complete discovery process and unlock Migration Studio" : undefined,
+              forwardTooltip: !isDiscoveryComplete
+                ? (isDemoAccount
+                    ? "🔒 Run Schema Discovery to complete discovery process and unlock Migration Studio"
+                    : "🔒 Run Schema Discovery to complete discovery process and unlock Inventory")
+                : undefined,
             },
             5: {
               title: isDemoAccount ? "Stage 5 of 9: Inventory (Demo Bypassed)" : "Stage 5 of 9: Inventory",
               context: isDemoAccount
                 ? "Bypassed in Demo · Proceed to Studio"
                 : `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Source Objects Cataloged`,
-              backText: "← Back to Sources",
-              backTarget: "Sources",
+              backText: "← Back to Discovery",
+              backTarget: "Discovery",
               backDisabled: false,
-              forwardText: "Proceed to Migration Studio →",
-              forwardTarget: "Migration Workflow",
+              forwardText: isDemoAccount ? "Proceed to Migration Studio →" : "Proceed to Layer Classification →",
+              forwardTarget: isDemoAccount ? "Migration Workflow" : "Layer Classification",
               forwardDisabled: false,
             },
             6: {
@@ -13188,8 +13230,8 @@ function AppInner({
               context: isDemoAccount
                 ? "Bypassed in Demo · Proceed to Studio"
                 : "Medallion Architecture Layer Assignment",
-              backText: "← Back to Sources",
-              backTarget: "Sources",
+              backText: isDemoAccount ? "← Back to Discovery" : "← Back to Inventory",
+              backTarget: isDemoAccount ? "Discovery" : "Inventory",
               backDisabled: false,
               forwardText: "Approve & Proceed to Studio →",
               forwardTarget: "Migration Workflow",
@@ -13198,8 +13240,8 @@ function AppInner({
             7: {
               title: "Stage 7 of 9: Migration Studio",
               context: `${medArts.length || 14} Medallion Artifacts · ${medArts.filter((a: any) => a.review_status === "APPROVED").length} Approved`,
-              backText: "← Back to Discovery",
-              backTarget: "Discovery",
+              backText: isDemoAccount ? "← Back to Discovery" : "← Back to Layer Classification",
+              backTarget: isDemoAccount ? "Discovery" : "Layer Classification",
               backDisabled: false,
               forwardText: (promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV"))
                 ? `Proceed to Deployment (${medArts.length || 14} Artifacts) →`
