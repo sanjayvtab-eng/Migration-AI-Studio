@@ -656,6 +656,7 @@ export const TOUR_STEPS: TourStep[] = [
       align: "start",
     },
     actionType: "click",
+    actionHint: "Click Approve Current Artifacts to unlock DEV deployment",
     advanceOnEvent: "studio:artifacts-approved",
     disableBack: true,
     scrollIntoView: true,

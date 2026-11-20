@@ -691,7 +691,19 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
         return;
       }
 
-      if (event === "studio:artifacts-validated" || event === "studio:artifacts-approved") {
+      if (event === "studio:artifacts-validated") {
+        dismissSpotlight();
+        setTimeout(async () => {
+          await waitForBackdropDismissal();
+          const nextStep = TOUR_STEPS.find((s) => s.id === "studio-approve-artifacts");
+          if (nextStep) {
+            highlightStep(nextStep);
+          }
+        }, 400);
+        return;
+      }
+
+      if (event === "studio:artifacts-approved") {
         dismissSpotlight();
         setTimeout(async () => {
           await waitForBackdropDismissal();
