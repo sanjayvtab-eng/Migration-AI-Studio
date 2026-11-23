@@ -13751,7 +13751,9 @@ function AppInner({
 
                           {/* Primary CTA: Contact Support & Sales */}
                           <a
-                            href="mailto:contactsales@vtabsquare.com?subject=Enterprise%20Full%20Access%20Request%20-%20Databricks%20Migration%20Factory&amp;body=Hello%20VTAB%20Square%20Support%20%26%20Sales%20Team,%0A%0AWe%20completed%20the%20Databricks%20Migration%20Factory%20DEV%20demo%20and%20would%20like%20to%20request%20Full%20Enterprise%20Access%20for%20TEST,%20UAT%20and%20PROD%20promotion.%0A%0AOrganization:%20%0ASource%20Databases:%20%0ATarget%20Databricks%20Workspace:%20%0AEstimated%20Data%20Volume:%20%0A%0ABest%20regards,"
+                            href="https://www.vtabsquare.com/"
+                            target="_blank"
+                            rel="noopener noreferrer"
                             style={{
                               display: "flex",
                               alignItems: "center",
@@ -13770,7 +13772,7 @@ function AppInner({
                               transition: "transform 0.15s ease",
                             }}
                           >
-                            <Mail size={16} /> Contact Support / Sales for Full Access
+                            <ExternalLink size={16} /> Contact Support / Sales for Full Access
                           </a>
 
                           {/* Direct Contact Desk Card */}
