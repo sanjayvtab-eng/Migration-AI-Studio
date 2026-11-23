@@ -366,7 +366,6 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       saveTourState({ hasSeenTour: true, skipped: false, completed: false });
 
       if (stageToStart === "Environment Setup") {
-        if (contextRef.current.isDemoAccount) return;
         const derivedId = deriveEnvStepId(
           contextRef.current.environmentConfig,
           contextRef.current.environmentPlan,
@@ -821,7 +820,6 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       }, 500);
       return () => clearTimeout(timer);
     } else if (currentStage === "Environment Setup") {
-      if (stageContext.isDemoAccount) return;
       const timer = setTimeout(async () => {
         await waitForBackdropDismissal();
         const derivedId = deriveEnvStepId(

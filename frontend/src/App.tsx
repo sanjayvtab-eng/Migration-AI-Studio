@@ -1271,7 +1271,7 @@ function AppInner({
   }, []);
 
   useEffect(() => {
-    if (page === "Environment Setup" && !isDemoAccount) {
+    if (page === "Environment Setup") {
       setShowDatabricksPrereqModal(true);
       if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(true);
       setEnvPrereqShowGuide(false);
@@ -1279,7 +1279,7 @@ function AppInner({
       setShowDatabricksPrereqModal(false);
       if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(false);
     }
-  }, [page, isDemoAccount, setShowDatabricksPrereqModalState]);
+  }, [page, setShowDatabricksPrereqModalState]);
 
   const handleFocusConfigForm = () => {
     const formElement = document.getElementById("databricks-config-form");
@@ -4034,11 +4034,11 @@ function AppInner({
   }
   const STAGE_CONFIG: Record<number, { page: string; label: string; phase: number; phaseName: string }> = {
     1: { page: "Projects", label: "Projects", phase: 1, phaseName: "Connect & Discover" },
-    2: { page: "Environment Setup", label: isDemoAccount ? "Environment Setup (Demo 🔒)" : "Environment Setup", phase: 1, phaseName: "Connect & Discover" },
+    2: { page: "Environment Setup", label: "Environment Setup", phase: 1, phaseName: "Connect & Discover" },
     3: { page: "Sources", label: "Sources", phase: 1, phaseName: "Connect & Discover" },
     4: { page: "Discovery", label: "Discovery", phase: 1, phaseName: "Connect & Discover" },
-    5: { page: "Inventory", label: isDemoAccount ? "Inventory (Demo Bypassed)" : "Inventory", phase: 2, phaseName: "Classify & Studio" },
-    6: { page: "Layer Classification", label: isDemoAccount ? "Layer Classification (Demo Bypassed)" : "Layer Classification", phase: 2, phaseName: "Classify & Studio" },
+    5: { page: "Inventory", label: "Inventory", phase: 2, phaseName: "Classify & Studio" },
+    6: { page: "Layer Classification", label: "Layer Classification", phase: 2, phaseName: "Classify & Studio" },
     7: { page: "Migration Workflow", label: "Migration Studio", phase: 2, phaseName: "Classify & Studio" },
     8: { page: "Deployments", label: "Deployment (DEV)", phase: 3, phaseName: "Deploy & Lifecycle" },
     9: { page: "Lifecycle", label: "Lifecycle & Waves", phase: 3, phaseName: "Deploy & Lifecycle" },
@@ -4358,43 +4358,29 @@ function AppInner({
               {/* PAGE HEADER */}
               <div className="wf-page-header">
                 <div className="wf-breadcrumbs">
-                  {!isDemoAccount ? (
-                    <>
-                      <button
-                        type="button"
-                        className="wf-breadcrumb-btn"
-                        onClick={() => setPage("Inventory")}
-                        style={{ background: "none", border: "none", padding: 0, color: "#2563eb", cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
-                        title="View Stage 5: Inventory"
-                      >
-                        Stage 5: Inventory
-                      </button>
-                      <span className="wf-breadcrumbs-sep">→</span>
-                      <button
-                        type="button"
-                        className="wf-breadcrumb-btn"
-                        onClick={() => setPage("Layer Classification")}
-                        style={{ background: "none", border: "none", padding: 0, color: "#2563eb", cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
-                        title="View Stage 6: Layer Classification"
-                      >
-                        Stage 6: Layer Classification
-                      </button>
-                      <span className="wf-breadcrumbs-sep">→</span>
-                      <b>Stage 7: Migration Studio</b>
-                      <span className="wf-breadcrumbs-sep">|</span>
-                      <span style={{ color: "#0284c7" }}>Release 7 Prompt Native</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>SQL Server</span>
-                      <span className="wf-breadcrumbs-sep">→</span>
-                      <span>Databricks</span>
-                      <span className="wf-breadcrumbs-sep">|</span>
-                      <b>Migration Workflow</b>
-                      <span className="wf-breadcrumbs-sep">|</span>
-                      <span style={{ color: "#0284c7" }}>Release 7 Prompt Native</span>
-                    </>
-                  )}
+                  <button
+                    type="button"
+                    className="wf-breadcrumb-btn"
+                    onClick={() => setPage("Inventory")}
+                    style={{ background: "none", border: "none", padding: 0, color: "#2563eb", cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
+                    title="View Stage 5: Inventory"
+                  >
+                    Stage 5: Inventory
+                  </button>
+                  <span className="wf-breadcrumbs-sep">→</span>
+                  <button
+                    type="button"
+                    className="wf-breadcrumb-btn"
+                    onClick={() => setPage("Layer Classification")}
+                    style={{ background: "none", border: "none", padding: 0, color: "#2563eb", cursor: "pointer", fontSize: 13, textDecoration: "underline" }}
+                    title="View Stage 6: Layer Classification"
+                  >
+                    Stage 6: Layer Classification
+                  </button>
+                  <span className="wf-breadcrumbs-sep">→</span>
+                  <b>Stage 7: Migration Studio</b>
+                  <span className="wf-breadcrumbs-sep">|</span>
+                  <span style={{ color: "#0284c7" }}>Release 7 Prompt Native</span>
                 </div>
                 <div className="wf-header-badges">
                   <span className="wf-header-badge emerald">
@@ -11986,94 +11972,58 @@ function AppInner({
                   <span style={{ color: "#0284c7" }}>Databricks Control Plane & Target Infrastructure</span>
                 </div>
                 <div className="wf-header-badges">
-                  {isDemoAccount ? (
-                    <>
-                      <span className="wf-header-badge emerald">
-                        <Lock size={13} /> Demo Version: Managed Target
-                      </span>
-                      <span className="wf-header-badge blue">
-                        <ServerCog size={13} /> Unity Catalog (Pre-Configured)
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowDatabricksPrereqModal(true);
-                          if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(true);
-                          setEnvPrereqShowGuide(false);
-                          tour.notify("env:prereq-opened");
-                        }}
-                        className="wf-header-badge blue"
-                        style={{
-                          cursor: "pointer",
-                          border: "1px solid rgba(37, 99, 235, 0.35)",
-                          background: "rgba(37, 99, 235, 0.08)",
-                          color: "#2563eb",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          fontWeight: 600,
-                        }}
-                        title="Open Databricks Account & Workspace Prerequisite Setup Guide"
-                      >
-                        <HelpCircle size={13} /> Account Prerequisite Guide
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => tour.startTour("Environment Setup")}
-                        className="wf-header-badge violet"
-                        style={{
-                          cursor: "pointer",
-                          border: "1px solid rgba(139, 92, 246, 0.35)",
-                          background: "rgba(139, 92, 246, 0.08)",
-                          color: "#7c3aed",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 6,
-                          fontWeight: 600,
-                        }}
-                        title="Start step-by-step guided tour of Environment Setup"
-                      >
-                        <Sparkles size={13} /> Take a tour
-                      </button>
-                      <span className="wf-header-badge emerald">
-                        <CheckCircle2 size={13} /> {environmentConfig?.configured ? "Control Plane: Ready" : "Setup Required"}
-                      </span>
-                      <span className="wf-header-badge blue">
-                        <ServerCog size={13} /> Unity Catalog
-                      </span>
-                    </>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowDatabricksPrereqModal(true);
+                      if (setShowDatabricksPrereqModalState) setShowDatabricksPrereqModalState(true);
+                      setEnvPrereqShowGuide(false);
+                      tour.notify("env:prereq-opened");
+                    }}
+                    className="wf-header-badge blue"
+                    style={{
+                      cursor: "pointer",
+                      border: "1px solid rgba(37, 99, 235, 0.35)",
+                      background: "rgba(37, 99, 235, 0.08)",
+                      color: "#2563eb",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontWeight: 600,
+                    }}
+                    title="Open Databricks Account & Workspace Prerequisite Setup Guide"
+                  >
+                    <HelpCircle size={13} /> Account Prerequisite Guide
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => tour.startTour("Environment Setup")}
+                    className="wf-header-badge violet"
+                    style={{
+                      cursor: "pointer",
+                      border: "1px solid rgba(139, 92, 246, 0.35)",
+                      background: "rgba(139, 92, 246, 0.08)",
+                      color: "#7c3aed",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontWeight: 600,
+                    }}
+                    title="Start step-by-step guided tour of Environment Setup"
+                  >
+                    <Sparkles size={13} /> Take a tour
+                  </button>
+                  <span className="wf-header-badge emerald">
+                    <CheckCircle2 size={13} /> {environmentConfig?.configured ? "Control Plane: Ready" : "Setup Required"}
+                  </span>
+                  <span className="wf-header-badge blue">
+                    <ServerCog size={13} /> Unity Catalog
+                  </span>
                 </div>
               </div>
 
-              {/* Demo Version Locked Overlay Banner & Action */}
-              {isDemoAccount && (
-                <div className="demo-locked-env-wrapper">
-                  <div className="demo-locked-overlay-card">
-                    <div className="demo-locked-icon-badge">
-                      <Lock size={26} />
-                    </div>
-                    <span className="demo-version-tag">Demo Version · Target Pre-Provisioned</span>
-                    <div className="demo-locked-title">Databricks Target &amp; Unity Catalog Locked</div>
-                    <p className="demo-locked-desc">
-                      For this demo session, the Databricks target control plane, Unity Catalog permissions, and Medallion schemas are pre-configured. Direct infrastructure modification is locked for seamless demo presentation.
-                    </p>
-                    <button
-                      className="demo-locked-bypass-btn"
-                      onClick={() => setPage("Sources")}
-                      title="Bypass Environment Setup directly to Sources"
-                    >
-                      Bypass to Sources (Stage 3) <ArrowRight size={15} />
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Target Databricks Prerequisite Pop-up Modal (Only for Non-Demo Users) */}
-              {!isDemoAccount && showDatabricksPrereqModal && (
+              {/* Target Databricks Prerequisite Pop-up Modal */}
+              {showDatabricksPrereqModal && (
                 <div
                   className="env-prereq-modal-overlay"
                   onClick={() => handleClosePrereqModal("none")}
@@ -12382,8 +12332,8 @@ function AppInner({
                 </div>
               )}
 
-              {/* Cards Container (faded when demo account) */}
-              <div className={isDemoAccount ? "demo-faded-content" : ""} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+              {/* Cards Container */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
                 {/* Card 1: Configuration Card & Inputs */}
                 <div id="databricks-config-form" className="card" style={{ padding: "24px 26px" }}>
                 <div className="env-section-tag">
@@ -13147,52 +13097,51 @@ function AppInner({
               backText: "",
               backTarget: "",
               backDisabled: true,
-              forwardText: isDemoAccount ? "Proceed to Sources →" : "Continue with Selected Project →",
-              forwardTarget: isDemoAccount ? "Sources" : "Environment Setup",
+              forwardText: "Continue with Selected Project →",
+              forwardTarget: "Environment Setup",
               forwardDisabled: !pid,
               forwardTooltip: !pid ? "Select a project to continue" : undefined,
             },
             2: {
-              title: isDemoAccount ? "Stage 2 of 9: Environment Setup (Demo · Locked)" : "Stage 2 of 9: Environment Setup",
-              context: isDemoAccount
-                ? "Databricks target pre-provisioned for demo (Locked)"
-                : environmentPlan?.status === "PROVISIONED"
-                ? "DEV environment fully provisioned · Ready for Sources"
-                : environmentConfig?.status === "READY"
-                ? "Databricks target connection tested · DEV provisioning required"
-                : "Databricks target setup required",
+              title: "Stage 2 of 9: Environment Setup",
+              context:
+                environmentPlan?.status === "PROVISIONED"
+                  ? "DEV environment fully provisioned · Ready for Sources"
+                  : environmentConfig?.status === "READY"
+                  ? "Databricks target connection tested · DEV provisioning required"
+                  : "Databricks target setup required",
               backText: "← Back to Projects",
               backTarget: "Projects",
               backDisabled: false,
               forwardText:
-                isDemoAccount || environmentPlan?.status === "PROVISIONED"
+                environmentPlan?.status === "PROVISIONED"
                   ? "Proceed to Sources →"
                   : "Proceed to Sources (Locked)",
               forwardTarget: "Sources",
               forwardDisabled:
-                !pid || (!isDemoAccount && environmentPlan?.status !== "PROVISIONED"),
+                !pid || environmentPlan?.status !== "PROVISIONED",
               forwardTooltip: !pid
                 ? "Select a project to continue"
-                : !isDemoAccount && environmentPlan?.status !== "PROVISIONED"
+                : environmentPlan?.status !== "PROVISIONED"
                 ? "🔒 Complete DEV preflight, approval, and provisioning to unlock Sources"
                 : undefined,
             },
             3: {
               title: "Stage 3 of 9: Sources",
               context: `${sources.length} Database Sources Configured`,
-              backText: isDemoAccount ? "← Back to Projects" : "← Back to Environment",
-              backTarget: isDemoAccount ? "Projects" : "Environment Setup",
+              backText: "← Back to Environment",
+              backTarget: "Environment Setup",
               backDisabled: false,
               forwardText:
-                isDemoAccount || (discoveryResult && discoveryResult.ok !== false && !discoveryResult.error)
+                (discoveryResult && discoveryResult.ok !== false && !discoveryResult.error)
                   ? "Proceed to Discovery →"
                   : "Proceed to Discovery (Locked)",
               forwardTarget: "Discovery",
               forwardDisabled:
-                !pid || (!isDemoAccount && (!discoveryResult || discoveryResult.ok === false || Boolean(discoveryResult.error))),
+                !pid || (!discoveryResult || discoveryResult.ok === false || Boolean(discoveryResult.error)),
               forwardTooltip: !pid
                 ? "Select a project to continue"
-                : !isDemoAccount && (!discoveryResult || discoveryResult.ok === false || Boolean(discoveryResult.error))
+                : (!discoveryResult || discoveryResult.ok === false || Boolean(discoveryResult.error))
                 ? "🔒 Test connection successfully to unlock Discovery"
                 : undefined,
             },
@@ -13203,35 +13152,29 @@ function AppInner({
               backTarget: "Sources",
               backDisabled: false,
               forwardText: isDiscoveryComplete
-                ? (isDemoAccount ? "Proceed to Migration Studio →" : "Proceed to Inventory →")
-                : (isDemoAccount ? "Proceed to Migration Studio (Locked)" : "Proceed to Inventory (Locked)"),
-              forwardTarget: isDemoAccount ? "Migration Workflow" : "Inventory",
+                ? "Proceed to Inventory →"
+                : "Proceed to Inventory (Locked)",
+              forwardTarget: "Inventory",
               forwardDisabled: !isDiscoveryComplete,
               forwardTooltip: !isDiscoveryComplete
-                ? (isDemoAccount
-                    ? "🔒 Run Schema Discovery to complete discovery process and unlock Migration Studio"
-                    : "🔒 Run Schema Discovery to complete discovery process and unlock Inventory")
+                ? "🔒 Run Schema Discovery to complete discovery process and unlock Inventory"
                 : undefined,
             },
             5: {
-              title: isDemoAccount ? "Stage 5 of 9: Inventory (Demo Bypassed)" : "Stage 5 of 9: Inventory",
-              context: isDemoAccount
-                ? "Bypassed in Demo · Proceed to Studio"
-                : `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Source Objects Cataloged`,
+              title: "Stage 5 of 9: Inventory",
+              context: `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || 8} Source Objects Cataloged`,
               backText: "← Back to Discovery",
               backTarget: "Discovery",
               backDisabled: false,
-              forwardText: isDemoAccount ? "Proceed to Migration Studio →" : "Proceed to Layer Classification →",
-              forwardTarget: isDemoAccount ? "Migration Workflow" : "Layer Classification",
+              forwardText: "Proceed to Layer Classification →",
+              forwardTarget: "Layer Classification",
               forwardDisabled: false,
             },
             6: {
-              title: isDemoAccount ? "Stage 6 of 9: Layer Classification (Demo Bypassed)" : "Stage 6 of 9: Layer Classification",
-              context: isDemoAccount
-                ? "Bypassed in Demo · Proceed to Studio"
-                : "Medallion Architecture Layer Assignment",
-              backText: isDemoAccount ? "← Back to Discovery" : "← Back to Inventory",
-              backTarget: isDemoAccount ? "Discovery" : "Inventory",
+              title: "Stage 6 of 9: Layer Classification",
+              context: "Medallion Architecture Layer Assignment",
+              backText: "← Back to Inventory",
+              backTarget: "Inventory",
               backDisabled: false,
               forwardText: "Approve & Proceed to Studio →",
               forwardTarget: "Migration Workflow",
@@ -13240,8 +13183,8 @@ function AppInner({
             7: {
               title: "Stage 7 of 9: Migration Studio",
               context: `${medArts.length || 14} Medallion Artifacts · ${medArts.filter((a: any) => a.review_status === "APPROVED").length} Approved`,
-              backText: isDemoAccount ? "← Back to Discovery" : "← Back to Layer Classification",
-              backTarget: isDemoAccount ? "Discovery" : "Layer Classification",
+              backText: "← Back to Layer Classification",
+              backTarget: "Layer Classification",
               backDisabled: false,
               forwardText: (promptSpec?.status === "DEV_GATE_PASSED" || environmentPassed("DEV"))
                 ? `Proceed to Deployment (${medArts.length || 14} Artifacts) →`

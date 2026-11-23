@@ -94,7 +94,7 @@ export const TOUR_STEPS: TourStep[] = [
     actionHint: "Select an account option below to proceed",
     advanceOnEvent: "env:prereq-selected",
     disableBack: true,
-    condition: (context: any) => !context.isDemoAccount && Boolean(context.showDatabricksPrereqModal),
+    condition: (context: any) => Boolean(context.showDatabricksPrereqModal),
   },
   {
     id: "env-save-config",
@@ -112,7 +112,7 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     advanceOnEvent: "env:config-saved",
     disableBack: true,
-    condition: (context: any) => !context.isDemoAccount && !context.showDatabricksPrereqModal,
+    condition: (context: any) => !context.showDatabricksPrereqModal,
   },
   {
     id: "env-test-connection",
@@ -130,7 +130,6 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     advanceOnEvent: "env:connection-tested",
     disableBack: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
   {
     id: "env-create-plan",
@@ -148,7 +147,6 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     advanceOnEvent: "env:plan-created",
     disableBack: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
   {
     id: "env-run-preflight",
@@ -168,7 +166,6 @@ export const TOUR_STEPS: TourStep[] = [
     disableBack: true,
     waitForElement: true,
     scrollIntoView: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
   {
     id: "env-approve-plan",
@@ -187,7 +184,6 @@ export const TOUR_STEPS: TourStep[] = [
     advanceOnEvent: "env:plan-approved",
     disableBack: true,
     scrollIntoView: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
   {
     id: "env-provision-dev",
@@ -206,7 +202,6 @@ export const TOUR_STEPS: TourStep[] = [
     advanceOnEvent: "env:provision-completed",
     disableBack: true,
     scrollIntoView: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
   {
     id: "env-proceed-sources",
@@ -224,7 +219,6 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     disableBack: true,
     scrollIntoView: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
 
   // Stage 3: Sources (Steps 3, 4, 5, 6)
@@ -481,13 +475,13 @@ export const TOUR_STEPS: TourStep[] = [
     totalSteps: 9,
     element: '[data-tour="proceed-studio-btn"]',
     popover: {
-      title: "Open Migration Studio",
-      description: "Discovery complete. Proceed to Migration Studio to classify and plan your migration.",
+      title: "Proceed to Inventory",
+      description: "Discovery complete. Proceed to Stage 5: Inventory to inspect your cataloged database objects and dependencies.",
       side: "top",
       align: "end",
     },
     actionType: "click",
-    actionHint: "Click to proceed to Migration Studio",
+    actionHint: "Click to proceed to Inventory",
     advanceOnEvent: "proceed-to-studio",
   },
 

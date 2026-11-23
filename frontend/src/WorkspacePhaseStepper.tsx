@@ -83,7 +83,7 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
             } else if (phase2Completed) {
               setPage("Migration Workflow");
             } else {
-              setPage(isDemoAccount ? "Migration Workflow" : "Inventory");
+              setPage("Inventory");
             }
           }}
           title={
@@ -120,8 +120,6 @@ export const WorkspacePhaseStepper: React.FC<WorkspacePhaseStepperProps> = ({
                   ? "✓ Stages 5–7 Completed"
                   : phase2Locked
                   ? "🔒 Requires Discovery Completion (Stage 4)"
-                  : isDemoAccount
-                  ? "Stages 5–7 · Migration Studio (Bypassed in Demo)"
                   : "Stages 5–7 · Inventory, Classification & Studio"}
               </div>
             </div>
