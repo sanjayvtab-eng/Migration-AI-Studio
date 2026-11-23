@@ -94,6 +94,7 @@ type Source = {
   port?: number;
   schema_name?: string;
   username?: string;
+  options?: Record<string, any>;
 };
 
 const SOURCE_ENGINES = {
@@ -1181,6 +1182,7 @@ function AppInner({
   const [activeMenuProjectId, setActiveMenuProjectId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [newSourceModalOpen, setNewSourceModalOpen] = useState(false);
+  const [editingSource, setEditingSource] = useState<Source | null>(null);
   const [newSourceForm, setNewSourceForm] = useState({
     engine: "SQLSERVER" as keyof typeof SOURCE_ENGINES,
     profile_name: "SQLServer1",
@@ -2246,33 +2248,8 @@ function AppInner({
     setTimeout(() => setCopiedId(null), 2000);
   }
 
-  async function handleCreateSource(e?: React.FormEvent) {
-    if (e) e.preventDefault();
-    if (!pid) return;
-    const { profile_name, server_name, database_name } = newSourceForm;
-    if (!profile_name.trim() || !server_name.trim() || !database_name.trim()) return;
-    await action(() =>
-      api(`/projects/${pid}/sources`, {
-        method: "POST",
-        body: JSON.stringify({
-          profile_name: profile_name.trim(),
-          server_name: server_name.trim(),
-          database_name: database_name.trim(),
-          engine: newSourceForm.engine,
-          port: Number(newSourceForm.port),
-          schema_name: newSourceForm.schema_name.trim() || undefined,
-          username: newSourceForm.username.trim() || undefined,
-          password: newSourceForm.password || undefined,
-          ssl_mode: newSourceForm.engine === "POSTGRESQL" ? newSourceForm.ssl_mode : undefined,
-          charset: newSourceForm.engine === "MYSQL" ? newSourceForm.charset : undefined,
-          service_name: newSourceForm.engine === "ORACLE" ? newSourceForm.service_name.trim() || database_name.trim() : undefined,
-          sid: newSourceForm.engine === "ORACLE" && newSourceForm.oracle_connection_type === "SID" ? newSourceForm.sid.trim() : undefined,
-          connection_mode: newSourceForm.engine === "ORACLE" ? newSourceForm.oracle_mode : undefined,
-          auth_mode: newSourceForm.engine === "SQLSERVER" ? newSourceForm.auth_mode : undefined,
-          driver: newSourceForm.engine === "SQLSERVER" ? newSourceForm.driver : undefined,
-        }),
-      })
-    );
+  function handleOpenAddSource() {
+    setEditingSource(null);
     setNewSourceForm({
       engine: "SQLSERVER",
       profile_name: "SQLServer1",
@@ -2291,8 +2268,110 @@ function AppInner({
       driver: "ODBC Driver 18 for SQL Server",
       auth_mode: "WINDOWS",
     });
-    setNewSourceModalOpen(false);
-    tour.notify("source-created");
+    setNewSourceModalOpen(true);
+  }
+
+  function handleOpenEditSource(s: Source) {
+    const eng = (s.engine || "SQLSERVER") as keyof typeof SOURCE_ENGINES;
+    const opts = s.options || {};
+    setEditingSource(s);
+    setNewSourceForm({
+      engine: eng,
+      profile_name: s.profile_name || "",
+      server_name: s.server_name || "",
+      database_name: s.database_name || "",
+      port: s.port || SOURCE_ENGINES[eng]?.port || 1433,
+      schema_name: s.schema_name || SOURCE_ENGINES[eng]?.schema || "",
+      username: s.username || "",
+      password: "",
+      ssl_mode: opts.ssl_mode || "prefer",
+      charset: opts.charset || "utf8mb4",
+      service_name: opts.service_name || s.database_name || "",
+      oracle_connection_type: opts.sid ? "SID" : "SERVICE",
+      oracle_mode: opts.connection_mode || opts.auth_mode || "NORMAL",
+      sid: opts.sid || "",
+      driver: opts.driver || "ODBC Driver 18 for SQL Server",
+      auth_mode: opts.auth_mode || (eng === "SQLSERVER" ? "WINDOWS" : "PASSWORD"),
+    });
+    setNewSourceModalOpen(true);
+  }
+
+  async function handleDeleteSource(s: Source) {
+    if (!pid) return;
+    if (
+      !window.confirm(
+        `Are you sure you want to delete source profile "${s.profile_name}" (${s.server_name}:${s.database_name})?\n\nThis will remove the connection profile and its cataloged objects.`
+      )
+    ) {
+      return;
+    }
+    await action(async () => {
+      await api(`/projects/${pid}/sources/${s.id}`, { method: "DELETE" });
+      setMsg(`Source profile "${s.profile_name}" deleted.`);
+      await refresh();
+    });
+  }
+
+  async function handleCreateSource(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    if (!pid) return;
+    const { profile_name, server_name, database_name } = newSourceForm;
+    if (!profile_name.trim() || !server_name.trim() || !database_name.trim()) return;
+    await action(async () => {
+      const payload = {
+        profile_name: profile_name.trim(),
+        server_name: server_name.trim(),
+        database_name: database_name.trim(),
+        engine: newSourceForm.engine,
+        port: Number(newSourceForm.port),
+        schema_name: newSourceForm.schema_name.trim() || undefined,
+        username: newSourceForm.username.trim() || undefined,
+        password: newSourceForm.password || undefined,
+        ssl_mode: newSourceForm.engine === "POSTGRESQL" ? newSourceForm.ssl_mode : undefined,
+        charset: newSourceForm.engine === "MYSQL" ? newSourceForm.charset : undefined,
+        service_name: newSourceForm.engine === "ORACLE" ? newSourceForm.service_name.trim() || database_name.trim() : undefined,
+        sid: newSourceForm.engine === "ORACLE" && newSourceForm.oracle_connection_type === "SID" ? newSourceForm.sid.trim() : undefined,
+        connection_mode: newSourceForm.engine === "ORACLE" ? newSourceForm.oracle_mode : undefined,
+        auth_mode: newSourceForm.engine === "SQLSERVER" ? newSourceForm.auth_mode : undefined,
+        driver: newSourceForm.engine === "SQLSERVER" ? newSourceForm.driver : undefined,
+      };
+
+      if (editingSource) {
+        await api(`/projects/${pid}/sources/${editingSource.id}`, {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+        setMsg(`Source profile "${profile_name}" updated successfully.`);
+      } else {
+        await api(`/projects/${pid}/sources`, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setMsg(`Source profile "${profile_name}" added successfully.`);
+        tour.notify("source-created");
+      }
+      setEditingSource(null);
+      setNewSourceModalOpen(false);
+      setNewSourceForm({
+        engine: "SQLSERVER",
+        profile_name: "SQLServer1",
+        server_name: "localhost",
+        database_name: "",
+        port: 1433,
+        schema_name: "",
+        username: "",
+        password: "",
+        ssl_mode: "prefer",
+        charset: "utf8mb4",
+        service_name: "",
+        oracle_connection_type: "SERVICE",
+        oracle_mode: "NORMAL",
+        sid: "",
+        driver: "ODBC Driver 18 for SQL Server",
+        auth_mode: "WINDOWS",
+      });
+      await refresh();
+    });
   }
 
   async function generatePromptPlan(pText?: string) {
@@ -6257,24 +6336,10 @@ function AppInner({
                   <button
                     className="btn-primary-blue"
                     data-tour={sources.length === 0 ? "add-source-header-btn" : "add-source-btn"}
-                    disabled={!pid || isDemoAccount}
-                    style={
-                      isDemoAccount
-                        ? {
-                            opacity: 0.38,
-                            cursor: "not-allowed",
-                            pointerEvents: "none",
-                            filter: "grayscale(25%)",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                          }
-                        : undefined
-                    }
-                    title={isDemoAccount ? "Demo Version: Source is pre-configured and locked" : undefined}
-                    onClick={() => setNewSourceModalOpen(true)}
+                    disabled={!pid}
+                    onClick={handleOpenAddSource}
                   >
-                    {isDemoAccount ? <Lock size={14} /> : <Plus size={16} />}
+                    <Plus size={16} />
                     Add Source
                   </button>
                 </div>
@@ -6393,21 +6458,45 @@ function AppInner({
                                 </button>
                                 <div
                                   data-tour="connector-agent-wrapper"
-                                  style={
-                                    isDemoAccount
-                                      ? {
-                                          opacity: 0.38,
-                                          pointerEvents: "none",
-                                          cursor: "not-allowed",
-                                          display: "inline-flex",
-                                          filter: "grayscale(25%)",
-                                        }
-                                      : { display: "inline-flex" }
-                                  }
-                                  title={isDemoAccount ? "Demo Version: Connector Agent runtime is pre-connected and locked" : undefined}
+                                  style={{ display: "inline-flex" }}
                                 >
                                   <SourceConnectorControl projectId={pid} source={s} onlyButton />
                                 </div>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 5,
+                                    padding: "6px 12px",
+                                    cursor: "pointer",
+                                    color: "#2563eb",
+                                  }}
+                                  title={`Edit connection profile for ${s.profile_name}`}
+                                  onClick={() => handleOpenEditSource(s)}
+                                >
+                                  <Pencil size={13} />
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn-secondary"
+                                  style={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 5,
+                                    padding: "6px 12px",
+                                    cursor: "pointer",
+                                    color: "#ef4444",
+                                    borderColor: "rgba(239, 68, 68, 0.35)",
+                                  }}
+                                  title={`Delete source profile ${s.profile_name}`}
+                                  onClick={() => handleDeleteSource(s)}
+                                >
+                                  <Trash2 size={13} />
+                                  Delete
+                                </button>
                               </div>
                             </td>
                           </tr>
@@ -6425,23 +6514,10 @@ function AppInner({
                     <button
                       className="btn-primary-blue"
                       data-tour="add-source-btn"
-                      disabled={!pid || isDemoAccount}
-                      style={
-                        isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 6,
-                            }
-                          : undefined
-                      }
-                      onClick={() => setNewSourceModalOpen(true)}
+                      disabled={!pid}
+                      onClick={handleOpenAddSource}
                     >
-                      {isDemoAccount ? <Lock size={14} /> : <Plus size={15} />} Add Source
+                      <Plus size={15} /> Add Source
                     </button>
                   </div>
                 )}
@@ -6697,12 +6773,19 @@ function AppInner({
                   >
                     <div className="project-modal-header">
                       <div>
-                        <h3>Add Database Source</h3>
-                        <p>Select an engine and configure its connection profile. Stages 2–8 remain unchanged.</p>
+                        <h3>{editingSource ? "Edit Database Source" : "Add Database Source"}</h3>
+                        <p>
+                          {editingSource
+                            ? `Update connection parameters and credentials for ${editingSource.profile_name}.`
+                            : "Select an engine and configure its connection profile. Stages 2–8 remain unchanged."}
+                        </p>
                       </div>
                       <button
                         className="project-modal-close"
-                        onClick={() => setNewSourceModalOpen(false)}
+                        onClick={() => {
+                          setNewSourceModalOpen(false);
+                          setEditingSource(null);
+                        }}
                       >
                         <X size={18} />
                       </button>
@@ -6796,10 +6879,15 @@ function AppInner({
                               required={newSourceForm.engine !== "SQLSERVER" || newSourceForm.auth_mode !== "WINDOWS"} />
                           </div>
                           <div className="project-form-group">
-                            <label>Password {newSourceForm.engine === "SQLSERVER" && newSourceForm.auth_mode === "WINDOWS" ? "(optional)" : "*"}</label>
-                            <input type="password" value={newSourceForm.password} autoComplete="new-password"
+                            <label>Password {editingSource ? "(leave blank to keep existing password)" : (newSourceForm.engine === "SQLSERVER" && newSourceForm.auth_mode === "WINDOWS" ? "(optional)" : "*")}</label>
+                            <input
+                              type="password"
+                              value={newSourceForm.password}
+                              autoComplete="new-password"
+                              placeholder={editingSource ? "•••••••• (unchanged)" : undefined}
                               onChange={(e) => setNewSourceForm({ ...newSourceForm, password: e.target.value })}
-                              required={newSourceForm.engine !== "SQLSERVER" || newSourceForm.auth_mode !== "WINDOWS"} />
+                              required={!editingSource && (newSourceForm.engine !== "SQLSERVER" || newSourceForm.auth_mode !== "WINDOWS")}
+                            />
                           </div>
                         </div>
 
@@ -6857,7 +6945,10 @@ function AppInner({
                         <button
                           type="button"
                           className="btn-secondary"
-                          onClick={() => setNewSourceModalOpen(false)}
+                          onClick={() => {
+                            setNewSourceModalOpen(false);
+                            setEditingSource(null);
+                          }}
                         >
                           Cancel
                         </button>
@@ -6866,8 +6957,8 @@ function AppInner({
                           className="btn-primary-blue"
                           disabled={!newSourceForm.profile_name.trim() || !newSourceForm.server_name.trim() || !newSourceForm.database_name.trim()}
                         >
-                          <Plus size={15} />
-                          Add Source
+                          {editingSource ? <Pencil size={15} /> : <Plus size={15} />}
+                          {editingSource ? "Save Changes" : "Add Source"}
                         </button>
                       </div>
                     </form>
@@ -6901,24 +6992,11 @@ function AppInner({
                   </button>
                   <button
                     className="btn-secondary"
-                    disabled={isDemoUser || isDemoAccount}
-                    onClick={() => (!isDemoUser && !isDemoAccount) && setPage("Sources")}
-                    style={
-                      isDemoUser || isDemoAccount
-                        ? {
-                            opacity: 0.38,
-                            cursor: "not-allowed",
-                            pointerEvents: "none",
-                            filter: "grayscale(25%)",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                          }
-                        : { display: "inline-flex", alignItems: "center", gap: 6 }
-                    }
-                    title={isDemoUser || isDemoAccount ? "Demo Version: Source management is locked" : undefined}
+                    onClick={() => setPage("Sources")}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+                    title="Manage connected database sources"
                   >
-                    {isDemoUser || isDemoAccount ? <Lock size={14} /> : <Plus size={14} />}
+                    <Plus size={14} />
                     Manage Sources
                   </button>
                 </div>

@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Response, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, update
+from sqlalchemy import select, func, update, delete
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token, decode_token
 from app.models.entities import *
@@ -1089,9 +1089,11 @@ def sources_list(project_id:str,db:Session=Depends(get_db),current_user=Depends(
     if is_demo_user(current_user.get("sub")):
         return [{"id":x.id,"profile_name":x.profile_name,"server_name":x.server_name,"database_name":x.database_name,
                  "engine":x.engine or "SQLSERVER","port":x.port,"schema_name":x.schema_name,"username":x.username,
+                 "options": json.loads(x.options_json or "{}"),
                  "connector": get_demo_connector_info(x.id)} for x in rows]
     return [{"id":x.id,"profile_name":x.profile_name,"server_name":x.server_name,"database_name":x.database_name,
              "engine":x.engine or "SQLSERVER","port":x.port,"schema_name":x.schema_name,"username":x.username,
+             "options": json.loads(x.options_json or "{}"),
              "connector": connector_info(x.id)} for x in rows]
 
 @router.post("/projects/{project_id}/sources/{source_id}/test")
@@ -1336,6 +1338,81 @@ def source_create(project_id:str,data:SourceIn,db:Session=Depends(get_db),_=Depe
         return {"id":s.id,"project_id":s.project_id,"engine":s.engine}
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+@router.put("/projects/{project_id}/sources/{source_id}")
+def source_update(project_id: str, source_id: str, data: SourceIn, db: Session = Depends(get_db), _ = Depends(auth)):
+    src = db.get(MigrationSource, source_id)
+    if not src or src.project_id != project_id:
+        raise HTTPException(404, "Source not found in project")
+    try:
+        engine = normalize_engine(data.engine)
+        if data.port is not None and not 1 <= data.port <= 65535:
+            raise ValueError("Source port must be between 1 and 65535")
+        if engine in {"POSTGRESQL", "ORACLE"} and not (data.schema_name or "").strip():
+            raise ValueError(f"{engine.title()} sources require a schema")
+        
+        server = data.server_name.strip()
+        if engine == "SQLSERVER" and server:
+            server = server.replace("/", "\\")
+            
+        src.profile_name = data.profile_name.strip()
+        src.server_name = server
+        src.database_name = data.database_name.strip()
+        src.engine = engine
+        src.port = data.port or DEFAULT_PORTS[engine]
+        src.schema_name = (data.schema_name or None)
+        src.username = (data.username or None)
+        
+        if data.password and data.password.strip():
+            from app.services.source_adapters import encrypt_password
+            src.credential_ciphertext = encrypt_password(data.password)
+            
+        options = {key: value for key, value in {
+            "ssl_mode": data.ssl_mode, "charset": data.charset,
+            "service_name": data.service_name, "sid": data.sid,
+            "auth_mode": data.connection_mode or data.auth_mode, "driver": data.driver,
+        }.items() if value not in (None, "")}
+        src.options_json = json.dumps(options, sort_keys=True)
+        
+        db.commit()
+        return {"id": src.id, "project_id": src.project_id, "profile_name": src.profile_name, "engine": src.engine}
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc))
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Failed to update source: {e}")
+
+@router.delete("/projects/{project_id}/sources/{source_id}")
+def source_delete(project_id: str, source_id: str, db: Session = Depends(get_db), _ = Depends(auth)):
+    src = db.get(MigrationSource, source_id)
+    if not src or src.project_id != project_id:
+        raise HTTPException(404, "Source not found in project")
+    try:
+        obj_ids = list(db.scalars(select(MigrationObject.id).where(
+            MigrationObject.project_id == project_id,
+            MigrationObject.source_id == source_id
+        )).all())
+        
+        if obj_ids:
+            db.execute(delete(MigrationColumn).where(MigrationColumn.project_id == project_id, MigrationColumn.object_id.in_(obj_ids)))
+            db.execute(delete(MigrationDependency).where(MigrationDependency.project_id == project_id, MigrationDependency.object_id.in_(obj_ids)))
+            db.execute(delete(CanonicalRecord).where(CanonicalRecord.project_id == project_id, CanonicalRecord.object_id.in_(obj_ids)))
+            db.execute(delete(MigrationObject).where(MigrationObject.project_id == project_id, MigrationObject.id.in_(obj_ids)))
+            
+        try:
+            from app.api.connectors import _tokens, _agents
+            _tokens.pop(source_id, None)
+            _agents.pop(source_id, None)
+        except Exception:
+            pass
+            
+        db.delete(src)
+        db.commit()
+        return {"status": "DELETED", "source_id": source_id, "profile_name": src.profile_name}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Failed to delete source: {e}")
 
 @router.post("/projects/{project_id}/discovery/snapshot")
 def discovery_snapshot(project_id:str,data:SnapshotIn,db:Session=Depends(get_db),_=Depends(auth)):

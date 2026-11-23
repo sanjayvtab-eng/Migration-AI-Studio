@@ -239,7 +239,7 @@ export const TOUR_STEPS: TourStep[] = [
     actionHint: "Click the highlighted button to add a source",
     advanceOnEvent: "source-created",
     disableBack: false,
-    condition: (context: any) => !context.isDemoAccount && (!context.sourcesCount || context.sourcesCount === 0),
+    condition: (context: any) => (!context.sourcesCount || context.sourcesCount === 0),
   },
   {
     id: "step-3-connector-agent",
