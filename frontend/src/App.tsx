@@ -10427,12 +10427,12 @@ function AppInner({
                   </Panel>
 
                   <Panel
-                title="Scheduled Incremental Data Refresh (Delta Sync) (Locked 🔒)"
+                title={isDemoAccount ? "Scheduled Incremental Data Refresh (Delta Sync) (Locked 🔒)" : "Scheduled Incremental Data Refresh (Delta Sync)"}
                 actions={
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <button
                       className="primary-action"
-                      disabled={true}
+                      disabled={isDemoAccount || !pid || scheduleLoading || scheduleSyncing}
                       onClick={triggerScheduleNow}
                       style={{
                         background: "#2563eb",
@@ -10440,56 +10440,58 @@ function AppInner({
                         display: "flex",
                         alignItems: "center",
                         gap: 6,
-                        opacity: 0.38,
-                        cursor: "not-allowed",
-                        pointerEvents: "none",
-                        filter: "grayscale(25%)",
+                        opacity: isDemoAccount ? 0.38 : 1,
+                        cursor: isDemoAccount ? "not-allowed" : "pointer",
+                        pointerEvents: isDemoAccount ? "none" : "auto",
+                        filter: isDemoAccount ? "grayscale(25%)" : "none",
                       }}
-                      title="Enterprise Feature: Scheduled Delta incremental sync is locked"
+                      title={isDemoAccount ? "Enterprise Feature: Scheduled Delta incremental sync is locked" : "Run incremental sync now using high-watermark delta"}
                     >
-                      <RefreshCw size={14} />
-                      Run Incremental Sync Now
+                      <RefreshCw size={14} className={scheduleSyncing ? "spin" : ""} />
+                      {scheduleSyncing ? "Syncing..." : "Run Incremental Sync Now"}
                     </button>
                   </div>
                 }
               >
-                <div style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "12px 18px",
-                  background: "linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 41, 59, 0.92) 100%)",
-                  borderRadius: 8,
-                  color: "#e2e8f0",
-                  marginBottom: 16,
-                  border: "1px solid rgba(56, 189, 248, 0.35)",
-                  boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)"
-                }}>
+                {isDemoAccount && (
                   <div style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: "50%",
-                    background: "rgba(56, 189, 248, 0.15)",
-                    border: "1px solid rgba(56, 189, 248, 0.4)",
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: "center",
-                    color: "#38bdf8",
-                    flexShrink: 0
+                    gap: 12,
+                    padding: "12px 18px",
+                    background: "linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 41, 59, 0.92) 100%)",
+                    borderRadius: 8,
+                    color: "#e2e8f0",
+                    marginBottom: 16,
+                    border: "1px solid rgba(56, 189, 248, 0.35)",
+                    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)"
                   }}>
-                    <Lock size={18} />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc", display: "flex", alignItems: "center", gap: 6 }}>
-                      Automated Delta Sync Locked <span style={{ fontSize: 10, background: "rgba(56, 189, 248, 0.2)", color: "#7dd3fc", padding: "1px 6px", borderRadius: 4 }}>Enterprise Feature</span>
+                    <div style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: "50%",
+                      background: "rgba(56, 189, 248, 0.15)",
+                      border: "1px solid rgba(56, 189, 248, 0.4)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#38bdf8",
+                      flexShrink: 0
+                    }}>
+                      <Lock size={18} />
                     </div>
-                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
-                      High-watermark incremental sync and automated schedules are managed in production. Feature locked and mocked for current environment.
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#f8fafc", display: "flex", alignItems: "center", gap: 6 }}>
+                        Automated Delta Sync Locked <span style={{ fontSize: 10, background: "rgba(56, 189, 248, 0.2)", color: "#7dd3fc", padding: "1px 6px", borderRadius: 4 }}>Enterprise Feature</span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+                        High-watermark incremental sync and automated schedules are managed in production. Feature locked and mocked for current environment.
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
-                <div className="demo-faded-content" style={{ display: "flex", flexDirection: "column", gap: 16, pointerEvents: "none" }}>
+                <div className={isDemoAccount ? "demo-faded-content" : ""} style={{ display: "flex", flexDirection: "column", gap: 16, pointerEvents: isDemoAccount ? "none" : "auto" }}>
                   {/* Status Banner */}
                   <div style={{
                     display: "flex",
