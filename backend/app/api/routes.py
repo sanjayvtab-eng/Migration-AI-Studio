@@ -825,12 +825,6 @@ def prompt_migration_latest(project_id:str,db:Session=Depends(get_db),_=Depends(
 @router.post("/projects/{project_id}/prompt-specifications")
 def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Session=Depends(get_db),user=Depends(auth)):
     actor=_admin_actor(user)
-    from app.services.demo_mock import is_demo_user, submit_demo_prompt_specification
-    if is_demo_user(user.get("sub")):
-        try:
-            return submit_demo_prompt_specification(db, project_id, data.prompt, actor)
-        except Exception as e:
-            _environment_error(e)
     try: return prompt_specification.submit(db,project_id,data.prompt,actor,data.source_id,object_ids=data.object_ids)
     except Exception as e: _environment_error(e)
 
@@ -838,11 +832,7 @@ def prompt_specification_submit(project_id:str,data:PromptSpecificationIn,db:Ses
 @router.get("/projects/{project_id}/prompt-specifications/latest")
 def prompt_specification_latest(project_id:str,db:Session=Depends(get_db),user=Depends(auth)):
     try:
-        res = prompt_specification.latest(db,project_id)
-        from app.services.demo_mock import is_demo_user, get_demo_prompt_specification_detail
-        if is_demo_user(user.get("sub")) and res and res.get("id"):
-            return get_demo_prompt_specification_detail(db, project_id, res["id"])
-        return res
+        return prompt_specification.latest(db,project_id)
     except Exception as e: _environment_error(e)
 
 
@@ -896,9 +886,6 @@ def refine_plan_api(project_id: str, specification_id: str, data: PlanRefineIn, 
 
 @router.get("/projects/{project_id}/prompt-specifications/{specification_id}")
 def prompt_specification_get(project_id:str,specification_id:str,db:Session=Depends(get_db),user=Depends(auth)):
-    from app.services.demo_mock import is_demo_user, get_demo_prompt_specification_detail
-    if is_demo_user(user.get("sub")):
-        return get_demo_prompt_specification_detail(db, project_id, specification_id)
     try: return prompt_specification.detail(db,project_id,specification_id)
     except Exception as e: _environment_error(e)
 
@@ -1760,9 +1747,6 @@ def medallion_artifacts_api(project_id:str,environment:str="DEV",db:Session=Depe
 
 @router.get("/projects/{project_id}/medallion/validation-report")
 def medallion_validation_report_api(project_id:str,environment:str="DEV",db:Session=Depends(get_db),user=Depends(auth)):
-    from app.services.demo_mock import is_demo_user, get_demo_medallion_validation_report
-    if is_demo_user(user.get("sub")):
-        return get_demo_medallion_validation_report(environment)
     return medallion_validation_report(db,project_id,environment=environment)
 
 @router.get("/projects/{project_id}/medallion/artifacts/{version_id}")

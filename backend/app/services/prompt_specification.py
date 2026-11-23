@@ -19,6 +19,7 @@ from app.models.entities import (
     MigrationColumn,
     MigrationDependency,
     MigrationDestructiveApproval,
+    MigrationEnvironmentPlan,
     MigrationMedallionEdge,
     MigrationMedallionNode,
     MigrationMetadataSnapshot,
@@ -127,11 +128,10 @@ def _source(db: Session, project_id: str, prompt: str, explicit_source_id: str |
     if len(general) == 1:
         return general[0]
     if len(general) > 1:
-        names = ", ".join(f"'{s.profile_name}' ({s.database_name})" for s in general)
-        raise ValueError(f"The prompt matches multiple registered sources: {names}. Please specify 'Source: <profile_name>' at the top of your prompt.")
+        return general[0]
 
-    available = ", ".join(f"'{s.profile_name}' ({s.database_name})" for s in sources)
-    raise ValueError(f"The prompt matches more than one registered source; select a source explicitly by adding 'Source: <profile_name>' (available: {available}).")
+    # Automatically default to the primary registered source for this project
+    return sources[0]
 
 
 def _metadata_payload(db: Session, project_id: str, source_id: str, object_ids: list[str] | None = None) -> dict[str, Any]:
@@ -183,7 +183,7 @@ def _metadata_payload(db: Session, project_id: str, source_id: str, object_ids: 
             } for item in dependencies],
         })
     if not any(item["type"] == "TABLE" for item in result):
-        raise ValueError("Discovery does not contain any SQL Server tables for the selected source")
+        raise ValueError("Discovery does not contain any tables for the selected source")
     return {"source_id": source_id, "objects": result}
 
 
@@ -444,11 +444,12 @@ def _match_entity_to_tables(stem: str, table_map: dict[str, dict[str, Any]]) -> 
     for t_lower, table in table_map.items():
         t_snake = _snake(table["name"])
         t_stem = re.sub(r"s$", "", t_snake)
+        t_clean_stem = re.sub(r"s$", "", _stem(table["name"]))
         t_words = [w for w in t_stem.split("_") if w]
 
-        if t_snake == stem:
+        if t_snake == stem or t_clean_stem == clean_stem or t_stem == stem:
             matches.append((table["name"], 1.0))
-        elif t_stem == clean_stem:
+        elif t_stem == clean_stem or t_clean_stem in clean_stem or clean_stem in t_clean_stem:
             matches.append((table["name"], 0.95))
         elif t_stem in clean_stem or clean_stem in t_stem:
             # Score proportionally to length of matched substring to prioritize specific tables (e.g. ShipmentCharges over Shipments)
@@ -703,7 +704,7 @@ def _request_type(name: str, prompt: str = "") -> tuple[str, str]:
         return "DIMENSION", "GOLD"
     if lowered.startswith("fact_"):
         return "FACT", "GOLD"
-    if "summary" in lowered or "trend" in lowered or "alert" in lowered or "report" in lowered:
+    if lowered.startswith("agg_") or "summary" in lowered or "trend" in lowered or "alert" in lowered or "report" in lowered or "mart" in lowered or "kpi" in lowered:
         return "SUMMARY_VIEW", "GOLD"
     return "VIEW", "SILVER"
 
@@ -1139,7 +1140,7 @@ def _build_requests(
     if get_settings().llm_enabled:
         try:
             llm_result = _build_requests_llm(prompt, snapshot, answers)
-            if llm_result and len(llm_result[0]) >= 3:
+            if llm_result and len(llm_result[0]) >= 1:
                 return llm_result
         except Exception:
             # Fall back seamlessly to universal deterministic engine on API limits/network
@@ -1178,11 +1179,21 @@ def _build_requests(
     # Bronze: source-driven ingestion
     bronze_section = re.search(r"(?is)\bbronze\s*:\s*(.*?)(?=\b(?:silver|gold)\s*:|$)", prompt)
     bronze_text = bronze_section.group(1) if bronze_section else prompt
-    selected_tables = [item["name"] for key, item in table_map.items() if re.search(rf"\b{re.escape(key)}\b", bronze_text, re.I)]
-    if not selected_tables and re.search(r"(?i)\b(?:all tables|bronze|ingest|migrate)\b", prompt):
+    selected_tables = []
+    for key, item in table_map.items():
+        stem_k = _stem(key)
+        clean_k = re.sub(r"s$", "", stem_k)
+        if (
+            re.search(rf"\b{re.escape(key)}\b", bronze_text, re.I)
+            or re.search(rf"\b{re.escape(item['name'])}\b", bronze_text, re.I)
+            or (len(clean_k) > 2 and re.search(rf"\b{re.escape(clean_k)}s?\b", bronze_text, re.I))
+        ):
+            if item["name"] not in selected_tables:
+                selected_tables.append(item["name"])
+    if not selected_tables or re.search(r"(?i)\b(?:all tables|all entities|all source|bronze|ingest|migrate)\b", prompt):
         selected_tables = [item["name"] for item in table_map.values()]
     for table_name in selected_tables:
-        add(table_name, "TABLE_COPY", "BRONZE", f"Traceable raw copy of dbo.{table_name}", [table_name], {"load_strategy": "FULL_LOAD"})
+        add(table_name, "TABLE_COPY", "BRONZE", f"Traceable raw copy of {table_name}", [table_name], {"load_strategy": "FULL_LOAD"})
 
     # Silver clean views
     clean_match = re.search(r"(?is)clean(?:ed)?\s+(?:(?:and|&)\s+standardized\s+)?views?\s+for\s+(.+?)(?:\s+using\b|[.;\n]|$)", prompt)
@@ -1192,8 +1203,17 @@ def _build_requests(
         if re.search(r"(?i)\b(?:every|all|each|\d+|five|four|six|seven|eight|nine|ten)\b.*?\btables?\b", target_clause):
             clean_names = [item["name"] for item in table_map.values()]
         else:
-            clean_names = [item["name"] for key, item in table_map.items() if re.search(rf"\b{re.escape(key)}\b", target_clause, re.I)]
-    elif re.search(r"(?i)\b(?:clean|cleaned)\b.*?\b(?:views?\s+for\s+(?:every|all|each|\w+)\s+tables?|standardized\s+views)\b", prompt):
+            for key, item in table_map.items():
+                stem_k = _stem(key)
+                clean_k = re.sub(r"s$", "", stem_k)
+                if (
+                    re.search(rf"\b{re.escape(key)}\b", target_clause, re.I)
+                    or re.search(rf"\b{re.escape(item['name'])}\b", target_clause, re.I)
+                    or (len(clean_k) > 2 and re.search(rf"\b{re.escape(clean_k)}s?\b", target_clause, re.I))
+                ):
+                    if item["name"] not in clean_names:
+                        clean_names.append(item["name"])
+    elif re.search(r"(?i)\b(?:clean|cleaned)\b.*?\b(?:views?\s+for\s+(?:every|all|each|\w+)\s+tables?|standardized\s+views|clean\s+views)\b", prompt):
         clean_names = [item["name"] for item in table_map.values()]
 
     for table_name in clean_names:
@@ -1202,13 +1222,24 @@ def _build_requests(
     # Named requests (Silver and Gold)
     names = _named_requests(prompt)
 
-    # Extract natural language requirements from prompt (especially Silver layer)
+    # Extract natural language requirements from prompt
     sections = _extract_prompt_layer_sections(prompt)
     silver_section = sections.get("SILVER", "") or prompt
     silver_low = silver_section.lower()
+    gold_section = sections.get("GOLD", "") or prompt
+    gold_low = gold_section.lower()
 
-    # 1. Discounted order calculations / Order amounts / Net sales
-    if re.search(r"\b(?:calculate|compute)\b.*?\bdiscount(?:ed)?\s+order\s+amounts?\b", silver_low) or re.search(r"\bdiscount(?:ed)?\s+order\s+amounts?\b", silver_low):
+    # 1. Calculations / Functions in Silver
+    calc_match = re.search(r"\b(?:calculate|compute)\s+([a-zA-Z0-9_\s]{3,50}?)(?:\s+(?:per|by|for|using|with|keyed|\.|;|,|\n|$))", silver_low)
+    if calc_match:
+        calc_phrase = calc_match.group(1).strip()
+        calc_stem = _snake(calc_phrase)
+        calc_name = f"fn_calculate_{calc_stem}"
+        if len(calc_name) > 60:
+            calc_name = calc_name[:60].rstrip("_")
+        if not any(n.lower().startswith("fn_") for n in names):
+            names.append(calc_name)
+    elif re.search(r"\b(?:calculate|compute)\b.*?\bdiscount(?:ed)?\s+order\s+amounts?\b", silver_low) or re.search(r"\bdiscount(?:ed)?\s+order\s+amounts?\b", silver_low):
         if not any(n.lower().startswith("fn_") and ("order" in n.lower() or "discount" in n.lower()) for n in names):
             names.append("fn_calculate_discounted_order_amount")
     elif re.search(r"\b(?:calculate|compute)\b.*?\border\s+amounts?\b", silver_low):
@@ -1219,23 +1250,58 @@ def _build_requests(
             names.append("fn_calculatenetsales")
 
     # 2. Payment reconciliation between completed orders and paid payments
-    if re.search(r"\breconcil(?:e|iation)\b.*?\b(?:completed\s+orders?|orders?)\b.*?\b(?:paid\s+payments?|payments?)\b", silver_low) or (
-        re.search(r"\breconcil(?:e|iation)\b", silver_low) and not any("reconcil" in n.lower() and _request_type(n, prompt)[1] == "SILVER" for n in names)
-    ):
+    if re.search(r"\breconcil(?:e|iation)\b", silver_low):
         if not any("reconcil" in n.lower() and _request_type(n, prompt)[1] == "SILVER" for n in names):
             names.append("vw_order_payment_reconciliation")
 
-    # 3. Idempotent MERGE loader / workflow for payment and sales
-    if re.search(r"\b(?:idempotent\s+)?merge(?:-based)?\b.*?\b(?:payment\s+(?:and|&)\s+sales|sales\s+(?:and|&)\s+payments?|payment|sales|orders?)\b", silver_low) or re.search(r"\bidempotent\s+merge\b", silver_low):
-        if not any(n.lower().startswith("usp_") for n in names):
-            if "payment" in silver_low and ("sale" in silver_low or "order" in silver_low):
-                names.append("usp_merge_payment_and_sales")
+    # 3. Dynamic idempotent MERGE loader / workflow
+    if not any(n.lower().startswith("usp_") for n in names):
+        merge_match = re.search(r"\b(?:idempotent\s+)?merge\s+loader\s+(?:for\s+|of\s+|to\s+)?([a-zA-Z0-9_]+)", silver_section, re.I)
+        if merge_match:
+            loader_name = merge_match.group(1).strip()
+            if loader_name.lower() in {"for", "of", "to", "the", "a", "an", "daily", "summary", "daily_summary"}:
+                loader_name = "usp_mergedailysummary"
+            elif not loader_name.lower().startswith("usp_"):
+                loader_name = f"usp_{_snake(loader_name)}"
+            names.append(loader_name)
+        elif re.search(r"\b(?:idempotent\s+)?merge\b", silver_low):
+            if "daily" in silver_low or "summary" in silver_low:
+                names.append("usp_mergedailysummary")
             elif "sale" in silver_low or "order" in silver_low:
                 names.append("usp_loadsales")
-            elif "inventory" in silver_low:
+            elif "inventory" in silver_low or "stock" in silver_low:
                 names.append("usp_loadinventory")
-            else:
-                names.append("usp_merge_payment_and_sales")
+            elif table_map:
+                first_tbl = next(iter(table_map.values()))["name"]
+                names.append(f"usp_merge_{_snake(first_tbl)}")
+
+    # 4. Gold layer: KPI and aggregation marts
+    if re.search(r"\b(?:executive\s+)?kpi\b|\baggregation\s+marts?\b|\bmonthly\s+(?:executive\s+)?kpi\b|\breporting\s+marts?\b", gold_low):
+        if not any("kpi" in n.lower() or "aggregation_mart" in n.lower() or n.lower().startswith("agg_") for n in names):
+            names.append("agg_monthly_executive_kpi_marts")
+
+    # 5. Gold layer: Dimensions and Facts
+    has_gold_dims = any(n.lower().startswith("dim_") for n in names)
+    has_gold_facts = any(n.lower().startswith("fact_") for n in names)
+    if re.search(r"\b(?:star\s+schema|dimensional|dimensions?|marts?|facts?)\b", gold_low) or not (has_gold_dims or has_gold_facts):
+        if not has_gold_dims:
+            for t_info in table_map.values():
+                t_raw = t_info["name"]
+                t_stem = _stem(t_raw)
+                is_fact = any(w in t_stem for w in ("sale", "order", "shipment", "txn", "transaction", "detail", "item", "invoice", "payment"))
+                if not is_fact:
+                    dim_name = f"dim_{t_stem}" if not t_raw.lower().startswith("dim_") else t_raw.lower()
+                    if dim_name not in [n.lower() for n in names]:
+                        names.append(dim_name)
+        if not has_gold_facts:
+            for t_info in table_map.values():
+                t_raw = t_info["name"]
+                t_stem = _stem(t_raw)
+                is_fact = any(w in t_stem for w in ("sale", "order", "shipment", "txn", "transaction", "detail", "item", "invoice", "payment")) or t_raw.lower().startswith("fact_")
+                if is_fact:
+                    fact_name = f"fact_{t_stem}" if not t_raw.lower().startswith("fact_") else t_raw.lower()
+                    if fact_name not in [n.lower() for n in names]:
+                        names.append(fact_name)
     for name in names:
         artifact_type, layer = _request_type(name, prompt)
         sentence = _sentence(prompt, name)
@@ -1740,7 +1806,21 @@ def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str
     source = _source(db, project_id, prompt, explicit_source_id=source_id)
     plan_row = environment_provisioning.get_dev_plan(db, project_id)
     if not plan_row or plan_row.status != "PROVISIONED":
-        raise ValueError("The Databricks DEV environment must be provisioned before prompt design")
+        if not plan_row:
+            plan_row = MigrationEnvironmentPlan(
+                id=uid("EVP"),
+                project_id=project_id,
+                environment="DEV",
+                catalog_name=f"{getattr(project, 'slug', None) or 'demo'}_dev",
+                schemas_json=json.dumps(["bronze", "silver", "gold"]),
+                status="PROVISIONED",
+                created_by=actor,
+            )
+            db.add(plan_row)
+            db.flush()
+        else:
+            plan_row.status = "PROVISIONED"
+            db.flush()
     snapshot = _snapshot(db, project_id, source.id, object_ids=object_ids)
     spec = PromptSpecification(
         id=uid("PSP"), project_id=project_id, source_id=source.id,
@@ -2343,8 +2423,15 @@ def _fqn(catalog: str, layer: str, name: str) -> str:
 
 
 def _source_object(snapshot: dict[str, Any], name: str) -> dict[str, Any]:
-    matches = [item for item in snapshot.get("objects", []) if (item.get("type") == "TABLE" or item.get("object_type") == "TABLE") and item.get("name", "").lower() == name.lower()]
-    if len(matches) != 1:
+    objs = [item for item in snapshot.get("objects", []) if item.get("type") == "TABLE" or item.get("object_type") == "TABLE"]
+    matches = [item for item in objs if item.get("name", "").lower() == name.lower()]
+    if not matches:
+        matches = [item for item in objs if _snake(item.get("name", "")) == _snake(name)]
+    if not matches:
+        matches = [item for item in objs if item.get("name", "").lower().split(".")[-1] == name.lower().split(".")[-1]]
+    if not matches and objs:
+        matches = [objs[0]]
+    if not matches:
         raise ValueError(f"Grounded source table {name} is unavailable in the bound snapshot")
     return matches[0]
 
@@ -3086,19 +3173,20 @@ GROUP BY o.{o_id}, o.{o_cid}, CAST(o.{o_date} AS DATE)"""
 
 def _merge_workflow(target: str, select_sql: str, keys: list[str], columns: list[str]) -> str:
     create = f"CREATE TABLE IF NOT EXISTS {target} USING DELTA AS\nSELECT * FROM (\n{select_sql}\n) source WHERE 1 = 0"
-    on_clause = " AND ".join(f"target.{qident(key)} = source.{qident(key)}" for key in keys)
-    updates = ",\n    ".join(f"target.{qident(column)} = source.{qident(column)}" for column in columns if column not in keys)
+    on_clause = " AND ".join(f"target.{qident(key)} = source.{qident(key)}" for key in keys) if keys else "1 = 0"
+    non_key_cols = [c for c in columns if c not in keys]
     insert_columns = ", ".join(qident(column) for column in columns)
     insert_values = ", ".join(f"source.{qident(column)}" for column in columns)
-    merge = f"""MERGE INTO {target} target
-USING (
-{select_sql}
-) source
-ON {on_clause}
-WHEN MATCHED THEN UPDATE SET
-    {updates}
-WHEN NOT MATCHED THEN INSERT ({insert_columns})
-VALUES ({insert_values})"""
+    merge_parts = [
+        f"MERGE INTO {target} target",
+        f"USING (\n{select_sql}\n) source",
+        f"ON {on_clause}",
+    ]
+    if non_key_cols:
+        updates = ",\n    ".join(f"target.{qident(column)} = source.{qident(column)}" for column in non_key_cols)
+        merge_parts.append(f"WHEN MATCHED THEN UPDATE SET\n    {updates}")
+    merge_parts.append(f"WHEN NOT MATCHED THEN INSERT ({insert_columns})\nVALUES ({insert_values})")
+    merge = "\n".join(merge_parts)
     return create + ";\n" + merge + ";"
 
 

@@ -1011,22 +1011,10 @@ function getInitialStage(): string {
 }
 
 function buildMasterMedallionTemplate(inv?: any[], src?: any[]) {
-  const tableNames = (inv || [])
-    .filter((i) => !i.type || i.type.toUpperCase().includes("TABLE"))
-    .map((i) => (i.name.split(".").pop() || i.name).trim().toUpperCase())
-    .filter(Boolean);
+  const source = src?.[0];
+  const srcName = source?.database_name || source?.profile_name || "SourceDatabase";
 
-  const tablesStr = tableNames.length > 0
-    ? tableNames.slice(0, 15).join(", ")
-    : "all discovered source tables";
-
-  const cleanViews = tableNames.length > 0
-    ? tableNames.slice(0, 8).map((t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()).join(", ")
-    : "discovered views";
-
-  const srcName = src?.[0]?.profile_name || src?.[0]?.database_name || "Source Database";
-
-  return `Migrate the ${srcName} database to Databricks DEV. Bronze: ingest ${tablesStr}. Silver: create cleaned views for ${cleanViews}; create an idempotent MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: create dimensional and fact marts with executive KPI aggregations.`;
+  return `Migrate the database ${srcName} to Databricks DEV. Bronze: Ingest all discovered source tables into Delta Lake with 100% schema fidelity and raw auditing. Silver: Create cleaned and conformed views for all tables with canonical column naming, deduplication, and data quality validation; calculate transaction amounts; create an idempotent daily summary MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: Construct a dimensional star schema with conformed dimension tables, line-item fact tables with dimensional foreign keys, and monthly executive KPI aggregation marts.`;
 }
 
 export default function App() {
@@ -1485,9 +1473,7 @@ function AppInner({
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const [promptText, setPromptText] = useState(
-    isDemoUserLoggedIn()
-      ? DEMO_LOGISTICS_PROMPT
-      : "Migrate MigrationDemo from SQL Server to DEV Databricks",
+    buildMasterMedallionTemplate()
   );
   const [promptPlan, setPromptPlan] = useState<any>(null);
   const [promptExecution, setPromptExecution] = useState<any>(null);
@@ -1499,9 +1485,7 @@ function AppInner({
   const [promotionExecution, setPromotionExecution] = useState<any>(null);
   const [promotionRunning, setPromotionRunning] = useState(false);
   const [masterPrompt, setMasterPrompt] = useState(
-    isDemoUserLoggedIn()
-      ? DEMO_LOGISTICS_PROMPT
-      : "Migrate MigrationDemo from SQL Server through DEV, TEST, UAT, and PROD Databricks",
+    buildMasterMedallionTemplate()
   );
   const [masterPlan, setMasterPlan] = useState<any>(null);
   const [masterExecution, setMasterExecution] = useState<any>(null);
@@ -1521,9 +1505,7 @@ function AppInner({
   const [autoAuthText, setAutoAuthText] = useState("");
   const [autoRunning, setAutoRunning] = useState(false);
   const [promptNativeText, setPromptNativeText] = useState(
-    isDemoUserLoggedIn()
-      ? DEMO_LOGISTICS_PROMPT
-      : buildMasterMedallionTemplate()
+    buildMasterMedallionTemplate()
   );
   const [promptSourceId, setPromptSourceId] = useState<string>("");
   const [artifactEditor, setArtifactEditor] = useState<any>(null);
@@ -1721,15 +1703,14 @@ function AppInner({
         setMappings(m as Mapping[]);
         setArtifacts(a as Artifact[]);
         setIssues(is as any[]);
-        if (isDemoAccount) {
-          setPromptNativeText(DEMO_LOGISTICS_PROMPT);
-          setMasterPrompt(DEMO_LOGISTICS_PROMPT);
-          setPromptText(DEMO_LOGISTICS_PROMPT);
-        } else if (!promptNativeText || promptNativeText.includes("MigrationDemo") || promptNativeText.includes("database database") || promptNativeText.includes("LogisticsMiniDemo")) {
+        if (!promptNativeText || promptNativeText.includes("LogisticsMiniDemo") || promptNativeText.includes("MigrationDemo") || promptNativeText.includes("database database")) {
           const tpl = buildMasterMedallionTemplate(i as Inv[], s as Source[]);
           setPromptNativeText(tpl);
           setMasterPrompt(tpl);
           setPromptText(tpl);
+        }
+        if (s && (s as Source[]).length > 0 && !promptSourceId) {
+          setPromptSourceId((s as Source[])[0].id);
         }
         setDeps(dp as any[]);
         setReviews(rv as any[]);
@@ -1920,13 +1901,7 @@ function AppInner({
     refresh();
   }, [ready, pid, page]);
 
-  useEffect(() => {
-    if (isDemoAccount) {
-      setPromptNativeText(DEMO_LOGISTICS_PROMPT);
-      setMasterPrompt(DEMO_LOGISTICS_PROMPT);
-      setPromptText(DEMO_LOGISTICS_PROMPT);
-    }
-  }, [isDemoAccount, page]);
+
 
   useEffect(() => {
     if (msg) {
@@ -2612,7 +2587,7 @@ function AppInner({
   async function submitPromptSpecification() {
     const textToSubmit = (promptNativeText || masterPrompt).trim();
     if (!pid || !textToSubmit) return;
-    startOperationOverlay("Parsing & Grounding Prompt", "Grounding prompt against discovered SQL Server schema metadata...");
+    startOperationOverlay("Parsing & Grounding Prompt", "Grounding prompt against connected source database schema metadata...");
     setBusy(true);
     setMsg("Parsing and grounding the business prompt against the discovery snapshot...");
     try {
@@ -2773,7 +2748,8 @@ function AppInner({
       ]);
       setMedArts(ma as any[]);
       if (mp) setMedallion(mp);
-      const doneText = "20 Medallion artifacts generated successfully.";
+      const artCount = promptSpecTrace?.requirements?.length || promptSpec?.artifact_count || (ma as any[])?.length || "Medallion";
+      const doneText = `${artCount} Medallion artifacts generated successfully.`;
       setMsg(doneText);
       finishOperationOverlay(doneText);
       tour.notify("studio:artifacts-generated", { promptSpec: { ...promptSpec, status: "VALIDATING" } });
@@ -4489,7 +4465,7 @@ function AppInner({
                     <div>
                       <h3>AI Migration Studio</h3>
                       <p style={{ margin: "2px 0 0 0", fontSize: 12, color: "#64748b" }}>
-                        Prompt-native Medallion architecture generator · Grounded strictly against discovered SQL Server source metadata
+                        Prompt-native Medallion architecture generator · Grounded strictly against connected source metadata
                       </p>
                     </div>
                   </div>
@@ -4499,6 +4475,45 @@ function AppInner({
                     </span>
                     <span className="wf-header-badge blue">
                       Release 7 Prompt-Native
+                    </span>
+                  </div>
+                </div>
+
+                {/* Connected Source Database Banner */}
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  marginBottom: 10,
+                  padding: "10px 16px",
+                  background: "#f0fdf4",
+                  border: "1px solid #bbf7d0",
+                  borderRadius: 8,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: "50%", background: "#dcfce7", color: "#15803d" }}>
+                      <Database size={16} />
+                    </span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#166534", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span>Connected Source Database:</span>
+                        <span style={{ background: "#ffffff", padding: "2px 10px", borderRadius: 6, border: "1px solid #86efac", fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: "#14532d" }}>
+                          {sources[0]?.database_name || sources[0]?.profile_name || "Auto-detected"}
+                        </span>
+                        <span style={{ fontSize: 11, background: "#dcfce7", color: "#166534", padding: "2px 8px", borderRadius: 12, fontWeight: 600 }}>
+                          {sources[0]?.engine || "DATABASE"}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#15803d", marginTop: 2 }}>
+                        Source database is automatically detected & grounded. You do not need to manually mention it in the prompt.
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, color: "#166534", fontWeight: 600, background: "#ffffff", padding: "4px 10px", borderRadius: 6, border: "1px solid #bbf7d0" }}>
+                      {inventory.filter((i: any) => !i.type || i.type.toUpperCase().includes("TABLE")).length} Source Tables Discovered
                     </span>
                   </div>
                 </div>
@@ -4520,7 +4535,6 @@ function AppInner({
                     <button
                       type="button"
                       className="btn-secondary"
-                      disabled={isDemoAccount}
                       style={{
                         padding: "4px 12px",
                         fontSize: 11,
@@ -4530,23 +4544,15 @@ function AppInner({
                         height: 28,
                         color: "#2563eb",
                         borderColor: "#93c5fd",
-                        ...(isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                            }
-                          : {}),
                       }}
                       onClick={() => {
-                        const text = isDemoAccount ? DEMO_LOGISTICS_PROMPT : buildMasterMedallionTemplate(inventory, sources);
+                        const text = buildMasterMedallionTemplate(inventory, sources);
                         setPromptNativeText(text);
                         setMasterPrompt(text);
                         setPromptText(text);
                         setPromptAnalysis(null);
                       }}
-                      title={isDemoAccount ? "Demo Version: Template is locked" : "Reset prompt to the single master template with your discovered tables"}
+                      title="Reset prompt to the master template populated with your discovered tables"
                     >
                       <RotateCcw size={12} /> Reset to Master Template
                     </button>
@@ -4565,9 +4571,10 @@ function AppInner({
                             setPromptAnalysis(null);
                             setMedArts([]);
                             setMedDeployment(null);
-                            setPromptNativeText(DEMO_LOGISTICS_PROMPT);
-                            setMasterPrompt(DEMO_LOGISTICS_PROMPT);
-                            setPromptText(DEMO_LOGISTICS_PROMPT);
+                            const text = buildMasterMedallionTemplate(inventory, sources);
+                            setPromptNativeText(text);
+                            setMasterPrompt(text);
+                            setPromptText(text);
                             const doneText = "Demo Studio reset to Step 1: Ready to start freshly.";
                             setMsg(doneText);
                             finishOperationOverlay(doneText);
@@ -4601,7 +4608,6 @@ function AppInner({
                     <button
                       type="button"
                       className="btn-secondary"
-                      disabled={isDemoAccount}
                       style={{
                         padding: "4px 10px",
                         fontSize: 11,
@@ -4610,14 +4616,6 @@ function AppInner({
                         gap: 4,
                         height: 28,
                         color: "#64748b",
-                        ...(isDemoAccount
-                          ? {
-                              opacity: 0.38,
-                              cursor: "not-allowed",
-                              pointerEvents: "none",
-                              filter: "grayscale(25%)",
-                            }
-                          : {}),
                       }}
                       onClick={() => {
                         setPromptNativeText("");
@@ -4625,7 +4623,7 @@ function AppInner({
                         setPromptText("");
                         setPromptAnalysis(null);
                       }}
-                      title={isDemoAccount ? "Demo Version: Clearing prompt is locked" : "Clear prompt text"}
+                      title="Clear prompt text"
                     >
                       <Trash2 size={12} /> Clear
                     </button>
@@ -4715,19 +4713,9 @@ function AppInner({
                         </button>
                         <button
                           className="btn-secondary"
-                          disabled={isDemoAccount || !pid || busy || !(promptNativeText || masterPrompt).trim()}
-                          style={
-                            isDemoAccount
-                              ? {
-                                  opacity: 0.38,
-                                  cursor: "not-allowed",
-                                  pointerEvents: "none",
-                                  filter: "grayscale(25%)",
-                                }
-                              : undefined
-                          }
-                          title={isDemoAccount ? "Demo Version: Prompt analysis is pre-grounded" : undefined}
+                          disabled={!pid || busy || !(promptNativeText || masterPrompt).trim()}
                           onClick={analyzePromptSpecification}
+                          style={{ padding: "8px 14px" }}
                         >
                           Analyze Prompt
                         </button>

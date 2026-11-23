@@ -2353,7 +2353,7 @@ def _deploy_medallion_dev(db: Session, project_id: str, *, run_id: str,
                 # (target bootstrap followed by idempotent MERGE). Execute each
                 # statement separately because the Databricks SQL connector does
                 # not accept arbitrary multi-statement batches.
-                statements = split_sql(item["content"])
+                statements = [s.strip() for s in split_sql(item["content"]) if s.strip()]
                 if not statements or any(not re.match(r"(?is)^(?:CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|MERGE\s+INTO)\b", statement) for statement in statements):
                     raise RuntimeError("Prompt workflow contains an unsupported statement sequence")
                 for statement in statements:
