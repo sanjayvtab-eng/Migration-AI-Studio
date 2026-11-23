@@ -40,7 +40,6 @@ export const TOUR_STEPS: TourStep[] = [
     actionType: "click",
     advanceOnEvent: "project-created",
     disableBack: true,
-    condition: (context: any) => !context.isDemoAccount,
   },
   {
     id: "step-1-demo-project",

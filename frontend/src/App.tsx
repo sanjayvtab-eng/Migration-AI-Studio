@@ -1592,10 +1592,6 @@ function AppInner({
     return ps;
   }
   async function handleDeleteProject(p: Project) {
-    if (isDemoAccount) {
-      setMsg("Demo Version: Deleting projects is restricted. Please explore the pre-configured Demo project.");
-      return;
-    }
     if (
       !window.confirm(
         `Are you sure you want to permanently delete project "${p.name}" (${p.id})?\n\nThis will remove all associated sources, tables, metadata snapshots, and migration plans.`
@@ -2219,11 +2215,6 @@ function AppInner({
 
   async function handleCreateProject(e?: React.FormEvent) {
     if (e) e.preventDefault();
-    if (isDemoAccount) {
-      setMsg("Demo Version: Creating new projects is restricted. Please explore the pre-configured Demo project.");
-      setNewProjectModalOpen(false);
-      return;
-    }
     const trimmed = newProjectName.trim();
     if (!trimmed) return;
     await action(async () => {
@@ -5809,31 +5800,17 @@ function AppInner({
                   <h2>Projects</h2>
                   <p>Enterprise database migration pipelines across source systems and Databricks Unity Catalog.</p>
                 </div>
-                {isDemoAccount ? (
-                  <button
-                    className="demo-restricted-project-btn"
-                    onClick={() => {
-                      setMsg("Demo Version: Creating new projects is restricted. Please explore the pre-configured Demo project.");
-                    }}
-                    title="Demo Version: Creating new projects is locked. Please explore the pre-configured Demo project."
-                  >
-                    <Lock size={14} />
-                    <span>New Project</span>
-                    <span className="demo-locked-tag">Locked</span>
-                  </button>
-                ) : (
-                  <button
-                    className="btn-primary-blue"
-                    data-tour="new-project-btn"
-                    onClick={() => {
-                      setNewProjectName("");
-                      setNewProjectModalOpen(true);
-                    }}
-                  >
-                    <Plus size={16} />
-                    New Project
-                  </button>
-                )}
+                <button
+                  className="btn-primary-blue"
+                  data-tour="new-project-btn"
+                  onClick={() => {
+                    setNewProjectName("");
+                    setNewProjectModalOpen(true);
+                  }}
+                >
+                  <Plus size={16} />
+                  New Project
+                </button>
               </div>
 
               {/* Guided Tour Callout Banner for Demo */}
@@ -6197,18 +6174,16 @@ function AppInner({
                                         >
                                           <Copy size={13} /> Copy Project ID
                                         </button>
-                                        {!isDemoAccount && (
-                                          <button
-                                            className="delete-action"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setActiveMenuProjectId(null);
-                                              handleDeleteProject(p);
-                                            }}
-                                          >
-                                            <Trash2 size={13} /> Delete Project
-                                          </button>
-                                        )}
+                                        <button
+                                          className="delete-action"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setActiveMenuProjectId(null);
+                                            handleDeleteProject(p);
+                                          }}
+                                        >
+                                          <Trash2 size={13} /> Delete Project
+                                        </button>
                                       </div>
                                     )}
                                   </div>
@@ -6234,14 +6209,6 @@ function AppInner({
                     {projectSearch ? (
                       <button className="btn-secondary" onClick={() => setProjectSearch("")}>
                         Clear Search
-                      </button>
-                    ) : isDemoAccount ? (
-                      <button
-                        className="demo-restricted-project-btn"
-                        onClick={() => setMsg("Demo Version: Creating new projects is restricted. Please explore the pre-configured Demo project.")}
-                        title="Demo Version: Locked"
-                      >
-                        <Lock size={14} /> Create Project (Locked)
                       </button>
                     ) : (
                       <button

@@ -644,10 +644,13 @@ def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
 
 @router.delete("/projects/{project_id}")
 def project_delete(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
-    _admin_actor(user)
     p = db.get(MigrationProject, project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
+    actor = str(user.get("sub") or "admin")
+    user_role = str(user.get("role", "")).upper()
+    if user_role != "ADMIN" and (p.created_by or "admin") != actor:
+        raise HTTPException(403, "Administrator role or project ownership is required")
     try:
         from app.core.database import Base
         for table in reversed(Base.metadata.sorted_tables):
