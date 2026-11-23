@@ -1585,11 +1585,19 @@ function AppInner({
 
   async function loadProjects() {
     const ps = await api<Project[]>("/projects");
-    setProjects(ps);
-    if (!pid || !ps.some(x => x.id === pid)) {
-      setPid(ps[0] ? ps[0].id : "");
+    const scopedProjects = (ps || []).filter((p) => {
+      const owner = (p.created_by || p.owner || "").toLowerCase();
+      if (isDemoAccount) {
+        return owner === "vtabpublicuser@gmail.com";
+      } else {
+        return owner !== "vtabpublicuser@gmail.com";
+      }
+    });
+    setProjects(scopedProjects);
+    if (!pid || !scopedProjects.some(x => x.id === pid)) {
+      setPid(scopedProjects[0] ? scopedProjects[0].id : "");
     }
-    return ps;
+    return scopedProjects;
   }
   async function handleDeleteProject(p: Project) {
     if (
@@ -1602,8 +1610,7 @@ function AppInner({
     setBusy(true);
     try {
       await api(`/projects/${p.id}`, { method: "DELETE" });
-      const updatedProjects = await api<Project[]>("/projects");
-      setProjects(updatedProjects);
+      const updatedProjects = await loadProjects();
       if (pid === p.id) {
         const nextProject = updatedProjects.find((x: any) => x.id !== p.id);
         setPid(nextProject ? nextProject.id : "");
@@ -2182,6 +2189,13 @@ function AppInner({
 
   const filteredProjects = useMemo(() => {
     return projects.filter((p) => {
+      const owner = (p.created_by || p.owner || "").toLowerCase();
+      if (isDemoAccount) {
+        if (owner && owner !== "vtabpublicuser@gmail.com") return false;
+      } else {
+        if (owner === "vtabpublicuser@gmail.com") return false;
+      }
+
       const q = projectSearch.toLowerCase().trim();
       const matchesSearch =
         !q ||

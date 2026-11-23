@@ -337,7 +337,19 @@ def auth(request: Request, authorization: str|None=Header(default=None), db:Sess
         project = db.get(MigrationProject, project_id)
         if not project:
             raise HTTPException(404,"Project not found")
-        if user.role != 'ADMIN' and (project.created_by or 'admin') != user.username and project.created_by != user.email:
+        u_name = str(principal.get("sub") or user.username or "").lower()
+        u_email = str(user.email or "").lower()
+        p_creator = str(project.created_by or "admin").lower()
+        is_demo_actor = (u_name == "vtabpublicuser@gmail.com" or u_email == "vtabpublicuser@gmail.com")
+        is_demo_project = (p_creator == "vtabpublicuser@gmail.com")
+
+        # Strict isolation: demo accounts cannot access public projects; public accounts cannot access demo projects
+        if is_demo_actor and not is_demo_project:
+            raise HTTPException(404, "Project not found")
+        if not is_demo_actor and is_demo_project:
+            raise HTTPException(404, "Project not found")
+
+        if not is_demo_actor and user.role != 'ADMIN' and p_creator != u_name and p_creator != u_email:
             raise HTTPException(404,"Project not found")
     path = request.url.path
     mutation = request.method not in {'GET','HEAD','OPTIONS'}
@@ -583,14 +595,19 @@ def demo_token_api(db: Session = Depends(get_db)):
 @router.post("/projects")
 def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)):
     creator = str(user.get("sub") or "admin")
-    existing = db.scalar(select(MigrationProject).where(MigrationProject.name == data.name))
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(400, "Project name cannot be empty")
+    existing = db.scalar(
+        select(MigrationProject).where(
+            MigrationProject.name == name,
+            func.lower(MigrationProject.created_by) == creator.lower()
+        )
+    )
     if existing:
-        ex_owner = existing.created_by or "admin"
-        if ex_owner != creator and creator.lower() != "admin":
-            raise HTTPException(400, f"Project '{data.name}' already exists. Please choose a different project name.")
         p = existing
     else:
-        p = ensure_project(db, data.name, created_by=creator)
+        p = ensure_project(db, name, created_by=creator)
     sources_stmt = select(MigrationSource.engine).where(MigrationSource.project_id == p.id)
     engines = list(set([row[0] for row in db.execute(sources_stmt) if row[0]]))
     return {
@@ -607,17 +624,33 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)
 @router.get("/projects")
 def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
     current_user = str(user.get("sub") or "admin")
-    # Strict multi-tenant isolation:
-    # Users only see projects that belong to their account.
-    # Existing unassigned legacy projects remain assigned to 'admin'.
-    if current_user.lower() == "admin":
+    is_demo = (current_user.lower() == "vtabpublicuser@gmail.com")
+
+    if is_demo:
+        # Strict isolation: Demo account ONLY sees projects created by vtabpublicuser@gmail.com
         stmt = select(MigrationProject).where(
-            (MigrationProject.created_by == "admin") | (MigrationProject.created_by == None)
+            func.lower(MigrationProject.created_by) == "vtabpublicuser@gmail.com"
         )
+        projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
+        if not projects:
+            p = MigrationProject(id=uid("PRJ"), name="Demo", created_by="vtabpublicuser@gmail.com")
+            db.add(p)
+            db.commit()
+            projects = [p]
     else:
-        stmt = select(MigrationProject).where(MigrationProject.created_by == current_user)
+        # Strict isolation: Public accounts NEVER see demo account projects
+        if current_user.lower() == "admin":
+            stmt = select(MigrationProject).where(
+                (func.lower(MigrationProject.created_by) != "vtabpublicuser@gmail.com") &
+                ((MigrationProject.created_by == "admin") | (MigrationProject.created_by == None))
+            )
+        else:
+            stmt = select(MigrationProject).where(
+                (func.lower(MigrationProject.created_by) == current_user.lower()) &
+                (func.lower(MigrationProject.created_by) != "vtabpublicuser@gmail.com")
+            )
+        projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
     
-    projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
     project_ids = [p.id for p in projects]
     source_engines_by_project: dict[str, list[str]] = {}
     if project_ids:
@@ -647,9 +680,17 @@ def project_delete(project_id: str, db: Session = Depends(get_db), user = Depend
     p = db.get(MigrationProject, project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
-    actor = str(user.get("sub") or "admin")
-    user_role = str(user.get("role", "")).upper()
-    if user_role != "ADMIN" and (p.created_by or "admin") != actor:
+    actor = str(user.get("sub") or "admin").lower()
+    project_creator = str(p.created_by or "admin").lower()
+    is_demo = (actor == "vtabpublicuser@gmail.com")
+    is_demo_project = (project_creator == "vtabpublicuser@gmail.com")
+
+    # Strict isolation:
+    if is_demo and not is_demo_project:
+        raise HTTPException(404, "Project not found")
+    if not is_demo and is_demo_project:
+        raise HTTPException(404, "Project not found")
+    if not is_demo and str(user.get("role", "")).upper() != "ADMIN" and project_creator != actor:
         raise HTTPException(403, "Administrator role or project ownership is required")
     try:
         from app.core.database import Base

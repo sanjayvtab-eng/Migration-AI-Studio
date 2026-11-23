@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, json, re, uuid
 from collections import defaultdict, deque
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.models.entities import *
 from app.models.canonical import MigrationValidation
 from .rules import map_sqlserver_type, classify_layer, classify_procedure, classify_function, classify_trigger, rewrite_common_tsql
@@ -316,13 +316,21 @@ def _retarget_view_header(content: str, target_fqn: str) -> str:
     return f"CREATE OR REPLACE VIEW {target_fqn}" + content[match.end():]
 
 def ensure_project(db: Session, name: str, created_by: str | None = None) -> MigrationProject:
-    p = db.scalar(select(MigrationProject).where(MigrationProject.name==name))
-    if p:
-        if created_by and not p.created_by:
-            p.created_by = created_by
-            db.commit()
-        return p
-    p=MigrationProject(id=uid("PRJ"),name=name,created_by=created_by or "admin"); db.add(p); db.commit(); return p
+    if created_by:
+        p = db.scalar(select(MigrationProject).where(
+            MigrationProject.name == name,
+            func.lower(MigrationProject.created_by) == created_by.lower()
+        ))
+        if p:
+            return p
+    else:
+        p = db.scalar(select(MigrationProject).where(MigrationProject.name == name))
+        if p:
+            return p
+    p = MigrationProject(id=uid("PRJ"), name=name, created_by=created_by or "admin")
+    db.add(p)
+    db.commit()
+    return p
 
 def add_source(db: Session, project_id: str, profile_name: str, server: str, database: str,
                *, engine: str = "SQLSERVER", port: int | None = None,
