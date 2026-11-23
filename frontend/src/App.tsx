@@ -5827,36 +5827,7 @@ function AppInner({
                 </button>
               </div>
 
-              {/* Guided Tour Callout Banner for Demo */}
-              {isDemoAccount && (
-                <div className="demo-tour-banner">
-                  <div className="demo-tour-banner-left">
-                    <div className="demo-tour-banner-icon">
-                      <Sparkles size={20} />
-                    </div>
-                    <div className="demo-tour-banner-content">
-                      <div className="demo-tour-badge-row">
-                        <span className="demo-tour-step-pill">Take a Tour · Step 1 of 9</span>
-                        <span className="demo-tour-step-title">Explore Pre-configured Demo Project</span>
-                      </div>
-                      <p className="demo-tour-desc">
-                        Welcome to Databricks Migration Factory! For this guided demo, the <strong>Demo</strong> project is pre-configured and connected to a live SQL Server database. Click the <strong>Demo</strong> project below or click <strong>Proceed to Sources →</strong> to begin exploring.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    className="btn-primary-blue demo-tour-pulse-btn"
-                    onClick={() => {
-                      if (filteredProjects[0]) setPid(filteredProjects[0].id);
-                      setPage("Sources");
-                    }}
-                    title="Continue guided tour to Stage 3: Sources"
-                  >
-                    <span>Proceed to Sources</span>
-                    <ArrowRight size={14} />
-                  </button>
-                </div>
-              )}
+
 
               {/* 4 KPI Summary Cards */}
               <div className="projects-kpi-grid">
