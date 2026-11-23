@@ -1190,7 +1190,7 @@ def _build_requests(
         ):
             if item["name"] not in selected_tables:
                 selected_tables.append(item["name"])
-    if not selected_tables or re.search(r"(?i)\b(?:all tables|all entities|all source|bronze|ingest|migrate)\b", prompt):
+    if not selected_tables or re.search(r"(?i)\b(?:all tables|all entities|all source|all discovered)\b", bronze_text):
         selected_tables = [item["name"] for item in table_map.values()]
     for table_name in selected_tables:
         add(table_name, "TABLE_COPY", "BRONZE", f"Traceable raw copy of {table_name}", [table_name], {"load_strategy": "FULL_LOAD"})
@@ -1230,7 +1230,7 @@ def _build_requests(
     gold_low = gold_section.lower()
 
     # 1. Calculations / Functions in Silver
-    calc_match = re.search(r"\b(?:calculate|compute)\s+([a-zA-Z0-9_\s]{3,50}?)(?:\s+(?:per|by|for|using|with|keyed|\.|;|,|\n|$))", silver_low)
+    calc_match = re.search(r"\b(?:calculate|compute)\s+([a-zA-Z0-9_\s]{3,50}?)(?:\s+(?:per|by|for|using|with|keyed)\b|\s*[.;,\n]|$)", silver_low)
     if calc_match:
         calc_phrase = calc_match.group(1).strip()
         calc_stem = _snake(calc_phrase)
