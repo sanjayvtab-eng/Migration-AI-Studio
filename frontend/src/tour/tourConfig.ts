@@ -448,13 +448,13 @@ export const TOUR_STEPS: TourStep[] = [
     },
   },
 
-  // Stage 4: Discovery (Steps 8 & 9)
+  // Stage 4: Discovery (Steps 8, 9 & 10)
   {
     id: "step-7-run-discovery",
     stage: "Discovery",
     stageNumber: 4,
     stepNumber: 8,
-    totalSteps: 9,
+    totalSteps: 10,
     element: '[data-tour="run-discovery-btn"]',
     popover: {
       title: "Run schema discovery",
@@ -467,15 +467,35 @@ export const TOUR_STEPS: TourStep[] = [
     disableBack: true,
   },
   {
-    id: "step-8-proceed-studio",
+    id: "step-discovery-table-selection",
     stage: "Discovery",
     stageNumber: 4,
     stepNumber: 9,
-    totalSteps: 9,
+    totalSteps: 10,
+    element: '[data-tour="discovery-table-selection"]',
+    popover: {
+      title: "Select Tables for Migration",
+      description:
+        "Schema discovery is complete! Select the checkboxes for the tables you want to migrate to Databricks. Only the selected tables will be included in the migration process (Bronze, Silver, Gold), while unselected tables will be excluded. Once you've selected your tables, proceed to the next stage.",
+      side: "top",
+      align: "start",
+    },
+    actionType: "info",
+    actionHint: "Select the tables you want to migrate using checkboxes, then click Proceed to Inventory",
+    nextBtnText: "Proceed to Inventory →",
+    scrollIntoView: true,
+    disableBack: false,
+  },
+  {
+    id: "step-8-proceed-studio",
+    stage: "Discovery",
+    stageNumber: 4,
+    stepNumber: 10,
+    totalSteps: 10,
     element: '[data-tour="proceed-studio-btn"]',
     popover: {
       title: "Proceed to Inventory",
-      description: "Discovery complete. Proceed to Stage 5: Inventory to inspect your cataloged database objects and dependencies.",
+      description: "Your source tables are selected. Click Proceed to Stage 5: Inventory to inspect your cataloged database objects and dependencies.",
       side: "top",
       align: "end",
     },

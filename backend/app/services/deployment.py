@@ -97,6 +97,36 @@ def _target_owner_collision(db: Session, project_id: str, target_fqn: str) -> Mi
     if not workspace:
         return None
     target = _normalized_target_fqn(target_fqn)
+
+    # 1. Demo & sandbox catalog exemption:
+    # Catalogs named demo_*, test_*, sample_*, or scratch_* (or containing "demo")
+    # are shared development sandboxes across demo accounts and test projects.
+    # Cross-project ownership collisions are never enforced on demo catalogs.
+    catalog = target.split(".")[0] if "." in target else target
+    if (
+        catalog.startswith("demo_")
+        or catalog in ("demo", "demo_dev", "demo_test", "demo_uat", "demo_prod")
+        or "demo" in catalog
+        or catalog.startswith("sample_")
+        or catalog.startswith("scratch_")
+    ):
+        return None
+
+    # Check project environment configuration for demo catalog prefix
+    try:
+        from app.services.environment_provisioning import get_configuration
+        conf = get_configuration(db, project_id)
+        if conf and conf.catalog_prefix and conf.catalog_prefix.strip().lower() in ("demo", "migration_demo", "test_demo", "sample"):
+            return None
+    except Exception:
+        pass
+
+    # Check global takeover configuration
+    if getattr(get_settings(), "allow_target_takeover", False):
+        return None
+
+    curr_project = db.get(MigrationProject, project_id)
+
     rows = db.scalars(select(MigrationDeployment).where(
         MigrationDeployment.project_id != project_id,
         MigrationDeployment.status == "PASSED",
@@ -105,6 +135,23 @@ def _target_owner_collision(db: Session, project_id: str, target_fqn: str) -> Mi
         payload = _payload(row)
         owner_workspace = str(payload.get("databricks_workspace") or "").strip().lower()
         if owner_workspace == workspace and _normalized_target_fqn(payload.get("target_fqn")) == target:
+            # 2. Inactive / deleted project exemption:
+            owner_project = db.get(MigrationProject, row.project_id)
+            if not owner_project or getattr(owner_project, "status", "ACTIVE") not in ("ACTIVE", "RUNNING"):
+                continue
+
+            # 3. Same-user / public demo account exemption:
+            # If both projects belong to the same specific user (or demo user), allow deployment/takeover
+            if curr_project and owner_project:
+                c_creator = (getattr(curr_project, "created_by", "") or "").strip().lower()
+                o_creator = (getattr(owner_project, "created_by", "") or "").strip().lower()
+                if (
+                    (c_creator and c_creator == o_creator and c_creator != "admin")
+                    or c_creator in ("vtabpublicuser@gmail.com", "demouser")
+                    or o_creator in ("vtabpublicuser@gmail.com", "demouser")
+                ):
+                    continue
+
             return row
     return None
 
@@ -147,10 +194,23 @@ def _record_step(db: Session, project_id: str, run_id: str, name: str, status: s
 
 def _deployment_evidence(db: Session, project_id: str, run_id: str, status: str,
                          environment: str = "DEV", object_id: str | None = None, **details):
+    ws = databricks_workspace_identity()
+    target_fqn = details.get("target_fqn")
+    if status == "PASSED" and target_fqn and ws:
+        target = _normalized_target_fqn(target_fqn)
+        old_rows = db.scalars(select(MigrationDeployment).where(
+            MigrationDeployment.project_id != project_id,
+            MigrationDeployment.status == "PASSED",
+        )).all()
+        for old in old_rows:
+            old_p = _payload(old)
+            if str(old_p.get("databricks_workspace") or "").strip().lower() == ws and _normalized_target_fqn(old_p.get("target_fqn")) == target:
+                old.status = "SUPERSEDED"
+
     row = MigrationDeployment(
         id=uid("DPL"), project_id=project_id, object_id=object_id,
         environment=environment, status=status,
-        payload_json=_json({"run_id": run_id, "databricks_workspace": databricks_workspace_identity(), **details}),
+        payload_json=_json({"run_id": run_id, "databricks_workspace": ws, **details}),
     )
     db.add(row)
     db.commit()

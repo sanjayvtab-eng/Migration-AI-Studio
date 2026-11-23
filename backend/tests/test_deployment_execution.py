@@ -116,3 +116,25 @@ def test_precheck_resolves_legacy_ownership_blocker(db, monkeypatch):
 
     db.refresh(issue)
     assert issue.status == 'RESOLVED'
+
+
+def test_demo_catalog_exempt_from_ownership_collision(db, monkeypatch):
+    current, obj, _ = seed_approved(db, 'Current Postgres Project')
+    other = ensure_project(db, 'Previous Demo Project')
+    monkeypatch.setattr(deployment, 'databricks_workspace_identity', lambda: 'dbc-b25bfbf9-1acd.cloud.databricks.com')
+
+    demo_target = '`demo_test`.`silver`.`usp_merge_daily_summary`'
+    # Older project deployed this in the demo_test catalog
+    db.add(MigrationDeployment(
+        id=uid('DPL'), project_id=other.id, object_id=None,
+        environment='TEST', status='PASSED',
+        payload_json=deployment._json({
+            'target_fqn': demo_target,
+            'databricks_workspace': 'dbc-b25bfbf9-1acd.cloud.databricks.com',
+        })
+    ))
+    db.commit()
+
+    # Demo catalog must not cause ownership collisions across projects
+    assert deployment._target_owner_collision(db, current.id, demo_target) is None
+

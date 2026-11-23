@@ -599,10 +599,13 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
       if (event === "discovery-completed") {
         setTimeout(async () => {
           await waitForBackdropDismissal();
-          const stepStudio = TOUR_STEPS.find((s) => s.id === "step-8-proceed-studio") || TOUR_STEPS.find((s) => s.id === "step-7-proceed-studio");
-          if (stepStudio) {
-            saveTourState({ currentStepIndex: 7, currentStage: "Discovery" });
-            highlightStep(stepStudio);
+          const stepTableSelect =
+            TOUR_STEPS.find((s) => s.id === "step-discovery-table-selection") ||
+            TOUR_STEPS.find((s) => s.id === "step-8-proceed-studio") ||
+            TOUR_STEPS.find((s) => s.id === "step-7-proceed-studio");
+          if (stepTableSelect) {
+            saveTourState({ currentStepIndex: 8, currentStage: "Discovery" });
+            highlightStep(stepTableSelect);
           }
         }, 400);
         return;
@@ -863,9 +866,12 @@ export function useOnboardingTour(currentStage: string, stageContext: Record<str
     } else if (currentStage === "Discovery") {
       const timer = setTimeout(async () => {
         await waitForBackdropDismissal();
-        const step =
-          TOUR_STEPS.find((s) => s.id === "step-7-run-discovery") ||
-          TOUR_STEPS.find((s) => s.id === "step-6-run-discovery");
+        const isDiscovered = Boolean(stageContext.hasDiscovered || stageContext.isDiscoveryComplete);
+        const step = isDiscovered
+          ? TOUR_STEPS.find((s) => s.id === "step-discovery-table-selection") ||
+            TOUR_STEPS.find((s) => s.id === "step-8-proceed-studio")
+          : TOUR_STEPS.find((s) => s.id === "step-7-run-discovery") ||
+            TOUR_STEPS.find((s) => s.id === "step-6-run-discovery");
         if (step) highlightStep(step);
       }, 500);
       return () => clearTimeout(timer);

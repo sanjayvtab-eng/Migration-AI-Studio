@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     prod_catalog: str = "migration_prod"
     control_catalog: str = "migration_control"
     control_schema: str = "migration_control"
+    allow_target_takeover: bool = False
 
     llm_enabled: bool = False
     llm_provider: str = "OLLAMA"

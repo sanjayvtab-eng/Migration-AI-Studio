@@ -66,6 +66,7 @@ import {
   Shield,
   Info,
   Mail,
+  CheckSquare,
 } from "lucide-react";
 
 import SourceConnectorControl from "./SourceConnectorControl";
@@ -1010,11 +1011,22 @@ function getInitialStage(): string {
   return "Projects";
 }
 
-function buildMasterMedallionTemplate(inv?: any[], src?: any[]) {
+function buildMasterMedallionTemplate(inv?: any[], src?: any[], selectedIds?: string[]) {
   const source = src?.[0];
   const srcName = source?.database_name || source?.profile_name || "SourceDatabase";
+  const selected = (inv || []).filter((x) => !selectedIds || selectedIds.length === 0 || selectedIds.includes(x.id));
+  const isSelective = Boolean(selectedIds && selectedIds.length > 0 && selectedIds.length < (inv?.length || 0));
+  const selectedTableNames = selected.map((x) => x.name);
 
-  return `Migrate the database ${srcName} to Databricks DEV. Bronze: Ingest all discovered source tables into Delta Lake with 100% schema fidelity and raw auditing. Silver: Create cleaned and conformed views for all tables with canonical column naming, deduplication, and data quality validation; calculate transaction amounts; create an idempotent daily summary MERGE loader usp_MergeDailySummary keyed by primary keys. Gold: Construct a dimensional star schema with conformed dimension tables, line-item fact tables with dimensional foreign keys, and monthly executive KPI aggregation marts.`;
+  const bronzeDesc = isSelective
+    ? `Bronze: Ingest selected source tables (${selectedTableNames.join(", ")}) into Delta Lake with 100% schema fidelity and raw auditing.`
+    : `Bronze: Ingest all discovered source tables into Delta Lake with 100% schema fidelity and raw auditing.`;
+
+  const silverDesc = isSelective
+    ? `Silver: Create cleaned and conformed views for selected tables (${selectedTableNames.join(", ")}) with canonical column naming, deduplication, and data quality validation; calculate transaction amounts; create an idempotent daily summary MERGE loader usp_MergeDailySummary keyed by primary keys.`
+    : `Silver: Create cleaned and conformed views for all tables with canonical column naming, deduplication, and data quality validation; calculate transaction amounts; create an idempotent daily summary MERGE loader usp_MergeDailySummary keyed by primary keys.`;
+
+  return `Migrate the database ${srcName} to Databricks DEV. ${bronzeDesc} ${silverDesc} Gold: Construct a dimensional star schema with conformed dimension tables, line-item fact tables with dimensional foreign keys, and monthly executive KPI aggregation marts.`;
 }
 
 export default function App() {
@@ -1704,7 +1716,7 @@ function AppInner({
         setArtifacts(a as Artifact[]);
         setIssues(is as any[]);
         if (!promptNativeText || promptNativeText.includes("LogisticsMiniDemo") || promptNativeText.includes("MigrationDemo") || promptNativeText.includes("database database")) {
-          const tpl = buildMasterMedallionTemplate(i as Inv[], s as Source[]);
+          const tpl = buildMasterMedallionTemplate(i as Inv[], s as Source[], inventorySelectedIds);
           setPromptNativeText(tpl);
           setMasterPrompt(tpl);
           setPromptText(tpl);
@@ -4511,10 +4523,15 @@ function AppInner({
                       </div>
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 12, color: "#166534", fontWeight: 600, background: "#ffffff", padding: "4px 10px", borderRadius: 6, border: "1px solid #bbf7d0" }}>
                       {inventory.filter((i: any) => !i.type || i.type.toUpperCase().includes("TABLE")).length} Source Tables Discovered
                     </span>
+                    {inventorySelectedIds.length > 0 && (
+                      <span style={{ fontSize: 12, color: "#0369a1", fontWeight: 700, background: "#e0f2fe", padding: "4px 10px", borderRadius: 6, border: "1px solid #7dd3fc" }}>
+                        ✓ {inventorySelectedIds.length} Selected for Migration
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -4546,7 +4563,7 @@ function AppInner({
                         borderColor: "#93c5fd",
                       }}
                       onClick={() => {
-                        const text = buildMasterMedallionTemplate(inventory, sources);
+                        const text = buildMasterMedallionTemplate(inventory, sources, inventorySelectedIds);
                         setPromptNativeText(text);
                         setMasterPrompt(text);
                         setPromptText(text);
@@ -4571,7 +4588,7 @@ function AppInner({
                             setPromptAnalysis(null);
                             setMedArts([]);
                             setMedDeployment(null);
-                            const text = buildMasterMedallionTemplate(inventory, sources);
+                            const text = buildMasterMedallionTemplate(inventory, sources, inventorySelectedIds);
                             setPromptNativeText(text);
                             setMasterPrompt(text);
                             setPromptText(text);
@@ -7140,7 +7157,74 @@ function AppInner({
               )}
 
               {/* Discovered Catalog Preview Table */}
-              <div className="discovery-catalog-card">
+              <div className="discovery-catalog-card" data-tour="discovery-table-selection">
+                {/* Guided Selection Banner */}
+                {inventory.length > 0 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      padding: "10px 16px",
+                      background: inventorySelectedIds.length > 0 ? "#f0f9ff" : "#fffbeb",
+                      borderBottom: inventorySelectedIds.length > 0 ? "1px solid #bae6fd" : "1px solid #fde68a",
+                      fontSize: 12.5,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <CheckSquare size={16} color={inventorySelectedIds.length > 0 ? "#0284c7" : "#d97706"} />
+                      <div>
+                        <span style={{ fontWeight: 700, color: inventorySelectedIds.length > 0 ? "#0369a1" : "#92400e" }}>
+                          Select Tables for Migration:
+                        </span>{" "}
+                        <span style={{ color: inventorySelectedIds.length > 0 ? "#0c4a6e" : "#78350f" }}>
+                          Choose the tables you want to migrate using the checkboxes below. <b>Only selected tables will be included in the migration process</b>, while unselected tables will be excluded.
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        style={{ padding: "4px 10px", fontSize: 11, height: 28, color: "#0284c7", borderColor: "#bae6fd", fontWeight: 600 }}
+                        onClick={() => setInventorySelectedIds(inventory.map((x) => x.id))}
+                        title="Select all discovered tables"
+                      >
+                        ✓ Select All ({inventory.length})
+                      </button>
+                      {inventorySelectedIds.length > 0 && (
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          style={{ padding: "4px 10px", fontSize: 11, height: 28, color: "#64748b" }}
+                          onClick={() => setInventorySelectedIds([])}
+                          title="Deselect all tables"
+                        >
+                          Clear Selection
+                        </button>
+                      )}
+                      <span
+                        style={{
+                          fontSize: 11.5,
+                          fontWeight: 700,
+                          color: inventorySelectedIds.length > 0 ? "#0369a1" : "#b45309",
+                          background: inventorySelectedIds.length > 0 ? "#e0f2fe" : "#fef3c7",
+                          padding: "4px 10px",
+                          borderRadius: 6,
+                          border: inventorySelectedIds.length > 0 ? "1px solid #7dd3fc" : "1px solid #fde68a",
+                        }}
+                      >
+                        {inventorySelectedIds.length > 0
+                          ? `${inventorySelectedIds.length} of ${inventory.length} Tables Selected`
+                          : `0 of ${inventory.length} Tables Selected`}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="discovery-catalog-toolbar">
                   <div className="discovery-toolbar-left">
                     <div className="search" style={{ minWidth: 240 }}>
@@ -7261,12 +7345,21 @@ function AppInner({
                             const { estRows, colCount } = getObjectMetrics(x);
                             const isSelected = inventorySelectedIds.includes(x.id);
                             return (
-                              <tr key={x.id} style={{ background: isSelected ? "#f0f9ff" : undefined }}>
+                              <tr
+                                key={x.id}
+                                style={{ background: isSelected ? "#f0f9ff" : undefined, cursor: "pointer" }}
+                                onClick={(e) => {
+                                  if ((e.target as HTMLElement).closest("button") || (e.target as HTMLElement).tagName === "INPUT") return;
+                                  if (isSelected) setInventorySelectedIds(inventorySelectedIds.filter((id) => id !== x.id));
+                                  else setInventorySelectedIds([...inventorySelectedIds, x.id]);
+                                }}
+                              >
                                 <td>
                                   <input
                                     type="checkbox"
                                     checked={isSelected}
                                     onChange={(e) => {
+                                      e.stopPropagation();
                                       if (e.target.checked) setInventorySelectedIds([...inventorySelectedIds, x.id]);
                                       else setInventorySelectedIds(inventorySelectedIds.filter((id) => id !== x.id));
                                     }}
@@ -7496,12 +7589,21 @@ function AppInner({
                             const targetBronze = `bronze.${(x.schema || "dbo").toLowerCase()}_${x.name.toLowerCase()}`;
 
                             return (
-                              <tr key={x.id} style={{ background: isSelected ? "#f0f9ff" : undefined }}>
+                              <tr
+                                key={x.id}
+                                style={{ background: isSelected ? "#f0f9ff" : undefined, cursor: "pointer" }}
+                                onClick={(e) => {
+                                  if ((e.target as HTMLElement).closest("button") || (e.target as HTMLElement).tagName === "INPUT") return;
+                                  if (isSelected) setInventorySelectedIds(inventorySelectedIds.filter((id) => id !== x.id));
+                                  else setInventorySelectedIds([...inventorySelectedIds, x.id]);
+                                }}
+                              >
                                 <td>
                                   <input
                                     type="checkbox"
                                     checked={isSelected}
                                     onChange={(e) => {
+                                      e.stopPropagation();
                                       if (e.target.checked) setInventorySelectedIds([...inventorySelectedIds, x.id]);
                                       else setInventorySelectedIds(inventorySelectedIds.filter((id) => id !== x.id));
                                     }}
@@ -13153,17 +13255,21 @@ function AppInner({
             },
             4: {
               title: "Stage 4 of 9: Discovery",
-              context: `${(inventorySelectedIds.length > 0 ? inventorySelectedIds.length : inventory.length) || dash.objects_discovered || 8} Objects Identified`,
+              context: `${inventorySelectedIds.length} of ${inventory.length || 8} Tables Selected`,
               backText: "← Back to Sources",
               backTarget: "Sources",
               backDisabled: false,
-              forwardText: isDiscoveryComplete
-                ? "Proceed to Inventory →"
-                : "Proceed to Inventory (Locked)",
+              forwardText: !isDiscoveryComplete
+                ? "Proceed to Inventory (Locked)"
+                : inventorySelectedIds.length === 0
+                ? "Select Tables to Proceed"
+                : `Proceed to Inventory (${inventorySelectedIds.length} Selected) →`,
               forwardTarget: "Inventory",
-              forwardDisabled: !isDiscoveryComplete,
+              forwardDisabled: !isDiscoveryComplete || (inventory.length > 0 && inventorySelectedIds.length === 0),
               forwardTooltip: !isDiscoveryComplete
                 ? "🔒 Run Schema Discovery to complete discovery process and unlock Inventory"
+                : inventorySelectedIds.length === 0
+                ? "Please select at least one table using the checkboxes to proceed to Inventory"
                 : undefined,
             },
             5: {
