@@ -7900,13 +7900,6 @@ function AppInner({
                     <Sparkles size={14} color="#0284c7" />
                     Re-run Rule Engine
                   </button>
-                  <button
-                    className="btn-primary-blue"
-                    onClick={() => setPage("Migration Workflow")}
-                  >
-                    Proceed to Workflow
-                    <ArrowRight size={14} />
-                  </button>
                 </div>
               </div>
 
@@ -8114,13 +8107,6 @@ function AppInner({
                       {classes.filter((c) => inventorySelectedIds.length === 0 || inventorySelectedIds.includes(c.object_id)).length} of {classes.filter((c) => inventorySelectedIds.length === 0 || inventorySelectedIds.includes(c.object_id)).length} objects have confirmed Medallion layer assignments
                     </b>
                   </div>
-                  <button
-                    className="btn-primary-blue"
-                    onClick={() => setPage("Migration Workflow")}
-                  >
-                    Approve & Proceed to Migration Workflow
-                    <ArrowRight size={14} />
-                  </button>
                 </div>
               )}
             </div>
