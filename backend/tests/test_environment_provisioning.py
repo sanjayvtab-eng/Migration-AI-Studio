@@ -149,3 +149,40 @@ def test_direct_databricks_token_registration(client, auth_headers):
     assert resp_clear.status_code == 200
     data_clear = resp_clear.json()
     assert data_clear["has_direct_token"] is False
+
+
+def test_catalog_prefix_updates_managed_trial_and_plan(client, auth_headers, monkeypatch):
+    project_id = _project(client, auth_headers)
+    monkeypatch.setattr(service, "execute_sql_with_credentials", lambda *a, **k: [("hive_metastore", "default", "tester")])
+    monkeypatch.setattr(service, "feature_enabled", lambda: True)
+
+    # 1. Activate managed trial with custom catalog prefix
+    resp = client.post(
+        f"/api/projects/{project_id}/databricks/managed-trial",
+        json={"catalog_prefix": "sanjay_custom"},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["catalog_prefix"] == "sanjay_custom"
+
+    # 2. DEV Plan should reflect the new catalog name immediately
+    plan = client.post(f"/api/projects/{project_id}/environments/dev/plan", headers=auth_headers)
+    assert plan.status_code == 200
+    assert plan.json()["catalog_name"] == "sanjay_custom_dev"
+    assert "CREATE CATALOG IF NOT EXISTS sanjay_custom_dev" in plan.json()["operations"]
+
+    # 3. Update catalog prefix again via managed trial
+    resp2 = client.post(
+        f"/api/projects/{project_id}/databricks/managed-trial",
+        json={"catalog_prefix": "team_beta"},
+        headers=auth_headers,
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["catalog_prefix"] == "team_beta"
+
+    plan_get = client.get(f"/api/projects/{project_id}/environments/dev/plan", headers=auth_headers)
+    assert plan_get.status_code == 200
+    assert plan_get.json()["catalog_name"] == "team_beta_dev"
+    assert "CREATE CATALOG IF NOT EXISTS team_beta_dev" in plan_get.json()["operations"]
+

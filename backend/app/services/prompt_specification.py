@@ -1858,13 +1858,15 @@ def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str
 
     source = _source(db, project_id, prompt, explicit_source_id=source_id)
     plan_row = environment_provisioning.get_dev_plan(db, project_id)
+    cfg = environment_provisioning.get_configuration(db, project_id)
+    target_catalog = f"{cfg.catalog_prefix}_dev" if cfg and cfg.catalog_prefix else f"{getattr(project, 'slug', None) or 'demo'}_dev"
     if not plan_row or plan_row.status != "PROVISIONED":
         if not plan_row:
             plan_row = MigrationEnvironmentPlan(
                 id=uid("EVP"),
                 project_id=project_id,
                 environment="DEV",
-                catalog_name=f"{getattr(project, 'slug', None) or 'demo'}_dev",
+                catalog_name=target_catalog,
                 schemas_json=json.dumps(["bronze", "silver", "gold"]),
                 status="PROVISIONED",
                 created_by=actor,
@@ -1872,8 +1874,13 @@ def submit(db: Session, project_id: str, prompt: str, actor: str, source_id: str
             db.add(plan_row)
             db.flush()
         else:
+            if plan_row.catalog_name != target_catalog:
+                plan_row.catalog_name = target_catalog
             plan_row.status = "PROVISIONED"
             db.flush()
+    elif plan_row and cfg and cfg.catalog_prefix and plan_row.catalog_name != f"{cfg.catalog_prefix}_dev":
+        plan_row.catalog_name = f"{cfg.catalog_prefix}_dev"
+        db.flush()
     snapshot = _snapshot(db, project_id, source.id, object_ids=object_ids)
     spec = PromptSpecification(
         id=uid("PSP"), project_id=project_id, source_id=source.id,

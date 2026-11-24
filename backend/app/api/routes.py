@@ -740,10 +740,16 @@ def project_databricks_connection_test(project_id:str,db:Session=Depends(get_db)
     except Exception as e: _environment_error(e)
 
 @router.post("/projects/{project_id}/databricks/managed-trial")
-def project_databricks_managed_trial(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
+def project_databricks_managed_trial(
+    project_id: str,
+    data: dict[str, Any] | None = None,
+    db: Session = Depends(get_db),
+    user = Depends(auth),
+):
     actor = _admin_actor(user)
     try:
-        row = environment_service.apply_managed_trial(db, project_id, actor)
+        cat_prefix = data.get("catalog_prefix") if isinstance(data, dict) else None
+        row = environment_service.apply_managed_trial(db, project_id, actor, catalog_prefix=cat_prefix)
         test_res = environment_service.test_connection(db, project_id, actor)
         view = environment_service.configuration_view(row)
         view["test_result"] = test_res

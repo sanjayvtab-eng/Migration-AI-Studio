@@ -146,21 +146,28 @@ def _get_trial_token() -> str:
     return bytes.fromhex("646170693833396665643836616131343664396461363534623639643064613932346230").decode("ascii")
 
 
-def apply_managed_trial(db: Session, project_id: str, actor: str) -> MigrationDatabricksConfiguration:
+def apply_managed_trial(
+    db: Session,
+    project_id: str,
+    actor: str,
+    catalog_prefix: str | None = None,
+) -> MigrationDatabricksConfiguration:
     from app.services.source_adapters import encrypt_password
+    existing_cfg = get_configuration(db, project_id)
     token = _get_trial_token()
+    prefix = (catalog_prefix or "").strip() or (existing_cfg.catalog_prefix if existing_cfg and existing_cfg.catalog_prefix else "demo")
     row = save_configuration(
         db,
         project_id,
         workspace_host=MANAGED_TRIAL_HOST,
         http_path=MANAGED_TRIAL_PATH,
         token_env_key="DATABRICKS_TOKEN",
-        catalog_prefix="demo",
+        catalog_prefix=prefix,
         actor=actor,
     )
     row.token_ciphertext = encrypt_password(token)
     row.status = "NOT_TESTED"
-    _audit(db, project_id, "DATABRICKS_MANAGED_TRIAL_APPLIED", actor, {"host": MANAGED_TRIAL_HOST})
+    _audit(db, project_id, "DATABRICKS_MANAGED_TRIAL_APPLIED", actor, {"host": MANAGED_TRIAL_HOST, "catalog_prefix": prefix})
     db.commit()
     db.refresh(row)
     return row

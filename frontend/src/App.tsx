@@ -1317,10 +1317,13 @@ function AppInner({
 
   async function handleSelectManagedTrial() {
     tour.dismissSpotlight();
+    const currentPrefix = (environmentForm.catalog_prefix && environmentForm.catalog_prefix.trim() !== "migration")
+      ? environmentForm.catalog_prefix.trim()
+      : "demo";
     setEnvironmentForm({
       workspace_host: MANAGED_DATABRICKS_TRIAL.workspace_host,
       http_path: MANAGED_DATABRICKS_TRIAL.http_path,
-      catalog_prefix: "demo",
+      catalog_prefix: currentPrefix,
       token_env_key: "DATABRICKS_TOKEN",
     });
     setIsUsingManagedTrial(true);
@@ -1331,9 +1334,17 @@ function AppInner({
     tour.dismissSpotlight();
     setBusy(true);
     try {
-      const res: any = await api(`/projects/${pid}/databricks/managed-trial`, { method: "POST" });
+      const res: any = await api(`/projects/${pid}/databricks/managed-trial`, {
+        method: "POST",
+        body: JSON.stringify({ catalog_prefix: currentPrefix }),
+      });
       setEnvironmentConfig(res);
       if (setEnvironmentConfigState) setEnvironmentConfigState(res);
+      try {
+        const planRes: any = await api(`/projects/${pid}/environments/dev/plan`);
+        setEnvironmentPlan(planRes);
+        if (setEnvironmentPlanState) setEnvironmentPlanState(planRes);
+      } catch {}
       if (res?.status === "READY" || res?.test_result?.status === "READY") {
         setMsg("Managed Trial Databricks workspace activated & connected successfully (Status: READY)!");
       } else {
@@ -12671,13 +12682,17 @@ function AppInner({
                     disabled={!pid || busy}
                     onClick={() =>
                       action(async () => {
+                        const targetPrefix = (environmentForm.catalog_prefix || "demo").trim();
                         if (isTrialWorkspace) {
-                          await api(`/projects/${pid}/databricks/managed-trial`, { method: "POST" });
+                          await api(`/projects/${pid}/databricks/managed-trial`, {
+                            method: "POST",
+                            body: JSON.stringify({ catalog_prefix: targetPrefix }),
+                          });
                         } else {
                           const payload = {
                             workspace_host: environmentForm.workspace_host,
                             http_path: environmentForm.http_path,
-                            catalog_prefix: environmentForm.catalog_prefix || "demo",
+                            catalog_prefix: targetPrefix,
                             token_env_key: environmentForm.token_env_key || "DATABRICKS_TOKEN",
                           };
                           await api(`/projects/${pid}/databricks/configuration`, {
@@ -12695,6 +12710,15 @@ function AppInner({
                         let updated: any = await api(`/projects/${pid}/databricks/configuration`);
                         setEnvironmentConfig(updated);
                         if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
+                        setEnvironmentForm((prev) => ({
+                          ...prev,
+                          catalog_prefix: updated?.catalog_prefix || targetPrefix,
+                        }));
+                        try {
+                          const planRes: any = await api(`/projects/${pid}/environments/dev/plan`);
+                          setEnvironmentPlan(planRes);
+                          if (setEnvironmentPlanState) setEnvironmentPlanState(planRes);
+                        } catch {}
                         tour.notify("env:config-saved", { environmentConfig: updated });
 
                         // Run connection test immediately to verify live connectivity and show status
@@ -12705,9 +12729,13 @@ function AppInner({
                           updated = await api(`/projects/${pid}/databricks/configuration`);
                           setEnvironmentConfig(updated);
                           if (setEnvironmentConfigState) setEnvironmentConfigState(updated);
+                          setEnvironmentForm((prev) => ({
+                            ...prev,
+                            catalog_prefix: updated?.catalog_prefix || targetPrefix,
+                          }));
                           tour.notify("env:connection-tested", { environmentConfig: updated, testResult: testRes });
                           if (testRes?.status === "READY" || updated?.status === "READY") {
-                            setMsg("Configuration saved & Connection test SUCCESS! Databricks control plane is READY.");
+                            setMsg(`Configuration saved & verified! Target DEV Catalog: ${updated?.catalog_prefix || targetPrefix}_dev`);
                           } else {
                             setMsg(`Configuration saved. Test result: ${testRes?.detail || updated?.status || "FAILED"}`);
                           }
