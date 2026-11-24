@@ -327,3 +327,74 @@ def test_retail_migration_demo_nineteen_artifacts_medallion():
     grounded_requests, _ = service._build_requests(prompt, snapshot, answers)
     assert all(r["grounding_status"] == "GROUNDED" for r in grounded_requests)
 
+
+def test_dim_payment_method_never_emits_payments_table():
+    prompt = (
+        "Migrate Salesdemo_postgres to Databricks DEV. "
+        "Bronze: Ingest all discovered source tables into Delta Lake with 100% schema fidelity. "
+        "Silver: Create cleaned and conformed views for all tables; calculate transaction amounts; create usp_MergeDailySummary. "
+        "Gold: Construct a dimensional star schema with conformed dimension tables, line-item fact tables, and monthly executive KPI aggregation marts."
+    )
+    snapshot = {
+        "database": "Salesdemo_postgres",
+        "objects": [
+            {"name": "dim_customer", "type": "TABLE", "columns": [
+                {"name": "customer_id", "target_name": "customer_id"},
+                {"name": "customer_name", "target_name": "customer_name"}
+            ]},
+            {"name": "dim_date", "type": "TABLE", "columns": [
+                {"name": "date_id", "target_name": "date_id"},
+                {"name": "full_date", "target_name": "full_date"}
+            ]},
+            {"name": "dim_payment_method", "type": "TABLE", "columns": [
+                {"name": "payment_method_id", "target_name": "payment_method_id"},
+                {"name": "payment_method", "target_name": "payment_method"}
+            ]},
+            {"name": "dim_product", "type": "TABLE", "columns": [
+                {"name": "product_id", "target_name": "product_id"},
+                {"name": "product_name", "target_name": "product_name"}
+            ]},
+            {"name": "dim_salesperson", "type": "TABLE", "columns": [
+                {"name": "salesperson_id", "target_name": "salesperson_id"},
+                {"name": "name", "target_name": "name"}
+            ]},
+            {"name": "dim_store", "type": "TABLE", "columns": [
+                {"name": "store_id", "target_name": "store_id"},
+                {"name": "store_name", "target_name": "store_name"}
+            ]},
+            {"name": "fact_sales", "type": "TABLE", "columns": [
+                {"name": "sale_id", "target_name": "sale_id"},
+                {"name": "customer_id", "target_name": "customer_id"},
+                {"name": "product_id", "target_name": "product_id"},
+                {"name": "payment_method_id", "target_name": "payment_method_id"},
+                {"name": "sale_amount", "target_name": "sale_amount"}
+            ]}
+        ]
+    }
+
+    requests, _ = service._build_requests(prompt, snapshot, {})
+    names = [r["name"].lower() for r in requests]
+    
+    # Bronze should have exact original names
+    assert "dim_payment_method" in names
+    assert "payments" not in names
+
+    # dim_payment_method must be a DIMENSION, not a FACT
+    pay_req = next(r for r in requests if "payment_method" in r["name"].lower() and r["layer"] == "GOLD")
+    assert pay_req["type"] == "DIMENSION"
+
+    # Even if an artifact is generated as fact_payment_method, SQL generator must resolve to dim_payment_method
+    clean_views = {f"vw_{t['name']}_clean" for t in snapshot["objects"]}
+    mock_fact_request = {
+        "name": "fact_payment_method",
+        "layer": "GOLD",
+        "type": "FACT",
+        "source_refs": ["dim_payment_method"]
+    }
+    sql, _ = service._generate_generic_fact_sql(
+        "demo_dev", mock_fact_request, snapshot, {}, clean_views
+    )
+    assert "payments" not in sql.lower().replace("payment_method", "")
+    assert "dim_payment_method" in sql
+
+

@@ -215,13 +215,32 @@ def _tables(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _resolve_clean_view_name(table_map: dict[str, Any], aliases: list[str], fallback: str) -> str:
+    # 1. Exact match by key or base name
     for alias in aliases:
         norm = alias.lower().replace("_", "")
         for key, tbl in table_map.items():
-            k_base = key.split(".")[-1].replace("_", "")
-            if key.replace("_", "") == norm or k_base == norm:
+            k_base = key.split(".")[-1].replace("_", "").lower()
+            if key.replace("_", "").lower() == norm or k_base == norm:
                 tbl_base = tbl["name"].split(".")[-1]
                 return f"vw_{_snake(tbl_base)}_clean"
+    # 2. Stem match (e.g. "dim_payment_method" stem is "payment_method")
+    for alias in aliases:
+        norm = alias.lower().replace("_", "")
+        for key, tbl in table_map.items():
+            tbl_stem = _stem(tbl["name"]).lower().replace("_", "")
+            if tbl_stem == norm:
+                tbl_base = tbl["name"].split(".")[-1]
+                return f"vw_{_snake(tbl_base)}_clean"
+    # 3. Substring / partial match for substantial tokens (len >= 4)
+    for alias in aliases:
+        norm = alias.lower().replace("_", "")
+        if len(norm) >= 4:
+            for key, tbl in table_map.items():
+                k_base = key.split(".")[-1].lower().replace("_", "")
+                tbl_stem = _stem(tbl["name"]).lower().replace("_", "")
+                if norm in k_base or k_base in norm or norm in tbl_stem or tbl_stem in norm or norm.rstrip("s") in k_base:
+                    tbl_base = tbl["name"].split(".")[-1]
+                    return f"vw_{_snake(tbl_base)}_clean"
     return fallback
 
 
@@ -229,10 +248,17 @@ def _resolve_col_name(table_map: dict[str, Any], table_name: str, aliases: list[
     tbl = None
     t_norm = table_name.lower().replace("_", "")
     for k, v in table_map.items():
-        k_base = k.split(".")[-1].replace("_", "")
-        if k.replace("_", "") == t_norm or k_base == t_norm:
+        k_base = k.split(".")[-1].replace("_", "").lower()
+        if k.replace("_", "").lower() == t_norm or k_base == t_norm:
             tbl = v
             break
+    if not tbl and len(t_norm) >= 4:
+        for k, v in table_map.items():
+            k_base = k.split(".")[-1].lower().replace("_", "")
+            tbl_stem = _stem(v["name"]).lower().replace("_", "")
+            if t_norm in k_base or k_base in t_norm or t_norm in tbl_stem or tbl_stem in t_norm or t_norm.rstrip("s") in k_base:
+                tbl = v
+                break
     if not tbl:
         for k, v in table_map.items():
             k_base = k.split(".")[-1].replace("_", "")
@@ -1035,6 +1061,22 @@ Return ONLY a JSON object:
                     if re.search(rf"\b{re.escape(_snake(t_info['name']))}\b", _snake(ref_str), re.I):
                         matched = t_info["name"]
                         break
+            # 3. Stem / Substring match (e.g. "Customers" -> "RetailCustomers", "Payments" -> "dim_payment_method")
+            if not matched:
+                ref_stem = _stem(ref_str).replace("_", "").lower()
+                clean_ref_stem = re.sub(r"s$", "", ref_stem)
+                if len(clean_ref_stem) >= 3:
+                    for t_low, t_info in table_map.items():
+                        tbl_stem = _stem(t_info["name"]).replace("_", "").lower()
+                        clean_tbl_stem = re.sub(r"s$", "", tbl_stem)
+                        t_base = t_info["name"].split(".")[-1].lower().replace("_", "")
+                        if (
+                            clean_ref_stem in clean_tbl_stem
+                            or clean_tbl_stem in clean_ref_stem
+                            or clean_ref_stem in t_base
+                        ):
+                            matched = t_info["name"]
+                            break
             if matched and matched not in resolved_refs:
                 resolved_refs.append(matched)
 
@@ -1042,6 +1084,11 @@ Return ONLY a JSON object:
             for t_low, t_info in table_map.items():
                 if t_info["name"].lower() == name.lower() or _snake(t_info["name"]) == _snake(name):
                     resolved_refs.append(t_info["name"])
+
+        if not resolved_refs and atype in {"DIMENSION", "FACT", "VIEW", "SUMMARY_VIEW"}:
+            matches = _match_entity_to_tables(_stem(name), table_map)
+            if matches:
+                resolved_refs.append(matches[0][0])
 
         if layer == "BRONZE" and atype == "TABLE_COPY":
             # Match directly to source table if name matches exactly
@@ -1288,7 +1335,10 @@ def _build_requests(
             for t_info in table_map.values():
                 t_raw = t_info["name"]
                 t_stem = _stem(t_raw)
-                is_fact = any(w in t_stem for w in ("sale", "order", "shipment", "txn", "transaction", "detail", "item", "invoice", "payment"))
+                is_dim_explicit = t_raw.lower().split(".")[-1].startswith("dim_")
+                is_fact_explicit = t_raw.lower().split(".")[-1].startswith("fact_")
+                is_lookup = any(w in t_stem for w in ("method", "type", "category", "status", "mode", "channel", "tier", "lookup", "code"))
+                is_fact = (is_fact_explicit or (any(w in t_stem for w in ("sale", "order", "shipment", "txn", "transaction", "detail", "item", "invoice", "payment")) and not is_lookup)) and not is_dim_explicit
                 if not is_fact:
                     dim_name = f"dim_{t_stem}" if not t_raw.lower().startswith("dim_") else t_raw.lower()
                     if dim_name not in [n.lower() for n in names]:
@@ -1297,7 +1347,10 @@ def _build_requests(
             for t_info in table_map.values():
                 t_raw = t_info["name"]
                 t_stem = _stem(t_raw)
-                is_fact = any(w in t_stem for w in ("sale", "order", "shipment", "txn", "transaction", "detail", "item", "invoice", "payment")) or t_raw.lower().startswith("fact_")
+                is_dim_explicit = t_raw.lower().split(".")[-1].startswith("dim_")
+                is_fact_explicit = t_raw.lower().split(".")[-1].startswith("fact_")
+                is_lookup = any(w in t_stem for w in ("method", "type", "category", "status", "mode", "channel", "tier", "lookup", "code"))
+                is_fact = (is_fact_explicit or (any(w in t_stem for w in ("sale", "order", "shipment", "txn", "transaction", "detail", "item", "invoice", "payment")) and not is_lookup)) and not is_dim_explicit
                 if is_fact:
                     fact_name = f"fact_{t_stem}" if not t_raw.lower().startswith("fact_") else t_raw.lower()
                     if fact_name not in [n.lower() for n in names]:
@@ -2502,14 +2555,43 @@ def _resolve_relation(
     if name_clean.lower().startswith('vw_'):
         if clean_views is not None and name_clean.lower() in clean_views and name_clean.lower() != curr_low:
             return _fqn(catalog, 'silver', name_clean)
+        if clean_views is not None:
+            norm_target = name_clean.lower().replace('_', '')
+            for cv in sorted(clean_views):
+                if cv.lower() != curr_low and cv.lower().replace('_', '') == norm_target:
+                    return _fqn(catalog, 'silver', cv)
+
         base_tbl = re.sub(r'^vw_', '', name_clean, flags=re.I)
         base_tbl = re.sub(r'_clean$', '', base_tbl, flags=re.I)
+        base_norm = base_tbl.lower().replace('_', '')
+
         if table_map:
             for k, tbl in table_map.items():
-                k_base = k.split('.')[-1].replace('_', '')
-                if k.replace('_', '') == base_tbl.lower().replace('_', '') or k_base == base_tbl.lower().replace('_', ''):
+                k_base = k.split('.')[-1].replace('_', '').lower()
+                if k.replace('_', '').lower() == base_norm or k_base == base_norm:
                     tbl_base = tbl['name'].split('.')[-1]
+                    clean_name = f"vw_{_snake(tbl_base)}_clean"
+                    if clean_views and clean_name in clean_views and clean_name != curr_low:
+                        return _fqn(catalog, 'silver', clean_name)
                     return _fqn(catalog, 'bronze', _snake(tbl_base))
+
+            # Fuzzy / Stem / Substring match in table_map
+            for k, tbl in table_map.items():
+                k_base = k.split('.')[-1].replace('_', '').lower()
+                k_stem = _stem(tbl['name']).replace('_', '').lower()
+                if len(base_norm) >= 4 and (base_norm in k_base or base_norm in k_stem or k_stem in base_norm or base_norm.rstrip('s') in k_base):
+                    tbl_base = tbl['name'].split('.')[-1]
+                    clean_name = f"vw_{_snake(tbl_base)}_clean"
+                    if clean_views and clean_name in clean_views and clean_name != curr_low:
+                        return _fqn(catalog, 'silver', clean_name)
+                    return _fqn(catalog, 'bronze', _snake(tbl_base))
+
+        if clean_views is not None and len(base_norm) >= 4:
+            for cv in sorted(clean_views):
+                cv_norm = cv.lower().replace('_', '')
+                if cv.lower() != curr_low and (base_norm in cv_norm or base_norm.rstrip('s') in cv_norm):
+                    return _fqn(catalog, 'silver', cv)
+
         return _fqn(catalog, 'bronze', _snake(base_tbl))
 
     cand_view = f'vw_{_snake(name_clean)}_clean'
@@ -2525,10 +2607,25 @@ def _resolve_relation(
 
     if table_map:
         for k, tbl in table_map.items():
-            k_base = k.split('.')[-1].replace('_', '')
-            if k.replace('_', '') == name_clean.lower().replace('_', '') or k_base == name_clean.lower().replace('_', ''):
+            k_base = k.split('.')[-1].replace('_', '').lower()
+            if k.replace('_', '').lower() == name_clean.lower().replace('_', '') or k_base == name_clean.lower().replace('_', ''):
                 tbl_base = tbl['name'].split('.')[-1]
+                clean_name = f"vw_{_snake(tbl_base)}_clean"
+                if clean_views and clean_name in clean_views and clean_name != curr_low:
+                    return _fqn(catalog, 'silver', clean_name)
                 return _fqn(catalog, 'bronze', _snake(tbl_base))
+
+        norm_name = name_clean.lower().replace('_', '')
+        if len(norm_name) >= 4:
+            for k, tbl in table_map.items():
+                k_base = k.split('.')[-1].replace('_', '').lower()
+                k_stem = _stem(tbl['name']).replace('_', '').lower()
+                if norm_name in k_base or norm_name in k_stem or k_stem in norm_name or norm_name.rstrip('s') in k_base:
+                    tbl_base = tbl['name'].split('.')[-1]
+                    clean_name = f"vw_{_snake(tbl_base)}_clean"
+                    if clean_views and clean_name in clean_views and clean_name != curr_low:
+                        return _fqn(catalog, 'silver', clean_name)
+                    return _fqn(catalog, 'bronze', _snake(tbl_base))
 
     return _fqn(catalog, 'bronze', _snake(name_clean.split('.')[-1]))
 
@@ -3386,10 +3483,18 @@ def _generate_generic_fact_sql(
 
     # Dedicated fact model for Payments
     if is_payment and not is_sales_explicit:
-        pay_view = _resolve_clean_view_name(table_map, ["payments", "payment"], "vw_payments_clean")
-        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
         pay_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("payments", "payment")), None) or _source_object(snapshot, source_refs[0])
         ord_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("orders", "order")), None)
+        pay_view = (
+            f"vw_{_snake(pay_tbl['name'].split('.')[-1])}_clean"
+            if pay_tbl and "name" in pay_tbl
+            else _resolve_clean_view_name(table_map, ["payments", "payment"] + list(source_refs), "vw_payments_clean")
+        )
+        ord_view = (
+            f"vw_{_snake(ord_tbl['name'].split('.')[-1])}_clean"
+            if ord_tbl and "name" in ord_tbl
+            else _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        )
 
         p_oid = _resolve_col_name(table_map, "payments", ["order_id", "orderid", "sale_id", "saleid"], "order_id")
         has_p_oid = _has_physical_col(pay_tbl, p_oid)
@@ -3425,10 +3530,18 @@ FROM {_resolve_relation(catalog, pay_view, clean_views, table_map)} p;"""
 
     # Dedicated fact model for Shipments
     elif is_shipment and not is_sales_explicit:
-        ship_view = _resolve_clean_view_name(table_map, ["shipments", "shipment"], "vw_shipments_clean")
-        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
         ship_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("shipments", "shipment")), None) or _source_object(snapshot, source_refs[0])
         ord_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("orders", "order")), None)
+        ship_view = (
+            f"vw_{_snake(ship_tbl['name'].split('.')[-1])}_clean"
+            if ship_tbl and "name" in ship_tbl
+            else _resolve_clean_view_name(table_map, ["shipments", "shipment"] + list(source_refs), "vw_shipments_clean")
+        )
+        ord_view = (
+            f"vw_{_snake(ord_tbl['name'].split('.')[-1])}_clean"
+            if ord_tbl and "name" in ord_tbl
+            else _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        )
 
         s_sid = _resolve_col_name(table_map, "shipments", ["shipment_id", "shipmentid", "id"], "shipment_id")
         s_oid = _resolve_col_name(table_map, "shipments", ["order_id", "orderid"], "order_id")
@@ -3464,10 +3577,18 @@ FROM {_resolve_relation(catalog, ship_view, clean_views, table_map)} s;"""
 
     # Dedicated fact model for Returns
     elif is_return and not is_sales_explicit:
-        ret_view = _resolve_clean_view_name(table_map, ["returns", "return"], "vw_returns_clean")
-        ord_view = _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
         ret_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("returns", "return")), None) or _source_object(snapshot, source_refs[0])
         ord_tbl = next((v for k, v in table_map.items() if k.replace("_", "") in ("orders", "order")), None)
+        ret_view = (
+            f"vw_{_snake(ret_tbl['name'].split('.')[-1])}_clean"
+            if ret_tbl and "name" in ret_tbl
+            else _resolve_clean_view_name(table_map, ["returns", "return"] + list(source_refs), "vw_returns_clean")
+        )
+        ord_view = (
+            f"vw_{_snake(ord_tbl['name'].split('.')[-1])}_clean"
+            if ord_tbl and "name" in ord_tbl
+            else _resolve_clean_view_name(table_map, ["orders", "order"], "vw_orders_clean")
+        )
 
         r_oid = _resolve_col_name(table_map, "returns", ["order_id", "orderid"], "order_id")
         has_r_oid = _has_physical_col(ret_tbl, r_oid)
