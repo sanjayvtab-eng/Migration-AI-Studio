@@ -1660,6 +1660,34 @@ function AppInner({
       return result;
     };
     try {
+      if (isEmbedMode && !hasAutoResetDemoRef.current) {
+        try {
+          await requestApi(`/demo/reset-workspace`, { method: "POST" });
+          hasAutoResetDemoRef.current = true;
+          setDiscoveryResult(null);
+          setDiscoveryScanningSourceId(null);
+          setDiscoveryProgressStep(0);
+          setIsDiscoveryComplete(false);
+          setInventorySelectedIds([]);
+          setPromptSpec(null);
+          setPromptSpecPlan(null);
+          setPromptSpecTrace(null);
+          setPromptAnswers({});
+          setPromptAnalysis(null);
+          setMedArts([]);
+          setMedallion(null);
+          setMedDeployment(null);
+          setMedLogs([]);
+          setDeployment({ environment: "DEV", status: "NOT_STARTED", logs: [] });
+          setReconResult(null);
+          setLife([]);
+          setAutoPromotionStatus(null);
+          setShowAutoAuthModal(false);
+          setShowDemoSalesModal(false);
+        } catch (err) {
+          console.warn("Embed workspace reset on page load:", err);
+        }
+      }
       const ps = await loadProjects();
       checkScope();
       if (setHasProjectState) setHasProjectState(ps.length > 0);

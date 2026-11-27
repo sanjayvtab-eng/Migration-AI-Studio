@@ -705,11 +705,6 @@ def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
         if wid:
             stmt = stmt.where(MigrationProject.workspace_id == wid)
         projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
-        if not projects:
-            p = MigrationProject(id=uid("PRJ"), name="Demo", created_by="vtabpublicuser@gmail.com", workspace_id=wid)
-            db.add(p)
-            db.commit()
-            projects = [p]
         member_roles = {}
     else:
         shared_rows = db.execute(
@@ -1147,6 +1142,14 @@ def prompt_specification_deploy_dev(project_id:str,specification_id:str,db:Sessi
         return deploy_demo_dev(db, project_id, specification_id, actor)
     try: return prompt_specification.deploy_dev(db,project_id,specification_id,actor)
     except Exception as e: _environment_error(e)
+
+
+@router.post("/demo/reset-workspace")
+def demo_reset_workspace_api(db: Session = Depends(get_db), user = Depends(auth)):
+    from app.services.demo_mock import DEMO_MOCK_USER, reset_demo_workspace
+    if str(user.get("sub") or "").strip().lower() != DEMO_MOCK_USER:
+        raise HTTPException(403, "Reset Demo Workspace is only available for the demo embed account")
+    return reset_demo_workspace(db, workspace_id=user.get("_effective_wid"))
 
 
 @router.post("/projects/{project_id}/demo/reset-studio")

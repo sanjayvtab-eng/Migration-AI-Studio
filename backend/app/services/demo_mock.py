@@ -446,6 +446,29 @@ def get_demo_medallion_validation_report(environment: str = "DEV") -> Dict[str, 
     }
 
 
+def reset_demo_workspace(db: Any, workspace_id: str | None = None) -> Dict[str, Any]:
+    """Delete all projects created in the current demo/embed workspace so every iframe refresh starts clean."""
+    from sqlalchemy import select, func
+    from app.core.database import Base
+    from app.models.entities import MigrationProject
+
+    stmt = select(MigrationProject).where(func.lower(MigrationProject.created_by) == DEMO_MOCK_USER)
+    if workspace_id:
+        stmt = stmt.where(MigrationProject.workspace_id == workspace_id)
+    projects = list(db.scalars(stmt).all())
+    deleted_ids = [p.id for p in projects]
+
+    if deleted_ids:
+        for table in reversed(Base.metadata.sorted_tables):
+            if "project_id" in table.c:
+                db.execute(table.delete().where(table.c.project_id.in_(deleted_ids)))
+        for p in projects:
+            db.delete(p)
+        db.commit()
+
+    return {"reset": True, "deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+
+
 def reset_demo_project_studio(db: Any, project_id: str) -> Dict[str, Any]:
     """Resets the demo project back to initial step (pre-discovery / pre-parse) for repeated presentations."""
     from app.models.entities import (

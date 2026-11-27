@@ -202,3 +202,25 @@ def test_shared_email_isolates_projects_per_browser_workspace(client, db):
     )
     h1_again = {"Authorization": "Bearer " + relogin_1.json()["access_token"], "X-Workspace-Id": "ws_browser_1"}
     assert [p["id"] for p in client.get("/api/projects", headers=h1_again).json()] == [p1["id"]]
+
+
+def test_embed_demo_reset_workspace_deletes_created_projects_on_refresh(client, db):
+    tok_res = client.post("/api/demo/token", headers={"X-Workspace-Id": "ws_embed_1"})
+    assert tok_res.status_code == 200
+    headers = {"Authorization": "Bearer " + tok_res.json()["access_token"], "X-Workspace-Id": "ws_embed_1"}
+
+    # Create a custom project inside the iframe
+    created = client.post("/api/projects", headers=headers, json={"name": "test with harish"})
+    assert created.status_code == 200
+    pid = created.json()["id"]
+    assert any(p["id"] == pid for p in client.get("/api/projects", headers=headers).json())
+
+    # On iframe refresh, reset-workspace deletes all created projects for that workspace
+    reset = client.post("/api/demo/reset-workspace", headers=headers)
+    assert reset.status_code == 200
+    assert reset.json()["reset"] is True
+    assert pid in reset.json()["deleted_ids"]
+
+    # After reset, "test with harish" is gone and 0 projects remain (clean empty state)
+    after = client.get("/api/projects", headers=headers).json()
+    assert after == []
