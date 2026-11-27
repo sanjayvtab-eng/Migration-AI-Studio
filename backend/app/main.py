@@ -23,16 +23,13 @@ ensure_source_columns(engine)
 ensure_project_columns(engine)
 ensure_auth_columns(engine)
 with SessionLocal() as db:
-    # Ensure all registered user accounts have full ADMIN role so they can register connectors and run migrations
+    # Preserve explicit user roles; only normalize missing roles to ENGINEER (never auto-promote to ADMIN)
     users = db.scalars(select(User)).all()
     for u in users:
         if u.email and "@" in u.email:
             u.username = u.email
-            u.role = "ADMIN"
-            u.failed_attempts = 0
-            u.locked = False
-        elif u.username == "admin":
-            db.delete(u)
+            if not u.role:
+                u.role = "ENGINEER"
     db.commit()
 from contextlib import asynccontextmanager
 from app.services.scheduler_service import start_scheduler, stop_scheduler

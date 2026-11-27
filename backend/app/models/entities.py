@@ -10,10 +10,22 @@ class ProjectScoped:
 class MigrationProject(Base):
     __tablename__ = "migration_project"
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True)
+    name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True, default="admin")
+    workspace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    visibility: Mapped[str] = mapped_column(String(32), default="PRIVATE")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("name", "created_by", "workspace_id", name="uq_project_name_owner_ws"),)
+
+class MigrationProjectMember(Base, ProjectScoped):
+    __tablename__ = "migration_project_member"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_identifier: Mapped[str] = mapped_column(String(255), index=True)
+    project_role: Mapped[str] = mapped_column(String(32), default="VIEWER")  # OWNER / EDITOR / VIEWER
+    granted_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    __table_args__ = (UniqueConstraint("project_id", "user_identifier", name="uq_project_member"),)
 
 class MigrationDatabricksConfiguration(Base, ProjectScoped):
     """Project-scoped workspace coordinates; secrets stay in the runtime secret store."""

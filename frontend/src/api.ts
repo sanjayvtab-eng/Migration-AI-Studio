@@ -1,6 +1,18 @@
 const API = import.meta.env.VITE_API_URL || '/api';
 export const token = () => localStorage.getItem('mf_token') || '';
 
+export function getDeviceWorkspaceId(): string {
+  let wid = localStorage.getItem('mf_device_ws_id');
+  if (!wid) {
+    const rand = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+      : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    wid = `ws_${rand}`;
+    localStorage.setItem('mf_device_ws_id', wid);
+  }
+  return wid;
+}
+
 // Global API Activity Tracker for Universal Live Loading Animation
 let activeRequestCount = 0;
 const activityListeners = new Set<(count: number) => void>();
@@ -33,6 +45,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const h = new Headers(init.headers);
     if (!h.has('Content-Type')) h.set('Content-Type', 'application/json');
     if (token()) h.set('Authorization', `Bearer ${token()}`);
+    h.set('X-Workspace-Id', getDeviceWorkspaceId());
     const r = await fetch(`${API}${path}`, { ...init, headers: h });
     const payload = await r.json().catch(() => ({ detail: r.statusText }));
     if (r.status === 401) {
@@ -51,6 +64,7 @@ export async function downloadApi(path: string, filenameFallback = 'migration-lo
   try {
     const h = new Headers();
     if (token()) h.set('Authorization', `Bearer ${token()}`);
+    h.set('X-Workspace-Id', getDeviceWorkspaceId());
     const r = await fetch(`${API}${path}`, { headers: h });
     if (!r.ok) {
       const payload = await r.json().catch(() => ({ detail: r.statusText }));

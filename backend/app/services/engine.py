@@ -315,19 +315,24 @@ def _retarget_view_header(content: str, target_fqn: str) -> str:
         return content
     return f"CREATE OR REPLACE VIEW {target_fqn}" + content[match.end():]
 
-def ensure_project(db: Session, name: str, created_by: str | None = None) -> MigrationProject:
+def ensure_project(db: Session, name: str, created_by: str | None = None, workspace_id: str | None = None) -> MigrationProject:
     if created_by:
-        p = db.scalar(select(MigrationProject).where(
+        stmt = select(MigrationProject).where(
             MigrationProject.name == name,
-            func.lower(MigrationProject.created_by) == created_by.lower()
-        ))
+            func.lower(MigrationProject.created_by) == created_by.lower(),
+        )
+        if workspace_id:
+            stmt = stmt.where(MigrationProject.workspace_id == workspace_id)
+        else:
+            stmt = stmt.where(MigrationProject.workspace_id == None)
+        p = db.scalar(stmt)
         if p:
             return p
     else:
         p = db.scalar(select(MigrationProject).where(MigrationProject.name == name))
         if p:
             return p
-    p = MigrationProject(id=uid("PRJ"), name=name, created_by=created_by or "admin")
+    p = MigrationProject(id=uid("PRJ"), name=name, created_by=created_by or "admin", workspace_id=workspace_id)
     db.add(p)
     db.commit()
     return p

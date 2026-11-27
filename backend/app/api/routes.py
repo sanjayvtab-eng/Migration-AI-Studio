@@ -54,6 +54,11 @@ import io
 router=APIRouter(prefix="/api")
 
 class ProjectIn(BaseModel): name:str
+class ProjectMemberIn(BaseModel):
+    user_identifier: str
+    project_role: str = "VIEWER"
+class ProjectPrivacyIn(BaseModel):
+    visibility: str
 class SourceIn(BaseModel):
     profile_name: str
     server_name: str
@@ -321,6 +326,60 @@ def _sqlserver_conn_for_source(src: MigrationSource) -> str:
     return f"DRIVER={{{driver}}};SERVER={src.server_name};DATABASE={src.database_name};Trusted_Connection=yes;TrustServerCertificate=yes;"
 
 
+def _shared_email_set() -> set[str]:
+    raw = getattr(get_settings(), "shared_user_emails", "") or ""
+    return {x.strip().lower() for x in raw.split(",") if x.strip()}
+
+
+def _effective_workspace_id(principal: dict, user_obj: User | None, request: Request | None = None) -> str | None:
+    u_name = str(principal.get("sub") or (user_obj.username if user_obj else "") or "").strip().lower()
+    u_email = str((user_obj.email if user_obj else "") or "").strip().lower()
+    shared = _shared_email_set()
+    if u_name not in shared and u_email not in shared:
+        return None
+    wid = principal.get("wid")
+    if not wid and request is not None:
+        wid = (request.headers.get("X-Workspace-Id") or "").strip()[:64] or None
+    return wid or None
+
+
+def _resolve_project_access(db: Session, project: MigrationProject, user_obj: User | None, principal: dict, request: Request | None = None) -> str | None:
+    """Resolve effective project role ('OWNER', 'EDITOR', 'VIEWER') or None if unauthorized.
+    Enforces strict multi-tenant project privacy: users (including ADMINs) cannot access
+    another user's private project unless explicitly invited via MigrationProjectMember.
+    For shared-email accounts (e.g., vtabsquare@gmail.com), isolates projects by browser workspace_id.
+    """
+    u_name = str(principal.get("sub") or (user_obj.username if user_obj else "") or "").strip().lower()
+    u_email = str((user_obj.email if user_obj else "") or "").strip().lower()
+    p_creator = str(project.created_by or "admin").strip().lower()
+
+    is_demo_actor = (u_name == "vtabpublicuser@gmail.com" or u_email == "vtabpublicuser@gmail.com")
+    is_demo_project = (p_creator == "vtabpublicuser@gmail.com")
+
+    if is_demo_actor != is_demo_project:
+        return None
+
+    if p_creator == u_name or (u_email and p_creator == u_email):
+        wid = _effective_workspace_id(principal, user_obj, request)
+        if wid and (project.workspace_id or "") != wid:
+            return None
+        return "OWNER"
+
+    identifiers = [x for x in {u_name, u_email} if x]
+    if identifiers:
+        member = db.scalar(
+            select(MigrationProjectMember).where(
+                MigrationProjectMember.project_id == project.id,
+                func.lower(MigrationProjectMember.user_identifier).in_(identifiers),
+            )
+        )
+        if member:
+            role = str(member.project_role or "VIEWER").upper()
+            return role if role in {"OWNER", "EDITOR", "VIEWER"} else "VIEWER"
+
+    return None
+
+
 def auth(request: Request, authorization: str|None=Header(default=None), db:Session=Depends(get_db)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401,"Authentication required")
@@ -332,32 +391,28 @@ def auth(request: Request, authorization: str|None=Header(default=None), db:Sess
     if not user or user.locked or principal.get("sv", 0) != user.session_version:
         raise HTTPException(401,"Invalid or expired token")
     principal['role'] = user.role
+    principal['_effective_wid'] = _effective_workspace_id(principal, user, request)
     project_id = request.path_params.get('project_id')
+    project_role: str | None = None
     if project_id:
         project = db.get(MigrationProject, project_id)
         if not project:
             raise HTTPException(404,"Project not found")
-        u_name = str(principal.get("sub") or user.username or "").lower()
-        u_email = str(user.email or "").lower()
-        p_creator = str(project.created_by or "admin").lower()
-        is_demo_actor = (u_name == "vtabpublicuser@gmail.com" or u_email == "vtabpublicuser@gmail.com")
-        is_demo_project = (p_creator == "vtabpublicuser@gmail.com")
-
-        # Strict isolation: demo accounts cannot access public projects; public accounts cannot access demo projects
-        if is_demo_actor and not is_demo_project:
-            raise HTTPException(404, "Project not found")
-        if not is_demo_actor and is_demo_project:
-            raise HTTPException(404, "Project not found")
-
-        if not is_demo_actor and user.role != 'ADMIN' and p_creator != u_name and p_creator != u_email:
+        project_role = _resolve_project_access(db, project, user, principal, request)
+        if not project_role:
             raise HTTPException(404,"Project not found")
+        principal["project_role"] = project_role
     path = request.url.path
     mutation = request.method not in {'GET','HEAD','OPTIONS'}
     if mutation and user.role not in {'ADMIN','LEAD','ENGINEER'}:
         raise HTTPException(403,"This role cannot modify application state")
+    if project_id and mutation and project_role == "VIEWER":
+        raise HTTPException(403,"Project viewer role cannot modify this project")
     governed = any(part in path for part in ('/review','/approve','/deploy','/promotion','/master-orchestration','/quality-gates'))
-    if mutation and governed and user.role not in {'ADMIN','LEAD'}:
-        raise HTTPException(403,"Release reviewer permission is required")
+    if mutation and governed:
+        is_owner = (project_role == "OWNER")
+        if not (is_owner or user.role in {'ADMIN','LEAD'}):
+            raise HTTPException(403,"Release reviewer permission is required")
     if path.startswith('/api/users') and user.role != 'ADMIN':
         raise HTTPException(403,"Administrator permission is required")
     return principal
@@ -424,15 +479,15 @@ async def _request_password_code(email, db, *, register=False):
     if user and user.otp_expires_at and user.otp_expires_at > now + timedelta(minutes=9):
         raise HTTPException(429,'Please wait before requesting another code')
     if not user:
-        user = User(id=uid('USR'), username=email, email=email, password_hash='', role='ADMIN', is_verified=False)
+        user = User(id=uid('USR'), username=email, email=email, password_hash='', role='ENGINEER', is_verified=False)
         db.add(user)
     else:
         if user.username != email:
             user.username = email
         if user.email != email:
             user.email = email
-        if user.role == 'VIEWER' or not user.role:
-            user.role = 'ADMIN'
+        if not user.role:
+            user.role = 'ENGINEER'
     code = str(100000 + secrets.randbelow(900000))
     user.otp = _otp_digest(email, code)
     user.otp_attempts = 0
@@ -512,8 +567,8 @@ def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
                  is_verified=True, failed_attempts=0))
     if changed.rowcount != 1:
         db.rollback(); raise HTTPException(400,'Invalid, expired or consumed password-change proof')
-    if user.role == 'VIEWER' or not user.role:
-        user.role = 'ADMIN'
+    if not user.role:
+        user.role = 'ENGINEER'
     db.commit();db.refresh(user)
     subject = user.email if (user.email and '@' in user.email) else user.username
     return {'access_token':create_access_token(subject,user.role,user.session_version),
@@ -521,7 +576,7 @@ def register_set_password(data:SetPasswordIn,db:Session=Depends(get_db)):
 
 
 @router.post('/login')
-def login(data:LoginIn,db:Session=Depends(get_db)):
+def login(data:LoginIn, request: Request, db:Session=Depends(get_db)):
     identifier = data.username.strip()
     user = db.scalar(select(User).where((User.username == identifier) | (User.email == identifier.lower())))
     if not user:
@@ -545,9 +600,9 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
                 user.password_hash = remote['password_hash']
                 user.failed_attempts = 0
                 user.locked = False
-                if user.role == 'VIEWER' or not user.role:
-                    user.role = str(remote.get('role') or 'ADMIN').upper()
-                    if user.role not in {'ADMIN','LEAD','ENGINEER','VIEWER'}: user.role = 'ADMIN'
+                if not user.role:
+                    user.role = str(remote.get('role') or 'ENGINEER').upper()
+                    if user.role not in {'ADMIN','LEAD','ENGINEER','VIEWER'}: user.role = 'ENGINEER'
                 db.flush()
     if not user or user.locked or not verify_password(data.password, user.password_hash):
         if user and not user.locked:
@@ -556,17 +611,20 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
             db.commit()
         raise HTTPException(401, 'Invalid credentials or account locked')
     user.failed_attempts = 0
-    if user.role == 'VIEWER' or not user.role:
-        user.role = 'ADMIN'
+    if not user.role:
+        user.role = 'ENGINEER'
     db.commit()
     subject = user.email if (user.email and '@' in user.email) else user.username
-    return {'access_token': create_access_token(subject, user.role, user.session_version),
+    req_wid = (request.headers.get("X-Workspace-Id") or "").strip()[:64] or None
+    shared = _shared_email_set()
+    wid = req_wid if (subject.lower() in shared or (user.email or "").lower() in shared) else None
+    return {'access_token': create_access_token(subject, user.role, user.session_version, workspace_id=wid),
             'token_type': 'bearer', 'role': user.role, 'username': subject, 'email': user.email or subject}
 
 
 @router.get("/demo/token")
 @router.post("/demo/token")
-def demo_token_api(db: Session = Depends(get_db)):
+def demo_token_api(request: Request, db: Session = Depends(get_db)):
     from app.services.demo_mock import DEMO_MOCK_USER
     from app.models.entities import User
     from app.core.security import hash_password, create_access_token
@@ -582,7 +640,8 @@ def demo_token_api(db: Session = Depends(get_db)):
         )
         db.add(user)
         db.commit()
-    token = create_access_token(DEMO_MOCK_USER, "ADMIN", getattr(user, "session_version", 1))
+    req_wid = (request.headers.get("X-Workspace-Id") or "").strip()[:64] or None
+    token = create_access_token(DEMO_MOCK_USER, "ADMIN", getattr(user, "session_version", 1), workspace_id=req_wid)
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -595,19 +654,23 @@ def demo_token_api(db: Session = Depends(get_db)):
 @router.post("/projects")
 def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)):
     creator = str(user.get("sub") or "admin")
+    wid = user.get("_effective_wid")
     name = data.name.strip()
     if not name:
         raise HTTPException(400, "Project name cannot be empty")
-    existing = db.scalar(
-        select(MigrationProject).where(
-            MigrationProject.name == name,
-            func.lower(MigrationProject.created_by) == creator.lower()
-        )
+    stmt = select(MigrationProject).where(
+        MigrationProject.name == name,
+        func.lower(MigrationProject.created_by) == creator.lower(),
     )
+    if wid:
+        stmt = stmt.where(MigrationProject.workspace_id == wid)
+    else:
+        stmt = stmt.where(MigrationProject.workspace_id == None)
+    existing = db.scalar(stmt)
     if existing:
         p = existing
     else:
-        p = ensure_project(db, name, created_by=creator)
+        p = ensure_project(db, name, created_by=creator, workspace_id=wid)
     sources_stmt = select(MigrationSource.engine).where(MigrationSource.project_id == p.id)
     engines = list(set([row[0] for row in db.execute(sources_stmt) if row[0]]))
     return {
@@ -617,6 +680,9 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "created_by": p.created_by or creator,
         "owner": p.created_by or creator,
+        "visibility": getattr(p, "visibility", "PRIVATE") or "PRIVATE",
+        "my_role": "OWNER",
+        "is_shared": False,
         "source_engines": engines,
         "source_count": len(engines),
     }
@@ -624,30 +690,52 @@ def projects_create(data:ProjectIn,db:Session=Depends(get_db),user=Depends(auth)
 @router.get("/projects")
 def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
     current_user = str(user.get("sub") or "admin")
-    is_demo = (current_user.lower() == "vtabpublicuser@gmail.com")
+    u_lower = current_user.strip().lower()
+    user_obj = db.scalar(select(User).where(User.username == user.get("sub")))
+    u_email = str(user_obj.email or "").strip().lower() if user_obj else ""
+    identifiers = [x for x in {u_lower, u_email} if x]
+    is_demo = ("vtabpublicuser@gmail.com" in identifiers)
+    wid = user.get("_effective_wid")
 
     if is_demo:
-        # Strict isolation: Demo account ONLY sees projects created by vtabpublicuser@gmail.com
+        # Strict isolation: Demo account ONLY sees projects created by vtabpublicuser@gmail.com (and matching workspace_id if set)
         stmt = select(MigrationProject).where(
             func.lower(MigrationProject.created_by) == "vtabpublicuser@gmail.com"
         )
+        if wid:
+            stmt = stmt.where(MigrationProject.workspace_id == wid)
         projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
         if not projects:
-            p = MigrationProject(id=uid("PRJ"), name="Demo", created_by="vtabpublicuser@gmail.com")
+            p = MigrationProject(id=uid("PRJ"), name="Demo", created_by="vtabpublicuser@gmail.com", workspace_id=wid)
             db.add(p)
             db.commit()
             projects = [p]
+        member_roles = {}
     else:
-        # Strict isolation: Public accounts NEVER see demo account projects
-        if current_user.lower() == "admin":
+        shared_rows = db.execute(
+            select(MigrationProjectMember.project_id, MigrationProjectMember.project_role).where(
+                func.lower(MigrationProjectMember.user_identifier).in_(identifiers)
+            )
+        ).all() if identifiers else []
+        member_roles = {row[0]: str(row[1] or "VIEWER").upper() for row in shared_rows}
+        shared_ids = list(member_roles.keys())
+
+        if u_lower == "admin":
+            owner_filter = (MigrationProject.created_by == "admin") | (MigrationProject.created_by == None)
+        else:
+            owner_filter = func.lower(MigrationProject.created_by).in_(identifiers)
+            if wid:
+                owner_filter = owner_filter & (MigrationProject.workspace_id == wid)
+
+        if shared_ids:
             stmt = select(MigrationProject).where(
-                (func.lower(MigrationProject.created_by) != "vtabpublicuser@gmail.com") &
-                ((MigrationProject.created_by == "admin") | (MigrationProject.created_by == None))
+                (func.lower(func.coalesce(MigrationProject.created_by, "admin")) != "vtabpublicuser@gmail.com") &
+                (owner_filter | MigrationProject.id.in_(shared_ids))
             )
         else:
             stmt = select(MigrationProject).where(
-                (func.lower(MigrationProject.created_by) == current_user.lower()) &
-                (func.lower(MigrationProject.created_by) != "vtabpublicuser@gmail.com")
+                (func.lower(func.coalesce(MigrationProject.created_by, "admin")) != "vtabpublicuser@gmail.com") &
+                owner_filter
             )
         projects = list(db.scalars(stmt.order_by(MigrationProject.created_at.desc())).all())
     
@@ -661,37 +749,33 @@ def projects_list(db:Session=Depends(get_db),user=Depends(auth)):
             if eng and eng not in source_engines_by_project[p_id]:
                 source_engines_by_project[p_id].append(eng)
 
-    return [
-        {
+    out = []
+    for p in projects:
+        p_creator = str(p.created_by or "admin").strip().lower()
+        is_owner = p_creator in identifiers
+        my_role = "OWNER" if is_owner else member_roles.get(p.id, "VIEWER")
+        out.append({
             "id": p.id,
             "name": p.name,
             "status": p.status,
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "created_by": p.created_by or current_user,
             "owner": p.created_by or current_user,
+            "visibility": getattr(p, "visibility", "PRIVATE") or "PRIVATE",
+            "my_role": my_role,
+            "is_shared": not is_owner,
             "source_engines": source_engines_by_project.get(p.id, []),
             "source_count": len(source_engines_by_project.get(p.id, [])),
-        }
-        for p in projects
-    ]
+        })
+    return out
 
 @router.delete("/projects/{project_id}")
 def project_delete(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
     p = db.get(MigrationProject, project_id)
     if not p:
         raise HTTPException(status_code=404, detail="Project not found")
-    actor = str(user.get("sub") or "admin").lower()
-    project_creator = str(p.created_by or "admin").lower()
-    is_demo = (actor == "vtabpublicuser@gmail.com")
-    is_demo_project = (project_creator == "vtabpublicuser@gmail.com")
-
-    # Strict isolation:
-    if is_demo and not is_demo_project:
-        raise HTTPException(404, "Project not found")
-    if not is_demo and is_demo_project:
-        raise HTTPException(404, "Project not found")
-    if not is_demo and str(user.get("role", "")).upper() != "ADMIN" and project_creator != actor:
-        raise HTTPException(403, "Administrator role or project ownership is required")
+    if user.get("project_role") != "OWNER":
+        raise HTTPException(403, "Only the project owner can delete this project")
     try:
         from app.core.database import Base
         for table in reversed(Base.metadata.sorted_tables):
@@ -703,6 +787,120 @@ def project_delete(project_id: str, db: Session = Depends(get_db), user = Depend
     except Exception as e:
         db.rollback()
         _environment_error(e)
+
+
+@router.get("/projects/{project_id}/members")
+def project_members_list(project_id: str, db: Session = Depends(get_db), user = Depends(auth)):
+    p = db.get(MigrationProject, project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    members = db.scalars(
+        select(MigrationProjectMember).where(MigrationProjectMember.project_id == project_id)
+        .order_by(MigrationProjectMember.created_at.asc())
+    ).all()
+    return {
+        "project_id": project_id,
+        "owner": p.created_by or "admin",
+        "visibility": getattr(p, "visibility", "PRIVATE") or "PRIVATE",
+        "my_role": user.get("project_role", "VIEWER"),
+        "members": [
+            {
+                "id": m.id,
+                "user_identifier": m.user_identifier,
+                "project_role": m.project_role,
+                "granted_by": m.granted_by,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in members
+        ],
+    }
+
+
+@router.post("/projects/{project_id}/members")
+def project_members_add(project_id: str, data: ProjectMemberIn, db: Session = Depends(get_db), user = Depends(auth)):
+    if user.get("project_role") != "OWNER":
+        raise HTTPException(403, "Only the project owner can manage project access")
+    p = db.get(MigrationProject, project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    target_id = data.user_identifier.strip().lower()
+    if not target_id:
+        raise HTTPException(400, "User identifier is required")
+    if target_id == "vtabpublicuser@gmail.com" or str(p.created_by or "").lower() == "vtabpublicuser@gmail.com":
+        raise HTTPException(403, "Demo accounts and projects cannot be shared across tenants")
+    if target_id == str(p.created_by or "admin").strip().lower():
+        raise HTTPException(400, "Project owner already has full access")
+    role = data.project_role.strip().upper()
+    if role not in {"VIEWER", "EDITOR"}:
+        raise HTTPException(400, "Project role must be VIEWER or EDITOR")
+    existing = db.scalar(
+        select(MigrationProjectMember).where(
+            MigrationProjectMember.project_id == project_id,
+            func.lower(MigrationProjectMember.user_identifier) == target_id,
+        )
+    )
+    if existing:
+        existing.project_role = role
+        existing.granted_by = str(user.get("sub") or "admin")
+        m = existing
+    else:
+        m = MigrationProjectMember(
+            id=uid("MBR"),
+            project_id=project_id,
+            user_identifier=target_id,
+            project_role=role,
+            granted_by=str(user.get("sub") or "admin"),
+        )
+        db.add(m)
+    p.visibility = "SHARED"
+    db.commit()
+    db.refresh(m)
+    return {
+        "id": m.id,
+        "project_id": project_id,
+        "user_identifier": m.user_identifier,
+        "project_role": m.project_role,
+        "granted_by": m.granted_by,
+        "visibility": p.visibility,
+    }
+
+
+@router.delete("/projects/{project_id}/members/{member_id}")
+def project_members_remove(project_id: str, member_id: str, db: Session = Depends(get_db), user = Depends(auth)):
+    if user.get("project_role") != "OWNER":
+        raise HTTPException(403, "Only the project owner can manage project access")
+    p = db.get(MigrationProject, project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    m = db.get(MigrationProjectMember, member_id)
+    if not m or m.project_id != project_id:
+        raise HTTPException(404, "Project member not found")
+    db.delete(m)
+    db.flush()
+    remaining = db.scalar(
+        select(func.count()).select_from(MigrationProjectMember).where(MigrationProjectMember.project_id == project_id)
+    )
+    if remaining == 0:
+        p.visibility = "PRIVATE"
+    db.commit()
+    return {"removed": True, "id": member_id, "visibility": p.visibility}
+
+
+@router.patch("/projects/{project_id}/privacy")
+def project_privacy_update(project_id: str, data: ProjectPrivacyIn, db: Session = Depends(get_db), user = Depends(auth)):
+    if user.get("project_role") != "OWNER":
+        raise HTTPException(403, "Only the project owner can update project privacy")
+    p = db.get(MigrationProject, project_id)
+    if not p:
+        raise HTTPException(404, "Project not found")
+    vis = data.visibility.strip().upper()
+    if vis not in {"PRIVATE", "SHARED"}:
+        raise HTTPException(400, "Visibility must be PRIVATE or SHARED")
+    p.visibility = vis
+    if vis == "PRIVATE":
+        db.execute(delete(MigrationProjectMember).where(MigrationProjectMember.project_id == project_id))
+    db.commit()
+    return {"project_id": project_id, "visibility": p.visibility}
 
 @router.get("/projects/{project_id}/databricks/configuration")
 def project_databricks_configuration(project_id:str,db:Session=Depends(get_db),_=Depends(auth)):
@@ -2238,10 +2436,11 @@ def databricks_test(_=Depends(auth)):
 _GEMINI_HEALTH_CACHE: dict[str, Any] = {"timestamp": 0, "status": "connected", "model": "gemini-3.5-flash", "latency_ms": 120.0, "error": None}
 
 @router.get("/system/health")
-def system_health_check(project_id: str | None = None, db: Session = Depends(get_db), user=Depends(auth)):
+def system_health_check(project_id: str | None = None, request: Request = None, db: Session = Depends(get_db), user=Depends(auth)):
     if project_id:
         project = db.get(MigrationProject, project_id)
-        if not project or (project.created_by or "admin") != user["sub"]:
+        user_obj = db.scalar(select(User).where(User.username == user.get("sub")))
+        if not project or not _resolve_project_access(db, project, user_obj, user, request):
             raise HTTPException(404,"Project not found")
     import time
     started = time.perf_counter()

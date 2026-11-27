@@ -83,6 +83,9 @@ type Project = {
   created_at?: string;
   owner?: string;
   created_by?: string;
+  visibility?: string;
+  my_role?: string;
+  is_shared?: boolean;
   source_engines?: string[];
   source_count?: number;
 };
@@ -6175,16 +6178,18 @@ function AppInner({
                                         >
                                           <Copy size={13} /> Copy Project ID
                                         </button>
-                                        <button
-                                          className="delete-action"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setActiveMenuProjectId(null);
-                                            handleDeleteProject(p);
-                                          }}
-                                        >
-                                          <Trash2 size={13} /> Delete Project
-                                        </button>
+                                        {(!p.my_role || p.my_role === "OWNER") && (
+                                          <button
+                                            className="delete-action"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setActiveMenuProjectId(null);
+                                              handleDeleteProject(p);
+                                            }}
+                                          >
+                                            <Trash2 size={13} /> Delete Project
+                                          </button>
+                                        )}
                                       </div>
                                     )}
                                   </div>

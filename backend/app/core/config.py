@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     bootstrap_admin_password: str | None = None
     registration_enabled: bool = True
     incremental_sync_enabled: bool = True
+    shared_user_emails: str = "vtabsquare@gmail.com,vtabpublicuser@gmail.com"
 
     sqlserver_host: str | None = None
     sqlserver_database: str | None = None
